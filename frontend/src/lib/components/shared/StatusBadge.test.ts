@@ -97,6 +97,22 @@ describe('StatusBadge', () => {
 		expect(badge?.className).toContain('bg-primary-bg');
 	});
 
+	it('renders backup activity type without unknown fallback styling', () => {
+		const { container } = render(StatusBadge, { props: { status: 'backup', size: 'sm' } });
+		const badge = container.querySelector('span');
+		expect(badge?.className).toContain('bg-primary-bg');
+		expect(badge?.textContent).toContain('backup');
+		expect(badge?.textContent).toContain('B');
+	});
+
+	it('renders system activity type without question-mark fallback', () => {
+		const { container } = render(StatusBadge, { props: { status: 'system', size: 'sm' } });
+		const badge = container.querySelector('span');
+		expect(badge?.className).toContain('bg-neutral-bg');
+		expect(badge?.textContent).toContain('system');
+		expect(badge?.textContent).toContain('S');
+	});
+
 	it('has pill shape (rounded-full)', () => {
 		const { container } = render(StatusBadge, { props: { status: 'success' } });
 		const badge = container.querySelector('span');
