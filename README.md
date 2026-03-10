@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/screenshots/02-dashboard.png" alt="Arkive Dashboard" width="800" />
-</p>
-
 <h1 align="center">Arkive</h1>
 
 <p align="center">
@@ -11,9 +7,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/islamdiaa/arkive/actions/workflows/build.yml"><img src="https://github.com/islamdiaa/arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/islamdiaa/arkive/releases"><img src="https://img.shields.io/github/v/release/islamdiaa/arkive?include_prereleases&label=release" alt="Release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/islamdiaa/arkive" alt="License" /></a>
+  <a href="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml"><img src="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/islamdiaa/Arkive/releases"><img src="https://img.shields.io/github/v/release/islamdiaa/Arkive?include_prereleases&label=release" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/islamdiaa/Arkive" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python" />
   <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey" alt="Platform" />
 </p>
@@ -61,36 +57,6 @@ Arkive is under active development. Core backup, snapshot, restore, and cloud-ta
 
 ---
 
-## Screenshots
-
-<details>
-<summary><strong>Click to expand all screenshots</strong></summary>
-
-| | |
-|:---:|:---:|
-| ![Setup Wizard](docs/screenshots/01-setup-wizard.png) | ![Dashboard](docs/screenshots/02-dashboard.png) |
-| *Setup Wizard* | *Dashboard* |
-| ![Backups](docs/screenshots/03-backups.png) | ![Snapshots](docs/screenshots/04-snapshots.png) |
-| *Backup Runs* | *Snapshots* |
-| ![Databases](docs/screenshots/05-databases.png) | ![Activity](docs/screenshots/06-activity.png) |
-| *Auto-discovered Databases* | *Activity Log* |
-| ![Logs](docs/screenshots/07-logs.png) | ![Restore](docs/screenshots/08-restore.png) |
-| *System Logs* | *Restore* |
-| ![Settings](docs/screenshots/09-settings-general.png) | ![Security](docs/screenshots/10-settings-security.png) |
-| *General Settings* | *Security* |
-| ![Targets](docs/screenshots/11-settings-targets.png) | ![Jobs](docs/screenshots/12-settings-jobs.png) |
-| *Storage Targets* | *Backup Jobs* |
-| ![Schedule](docs/screenshots/13-settings-schedule.png) | ![Notifications](docs/screenshots/14-settings-notifications.png) |
-| *Schedule Editor* | *Notifications* |
-| ![Directories](docs/screenshots/15-settings-directories.png) | |
-| *Directories* | |
-
-</details>
-
-See the [full screenshot gallery](docs/screenshots/README.md) for detailed descriptions.
-
----
-
 ## Quick Start
 
 ### Docker Compose (recommended)
@@ -131,7 +97,7 @@ After deployment, you can run the homeserver smoke test in [docs/homeserver-smok
 Search for **Arkive** in the [Community Applications](https://unraid.net/community/apps) store, or install manually:
 
 ```
-https://raw.githubusercontent.com/islamdiaa/arkive/main/unraid-template.xml
+https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml
 ```
 
 ---
@@ -217,7 +183,7 @@ Full API documentation is available at `http://your-server:8200/docs` (OpenAPI/S
 | Layer | Technology |
 |-------|------------|
 | **Backend** | Python 3.12, FastAPI, SQLite (WAL mode), APScheduler |
-| **Frontend** | SvelteKit 2.x, Svelte 4, Tailwind CSS |
+| **Frontend** | SvelteKit 2.x, Svelte 5, Tailwind CSS |
 | **Backup** | restic (encrypted, deduplicated), rclone (cloud sync) |
 | **Container** | Docker multi-stage build (Node + Python), root runtime recommended on Unraid for host access |
 | **CI/CD** | GitHub Actions, multi-arch (amd64 + arm64), GHCR |
@@ -238,8 +204,8 @@ Full API documentation is available at `http://your-server:8200/docs` (OpenAPI/S
 
 ```bash
 # Clone the repository
-git clone https://github.com/islamdiaa/arkive.git
-cd arkive
+git clone https://github.com/islamdiaa/Arkive.git
+cd Arkive
 
 # Backend
 cd backend
@@ -328,7 +294,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 - [ ] Database migration framework
 - [ ] Scheduled email digest reports
 
-See [docs/screenshots](docs/screenshots/README.md) and [docs/homeserver-smoke-test.md](docs/homeserver-smoke-test.md) for additional public documentation.
+See [docs/homeserver-smoke-test.md](docs/homeserver-smoke-test.md) for additional deployment validation guidance.
 
 ## Security
 
