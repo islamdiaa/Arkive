@@ -8,7 +8,6 @@
 
 <p align="center">
   <a href="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml"><img src="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/islamdiaa/Arkive/releases"><img src="https://img.shields.io/github/v/release/islamdiaa/Arkive?include_prereleases&label=release" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/islamdiaa/Arkive" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python" />
   <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey" alt="Platform" />
