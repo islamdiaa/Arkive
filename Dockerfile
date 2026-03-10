@@ -9,8 +9,8 @@
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS frontend-builder
 WORKDIR /build
-COPY frontend/package.json ./
-RUN npm install --ignore-scripts && npm rebuild
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
