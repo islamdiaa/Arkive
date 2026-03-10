@@ -130,6 +130,98 @@ class DiscoveryEngine:
             })
         return result
 
+    @staticmethod
+    def _normalize_hint(value: str) -> str:
+        """Normalize compose/container identifiers for loose matching."""
+        return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+    @staticmethod
+    def _compose_project(container) -> str:
+        """Get docker compose project label when available."""
+        return str(container.labels.get("com.docker.compose.project", "") or "")
+
+    @staticmethod
+    def _compose_service(container) -> str:
+        """Get docker compose service label when available."""
+        return str(container.labels.get("com.docker.compose.service", "") or "")
+
+    def _compose_depends_on_services(self, container) -> list[str]:
+        """Parse docker compose depends_on label into service names."""
+        raw = str(container.labels.get("com.docker.compose.depends_on", "") or "").strip()
+        if not raw:
+            return []
+        services: list[str] = []
+        for item in raw.split(","):
+            service = item.split(":", 1)[0].strip()
+            if service:
+                services.append(service)
+        return services
+
+    def _find_companion_container(
+        self,
+        source_container,
+        all_containers: list,
+        *,
+        hint: str,
+        expected_db_type: str,
+    ):
+        """Resolve a companion DB container by compose service/name hint."""
+        if not hint:
+            return None
+
+        normalized_hint = self._normalize_hint(hint)
+        source_project = self._compose_project(source_container)
+        best_match = None
+        best_score = -1
+
+        for candidate in all_containers:
+            if candidate.name == source_container.name:
+                continue
+            candidate_image_type = self._detect_image_type(self._get_image_name(candidate))
+            if candidate_image_type != expected_db_type:
+                continue
+
+            score = 0
+            candidate_project = self._compose_project(candidate)
+            if source_project and candidate_project == source_project:
+                score += 100
+            elif source_project and candidate_project and candidate_project != source_project:
+                continue
+
+            names_to_match = {
+                candidate.name,
+                self._compose_service(candidate),
+                str(candidate.attrs.get("Config", {}).get("Hostname", "") or ""),
+            }
+
+            networks = candidate.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
+            for network_data in networks.values():
+                for alias in network_data.get("Aliases", []) or []:
+                    names_to_match.add(str(alias or ""))
+
+            normalized_names = {
+                self._normalize_hint(name)
+                for name in names_to_match
+                if name
+            }
+
+            if normalized_hint in normalized_names:
+                score += 50
+            else:
+                composed_prefixes = {
+                    self._normalize_hint(f"{source_project}-{hint}"),
+                    self._normalize_hint(f"{source_project}_{hint}"),
+                }
+                candidate_name_normalized = self._normalize_hint(candidate.name)
+                if any(candidate_name_normalized.startswith(prefix) for prefix in composed_prefixes if prefix):
+                    score += 25
+
+            if score > best_score:
+                best_match = candidate
+                best_score = score
+
+        return best_match if best_score > 0 else None
+
     def _scan_sqlite_files(self, host_path: str) -> list[str]:
         """Scan a host path for SQLite files with depth limit."""
         found = []
@@ -273,13 +365,52 @@ class DiscoveryEngine:
                 companion_pattern = db_def.get("companion_container_pattern")
                 target_container = container
                 target_env = env
+                target_resolved = False
 
                 if companion_pattern:
                     for c in all_containers:
                         if re.search(companion_pattern, c.name):
                             target_container = c
                             target_env = self._get_env_vars(c)
+                            target_resolved = True
                             break
+                else:
+                    env_vars = db_def.get("env_vars", {})
+                    db_host_keys = env_vars.get("db_host", ["DB_HOSTNAME", "DB_HOST", "POSTGRES_HOST"])
+                    db_host = next((env.get(key, "").strip() for key in db_host_keys if env.get(key, "").strip()), "")
+                    if db_host:
+                        companion = self._find_companion_container(
+                            container,
+                            all_containers,
+                            hint=db_host,
+                            expected_db_type="postgres",
+                        )
+                        if companion is not None:
+                            target_container = companion
+                            target_env = self._get_env_vars(companion)
+                            target_resolved = True
+
+                    if not target_resolved:
+                        for service_name in self._compose_depends_on_services(container):
+                            companion = self._find_companion_container(
+                                container,
+                                all_containers,
+                                hint=service_name,
+                                expected_db_type="postgres",
+                            )
+                            if companion is not None:
+                                target_container = companion
+                                target_env = self._get_env_vars(companion)
+                                target_resolved = True
+                                break
+
+                if not target_resolved and self._detect_image_type(self._get_image_name(container)) != "postgres":
+                    logger.info(
+                        "Profile %s: skipping postgres discovery for %s; no companion postgres container found",
+                        profile["name"],
+                        container.name,
+                    )
+                    continue
 
                 env_vars = db_def.get("env_vars", {})
                 db_name_keys = env_vars.get("db_name", ["POSTGRES_DB", "DB_DATABASE_NAME", "DB_NAME"])

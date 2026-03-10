@@ -116,6 +116,134 @@ class TestDiscovery:
         db_name = env_dict.get("POSTGRES_DB", "postgres")  # fallback
         assert db_name == "postgres"
 
+    def test_profile_postgres_uses_companion_service_from_depends_on(self, mock_config):
+        """Profile-backed app containers should resolve the real postgres companion container."""
+        from app.services.discovery import DiscoveryEngine
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+
+        app_labels = {
+            "com.docker.compose.project": "immich",
+            "com.docker.compose.service": "immich-server",
+            "com.docker.compose.depends_on": "database:service_started:false,redis:service_started:false",
+        }
+        db_labels = {
+            "com.docker.compose.project": "immich",
+            "com.docker.compose.service": "database",
+        }
+        app = _make_container(
+            "immich_server",
+            ["ghcr.io/immich-app/immich-server:release"],
+            env=["DB_DATABASE_NAME=immich", "DB_USERNAME=postgres"],
+            labels=app_labels,
+        )
+        db = _make_container(
+            "immich_postgres",
+            ["ghcr.io/immich-app/postgres:14-vectorchord"],
+            env=["POSTGRES_DB=immich", "POSTGRES_USER=postgres"],
+            labels=db_labels,
+        )
+        app.attrs["NetworkSettings"] = {"Networks": {}}
+        db.attrs["NetworkSettings"] = {"Networks": {}}
+
+        profile = {
+            "name": "immich",
+            "databases": [{
+                "type": "postgres",
+                "env_vars": {
+                    "db_name": ["DB_DATABASE_NAME", "POSTGRES_DB"],
+                    "db_user": ["DB_USERNAME", "POSTGRES_USER"],
+                    "db_host": ["DB_HOSTNAME", "DB_HOST"],
+                },
+            }],
+        }
+
+        found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app, db])
+
+        assert len(found) == 1
+        assert found[0].container_name == "immich_postgres"
+        assert found[0].db_name == "immich"
+
+    def test_profile_postgres_uses_db_host_service_hint(self, mock_config):
+        """Profile-backed app containers should resolve postgres companion via DB host env."""
+        from app.services.discovery import DiscoveryEngine
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+
+        app_labels = {
+            "com.docker.compose.project": "paperless",
+            "com.docker.compose.service": "paperless",
+        }
+        db_labels = {
+            "com.docker.compose.project": "paperless",
+            "com.docker.compose.service": "db",
+        }
+        app = _make_container(
+            "paperless-paperless-1",
+            ["ghcr.io/paperless-ngx/paperless-ngx:latest"],
+            env=["PAPERLESS_DBNAME=docs", "PAPERLESS_DBHOST=db", "PAPERLESS_DBUSER=root"],
+            labels=app_labels,
+        )
+        db = _make_container(
+            "paperless-db-1",
+            ["postgres:16"],
+            env=["POSTGRES_DB=docs", "POSTGRES_USER=root"],
+            labels=db_labels,
+        )
+        app.attrs["NetworkSettings"] = {"Networks": {}}
+        db.attrs["NetworkSettings"] = {"Networks": {}}
+
+        profile = {
+            "name": "paperless-ngx",
+            "databases": [{
+                "type": "postgres",
+                "env_vars": {
+                    "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
+                    "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
+                    "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
+                },
+            }],
+        }
+
+        found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app, db])
+
+        assert len(found) == 1
+        assert found[0].container_name == "paperless-db-1"
+        assert found[0].db_name == "docs"
+
+    def test_profile_postgres_skips_app_container_when_companion_missing(self, mock_config):
+        """App containers should not be treated as dump-capable postgres containers without a real DB companion."""
+        from app.services.discovery import DiscoveryEngine
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+
+        app = _make_container(
+            "paperless-paperless-1",
+            ["ghcr.io/paperless-ngx/paperless-ngx:latest"],
+            env=["PAPERLESS_DBNAME=docs", "PAPERLESS_DBHOST=db", "PAPERLESS_DBUSER=root"],
+            labels={"com.docker.compose.project": "paperless", "com.docker.compose.service": "paperless"},
+        )
+        app.attrs["NetworkSettings"] = {"Networks": {}}
+
+        profile = {
+            "name": "paperless-ngx",
+            "databases": [{
+                "type": "postgres",
+                "env_vars": {
+                    "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
+                    "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
+                    "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
+                },
+            }],
+        }
+
+        found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app])
+
+        assert found == []
+
     def test_should_scan_sqlite_mount_rejects_broad_user_share_roots(self, mock_config):
         """Broad /mnt/user mounts should not be scanned as container-specific SQLite sources."""
         from app.services.discovery import DiscoveryEngine
