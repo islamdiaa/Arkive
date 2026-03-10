@@ -217,10 +217,10 @@ class BackupOrchestrator:
                 (run_id, job_id, terminal_status, trigger, now, now, message),
             )
             await db.execute(
-                f"""UPDATE job_runs
-                   SET status = '{terminal_status}', completed_at = ?, duration_seconds = 0, error_message = ?
+                """UPDATE job_runs
+                   SET status = ?, completed_at = ?, duration_seconds = 0, error_message = ?
                    WHERE id = ?""",
-                (now, message, run_id),
+                (terminal_status, now, message, run_id),
             )
             await db.execute(
                 """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
