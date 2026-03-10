@@ -37,6 +37,6 @@ pydyf==0.11.0  # pinned: 0.12.x breaks weasyprint 62.x stream.transform()
 jinja2==3.1.5
 
 # Utilities
-python-dateutil==2.9.0
+python-dateutil==2.9.0.post0
 structlog==24.4.0
 psutil==7.2.2
