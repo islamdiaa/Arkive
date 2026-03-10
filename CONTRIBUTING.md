@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Arkive. This document provides gu
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/arkive.git`
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/Arkive.git`
 3. Create a feature branch: `git checkout -b feat/your-feature`
 4. Make your changes
 5. Run tests: `make test`
@@ -55,7 +55,7 @@ make dev
 
 ### TypeScript/Svelte (Frontend)
 
-- Use Svelte 4 legacy syntax (`export let`, `$:` reactive declarations)
+- Use the repository's current Svelte 5 patterns and follow the surrounding code in `src/`
 - Follow existing component patterns in `src/lib/components/`
 - Use Tailwind CSS utility classes for styling
 - Use shadcn-svelte components from `src/lib/components/ui/`
@@ -118,7 +118,7 @@ When filing a bug report, please include:
 - Unraid version (or Linux distribution)
 - Steps to reproduce the issue
 - Expected behavior vs. actual behavior
-- Relevant log output (`arkive logs --level ERROR`)
+- Relevant Arkive logs from the container or application runtime
 
 ## Feature Requests
 
@@ -130,7 +130,7 @@ Feature requests are welcome. Please check existing issues first to avoid duplic
 
 ## Security
 
-If you discover a security vulnerability, please do **not** open a public issue. Instead, email the maintainers directly. See the [Security Policy](https://github.com/islamdiaa/arkive/security/policy) for details.
+If you discover a security vulnerability, please do **not** open a public issue. Use GitHub Security Advisories for this repository instead: [Security Policy](https://github.com/islamdiaa/Arkive/security/policy).
 
 ## License
 

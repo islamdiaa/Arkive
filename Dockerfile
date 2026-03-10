@@ -24,7 +24,7 @@ ARG TARGETARCH
 LABEL org.opencontainers.image.title="Arkive" \
       org.opencontainers.image.description="Automated disaster recovery for Unraid servers" \
       org.opencontainers.image.version="0.1.0" \
-      org.opencontainers.image.source="https://github.com/islamdiaa/arkive_v3" \
+      org.opencontainers.image.source="https://github.com/islamdiaa/Arkive" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Arkive" \
       maintainer="islamdiaa"

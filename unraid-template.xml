@@ -2,14 +2,14 @@
 <Container version="2">
   <Name>Arkive</Name>
   <Repository>ghcr.io/islamdiaa/arkive:latest</Repository>
-  <Registry>https://github.com/islamdiaa/arkive/pkgs/container/arkive</Registry>
+  <Registry>https://github.com/islamdiaa/Arkive/pkgs/container/arkive</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/islamdiaa/arkive/issues</Support>
-  <Project>https://arkive.dev</Project>
+  <Support>https://github.com/islamdiaa/Arkive/issues</Support>
+  <Project>https://github.com/islamdiaa/Arkive</Project>
   <Overview>
-    Automated disaster recovery for Unraid servers. Arkive discovers your Docker containers, dumps databases (PostgreSQL, MariaDB, MongoDB, SQLite, Redis, InfluxDB), backs up flash config, and syncs everything to cloud storage via restic — all on autopilot.
+    Open-source backup and disaster recovery for Unraid servers. Arkive discovers Docker containers, captures application-aware database dumps, backs up flash config, and stores encrypted snapshots in local or remote storage.
 
     Features:
     - Zero-config container discovery with 50+ app profiles
@@ -18,16 +18,14 @@
     - Multi-target cloud sync (B2, S3, SFTP, local)
     - One-click restore plan PDF
     - Discord/Slack/ntfy notifications
-    - Beautiful dark-mode dashboard
+    - Web UI and API for setup, monitoring, backup, and restore
   </Overview>
   <Category>Backup: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8200]</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/islamdiaa/arkive/main/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/islamdiaa/arkive/main/docs/icon.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/islamdiaa/Arkive/main/frontend/static/icons/logo.svg</Icon>
   <ExtraParams>--restart unless-stopped --user 0:0</ExtraParams>
   <PostArgs/>
-  <DonateText>Support Arkive development</DonateText>
-  <DonateLink>https://arkive.dev</DonateLink>
   <Requires>Docker socket access and root runtime for full Unraid flash/SQLite coverage</Requires>
   <Config Name="Web UI Port" Target="8200" Default="8200" Mode="tcp" Description="Arkive web interface port" Type="Port" Display="always" Required="true" Mask="false"/>
   <Config Name="Config Directory" Target="/config" Default="/mnt/user/appdata/arkive" Mode="rw" Description="Arkive configuration and database" Type="Path" Display="always" Required="true" Mask="false"/>

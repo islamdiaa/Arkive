@@ -146,7 +146,7 @@ def _require_setup(db_path: Path) -> None:
         sys.exit(EXIT_CONFIG_ERROR)
 
 
-def _check_api_connection(base_url: str = "http://localhost:7474") -> bool:
+def _check_api_connection(base_url: str = "http://localhost:8200") -> bool:
     """Return True if the Arkive API server is reachable.
 
     On failure, prints an error and exits with code 5 (EXIT_CONNECTION_REFUSED).
