@@ -33,7 +33,7 @@ click==8.1.8
 
 # PDF generation (restore plan)
 weasyprint==62.3
-pydyf==0.11.0  # pinned: 0.12.x breaks weasyprint 62.x stream.transform()
+pydyf==0.12.1  # pinned: 0.12.x breaks weasyprint 62.x stream.transform()
 jinja2==3.1.5
 
 # Utilities
