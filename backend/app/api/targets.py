@@ -79,6 +79,14 @@ def _sanitize_name(name: str) -> str:
     return re.sub(r"<[^>]+>", "", name).strip()
 
 
+def _normalize_config(config: dict | None) -> dict:
+    """Normalize provider config before validation and persistence."""
+    normalized: dict = {}
+    for key, value in (config or {}).items():
+        normalized[key] = value.strip() if isinstance(value, str) else value
+    return normalized
+
+
 def _validate_local_path(config: dict) -> list[str]:
     """Validate that a local target path is absolute and safe."""
     errors: list[str] = []
@@ -210,6 +218,7 @@ async def create_target(
     event_bus=Depends(get_event_bus),
 ):
     """Create a new storage target."""
+    body.config = _normalize_config(body.config)
     if body.type not in VALID_TYPES:
         raise HTTPException(
             status_code=422,
@@ -299,6 +308,8 @@ async def update_target(
 ):
     """Update a storage target."""
     _validate_target_id(target_id)
+    if body.config is not None:
+        body.config = _normalize_config(body.config)
     cursor = await db.execute("SELECT * FROM storage_targets WHERE id = ?", (target_id,))
     row = await cursor.fetchone()
     if not row:
@@ -827,4 +838,3 @@ async def oauth_complete(
         "has_refresh_token": bool(tokens.get("refresh_token")),
         "needs_reauth": needs_reauth,
     }
-

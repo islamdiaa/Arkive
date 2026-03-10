@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.activity import log_activity
+from app.services.discovery_persistence import persist_discovery_results
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 
@@ -170,23 +171,7 @@ class ArkiveScheduler:
 
             # Persist results to discovered_containers table
             async with aiosqlite.connect(self.config.db_path) as db:
-                for c in (containers or []):
-                    await db.execute(
-                        """INSERT OR REPLACE INTO discovered_containers
-                           (name, image, status, ports, mounts, databases, profile, priority, compose_project, last_scanned)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))""",
-                        (
-                            c.name,
-                            c.image,
-                            c.status,
-                            json.dumps(c.ports),
-                            json.dumps([m if isinstance(m, dict) else m for m in (c.mounts or [])]),
-                            json.dumps([d.model_dump() if hasattr(d, "model_dump") else d for d in (c.databases or [])]),
-                            c.profile,
-                            c.priority,
-                            c.compose_project,
-                        ),
-                    )
+                await persist_discovery_results(db, containers or [])
                 await db.commit()
                 await log_activity(
                     db, "system", "discovery_scan",

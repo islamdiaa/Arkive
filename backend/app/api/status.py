@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import shutil
-import socket
 import time
 import sqlite3
 
@@ -13,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app import __version__
 from app.core.dependencies import get_db
+from app.services.host_identity import resolve_hostname
 
 logger = logging.getLogger("arkive.status")
 
@@ -252,6 +252,7 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     else:
         runtime_platform_value = getattr(runtime_platform, "value", "linux")
     platform = (await _fetch_setting(db, "platform")) or runtime_platform_value
+    server_name = await _fetch_setting(db, "server_name")
 
     # Last backup
     try:
@@ -310,7 +311,7 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         "status": overall_status,
         "health": _health_alias(overall_status),
         "version": __version__,
-        "hostname": socket.gethostname(),
+        "hostname": resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
         "uptime_seconds": int(time.time() - _start_time),
         "platform": platform,
         "setup_completed": setup_completed,

@@ -1,13 +1,13 @@
 """Container discovery API routes."""
 
 import json
-import socket
 from datetime import datetime, timezone
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.dependencies import get_db, get_discovery, require_auth
+from app.services.discovery_persistence import persist_discovery_results
 
 router = APIRouter(prefix="/discover", tags=["discover"], dependencies=[Depends(require_auth)])
 
@@ -25,37 +25,17 @@ async def run_scan(
     containers = await discovery.scan()
     duration = round(time.monotonic() - start, 2)
 
-    # Save to DB
     all_databases = []
     running = 0
     stopped = 0
-    current_names = {c.name for c in containers}
     for c in containers:
         if c.status == "running":
             running += 1
         else:
             stopped += 1
 
-        dbs_json = json.dumps([d.model_dump() for d in c.databases])
         all_databases.extend(c.databases)
-
-        await db.execute(
-            """INSERT OR REPLACE INTO discovered_containers
-            (name, image, status, ports, mounts, databases, profile, priority, compose_project, last_scanned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (c.name, c.image, c.status, json.dumps(c.ports),
-             json.dumps(c.mounts), dbs_json, c.profile, c.priority,
-             c.compose_project, datetime.now(timezone.utc).isoformat()),
-        )
-
-    if current_names:
-        placeholders = ",".join("?" for _ in current_names)  # nosec B608
-        await db.execute(
-            f"DELETE FROM discovered_containers WHERE name NOT IN ({placeholders})",  # nosec B608
-            tuple(current_names),
-        )
-    else:
-        await db.execute("DELETE FROM discovered_containers")
+    await persist_discovery_results(db, containers)
     await db.commit()
 
     return {

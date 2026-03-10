@@ -70,6 +70,27 @@ async def test_create_b2_target_with_valid_config(client):
     assert resp.json()["type"] == "b2"
 
 
+async def test_create_b2_target_trims_whitespace_from_bucket_config(client):
+    """Bucket and credential fields should be normalized before persistence."""
+    api_key = await setup_auth(client)
+    resp = await client.post("/api/targets", json={
+        "name": "B2 Trim",
+        "type": "b2",
+        "config": {
+            "key_id": "  abc  ",
+            "app_key": "  def  ",
+            "bucket": "  Arkive-backup  ",
+        },
+    }, headers=auth_headers(api_key))
+
+    assert resp.status_code == 201, resp.text
+    target_id = resp.json()["id"]
+
+    get_resp = await client.get(f"/api/targets/{target_id}", headers=auth_headers(api_key))
+    assert get_resp.status_code == 200
+    assert get_resp.json()["config"]["bucket"] == "Arkive-backup"
+
+
 async def test_create_target_validates_required_fields_b2(client):
     api_key = await setup_auth(client)
     resp = await client.post("/api/targets", json={

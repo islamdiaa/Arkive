@@ -20,6 +20,7 @@ from app.services.backup_engine import BackupEngine
 from app.services.cloud_manager import CloudManager
 from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
+from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
 from app.services.notifier import Notifier
 
@@ -419,6 +420,9 @@ class BackupOrchestrator:
                 containers = await self.discovery.scan()
                 for c in containers:
                     all_databases.extend(c.databases)
+                async with aiosqlite.connect(self.config.db_path) as db:
+                    await persist_discovery_results(db, containers)
+                    await db.commit()
             else:
                 logger.info("Docker not available — skipping container discovery")
 
