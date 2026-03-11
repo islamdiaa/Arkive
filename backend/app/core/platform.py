@@ -2,6 +2,7 @@
 
 import os
 from enum import Enum
+from pathlib import Path
 
 
 class Platform(Enum):
@@ -10,8 +11,19 @@ class Platform(Enum):
     UNKNOWN = "unknown"
 
 
+def _looks_like_unraid_flash(boot_config_path: Path) -> bool:
+    """Heuristically identify an Unraid flash mount exposed into the container."""
+    config_dir = boot_config_path / "config"
+    if not config_dir.is_dir():
+        return False
+    return any((config_dir / marker).exists() for marker in ("super.dat", "go", "plugins"))
+
+
 def detect_platform() -> Platform:
     if os.path.exists("/etc/unraid-version"):
+        return Platform.UNRAID
+    boot_config_path = Path(os.environ.get("ARKIVE_BOOT_CONFIG_PATH", "/boot-config"))
+    if _looks_like_unraid_flash(boot_config_path):
         return Platform.UNRAID
     if os.path.exists("/etc/os-release"):
         return Platform.LINUX
