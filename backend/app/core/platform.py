@@ -13,10 +13,17 @@ class Platform(Enum):
 
 def _looks_like_unraid_flash(boot_config_path: Path) -> bool:
     """Heuristically identify an Unraid flash mount exposed into the container."""
+    candidate_dirs = []
+    if boot_config_path.is_dir():
+        candidate_dirs.append(boot_config_path)
     config_dir = boot_config_path / "config"
-    if not config_dir.is_dir():
-        return False
-    return any((config_dir / marker).exists() for marker in ("super.dat", "go", "plugins"))
+    if config_dir.is_dir():
+        candidate_dirs.append(config_dir)
+    return any(
+        (candidate_dir / marker).exists()
+        for candidate_dir in candidate_dirs
+        for marker in ("super.dat", "go", "plugins")
+    )
 
 
 def detect_platform() -> Platform:
