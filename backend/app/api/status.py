@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app import __version__
 from app.core.dependencies import get_db
+from app.services.backup_coverage import evaluate_backup_coverage
 from app.services.host_identity import resolve_hostname
 
 logger = logging.getLogger("arkive.status")
@@ -307,6 +308,15 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_bytes = 0
 
+    user_shares_path = str(getattr(
+        getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
+    ))
+    coverage = await evaluate_backup_coverage(
+        db,
+        platform=platform,
+        user_shares_path=user_shares_path,
+    )
+
     return {
         "status": overall_status,
         "health": _health_alias(overall_status),
@@ -321,4 +331,5 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         "targets": {"total": total_targets, "healthy": healthy_targets},
         "databases": {"total": total_databases, "healthy": healthy_databases},
         "storage": {"total_bytes": total_bytes},
+        "coverage": coverage,
     }

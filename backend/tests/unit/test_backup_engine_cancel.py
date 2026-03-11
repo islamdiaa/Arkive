@@ -17,6 +17,7 @@ async def test_backup_returns_cancelled_when_subprocess_is_cancelled(monkeypatch
     engine = BackupEngine(config)
     engine._get_password = AsyncMock(return_value="secret")
     engine._get_bandwidth_limit = AsyncMock(return_value="")
+    engine._get_server_name = AsyncMock(return_value="tower")
 
     async def fake_run_command(*args, **kwargs):
         return CommandResult(

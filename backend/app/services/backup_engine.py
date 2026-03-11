@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_value
+from app.services.host_identity import resolve_hostname
 from app.services.repo_paths import build_repo_path
 from app.utils.subprocess_runner import run_command
 
@@ -80,8 +81,9 @@ def _snapshot_size_bytes(snapshot: dict[str, Any]) -> int:
 class BackupEngine:
     """Wraps restic binary for backup operations."""
 
-    def __init__(self, config: ArkiveConfig):
+    def __init__(self, config: ArkiveConfig, docker_client=None):
         self.config = config
+        self.docker_client = docker_client
 
     def _get_restic_env(self, password: str) -> dict[str, str]:
         """Get environment with restic password."""
@@ -132,6 +134,20 @@ class BackupEngine:
             pass  # Table missing or DB error — no throttle
         return ""
 
+    async def _get_server_name(self) -> str:
+        """Read optional server_name from settings."""
+        import aiosqlite
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    "SELECT value FROM settings WHERE key = 'server_name'"
+                )
+                result = await cursor.fetchone()
+                return str(result["value"]).strip() if result and result["value"] else ""
+        except Exception:
+            return ""
+
     async def init_repo(self, target: dict) -> bool:
         """Initialize restic repository. Idempotent."""
         password = await self._get_password()
@@ -169,7 +185,8 @@ class BackupEngine:
     async def backup(self, target: dict, paths: list[str],
                      excludes: list[str] | None = None,
                      tags: list[str] | None = None,
-                     cancel_check=None) -> dict[str, Any]:
+                     cancel_check=None,
+                     hostname: str | None = None) -> dict[str, Any]:
         """Run restic backup. Returns snapshot info."""
         password = await self._get_password()
         if not password:
@@ -182,6 +199,14 @@ class BackupEngine:
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
         cmd = ["restic", "backup", "-r", repo, "--json"]
+        resolved_host = (hostname or "").strip()
+        if not resolved_host:
+            resolved_host = resolve_hostname(
+                settings={"server_name": await self._get_server_name()},
+                docker_client=self.docker_client,
+            )
+        if resolved_host:
+            cmd.extend(["--host", resolved_host])
         if tags:
             for tag in tags:
                 cmd.extend(["--tag", tag])

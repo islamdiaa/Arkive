@@ -331,6 +331,7 @@ class TestBackupEngineRetry:
 
         # Mock password retrieval
         engine._get_password = AsyncMock(return_value="testpass")
+        engine._get_server_name = AsyncMock(return_value="tower")
 
         # First call: transient failure. Second call: success.
         call_count = 0
@@ -376,6 +377,7 @@ class TestBackupEngineRetry:
         engine = BackupEngine(config)
 
         engine._get_password = AsyncMock(return_value="testpass")
+        engine._get_server_name = AsyncMock(return_value="tower")
 
         call_count = 0
 

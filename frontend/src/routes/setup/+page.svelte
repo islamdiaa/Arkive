@@ -64,6 +64,8 @@
 	// Step 5: Directories
 	let directories: string[] = [];
 	let newDir = '';
+	let directoryScanPlatform = '';
+	let setupCoverageHint = '';
 
 	const providers: { value: StorageProvider; label: string; desc: string; icon: string }[] = [
 		{ value: 'b2', label: 'Backblaze B2', desc: 'S3-compatible object storage. Great value.', icon: '🔵' },
@@ -116,6 +118,18 @@
 				}
 			}
 		}
+
+		api.scanDirectories().then((scan: any) => {
+			directoryScanPlatform = scan?.platform || '';
+			if (directories.length > 0) return;
+			const appdata = (scan?.directories || []).find((entry: any) => entry.path === '/mnt/user/appdata');
+			if (scan?.platform === 'unraid' && appdata) {
+				directories = [appdata.path];
+				setupCoverageHint = 'Arkive preselected /mnt/user/appdata so Unraid app configuration is protected by default.';
+			}
+		}).catch(() => {
+			// Non-fatal. Setup can continue without directory suggestions.
+		});
 
 		hydrated = true;
 	});
@@ -506,6 +520,15 @@
 				<!-- Step 5: Directories -->
 				<h2 class="text-lg font-semibold text-text mb-2">Directories to Watch</h2>
 				<p class="text-sm text-text-secondary mb-6">Add directories to include in backups. Arkive will also auto-discover container volumes.</p>
+				{#if setupCoverageHint}
+					<div class="mb-4 rounded-lg border border-success/30 bg-success/10 px-4 py-3 text-sm text-text-secondary">
+						{setupCoverageHint}
+					</div>
+				{:else if directoryScanPlatform === 'unraid'}
+					<div class="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-text-secondary">
+						For full Unraid recovery, include <span class="font-mono text-text">/mnt/user/appdata</span>. Database dumps and flash backup alone are not enough for an identical server rebuild.
+					</div>
+				{/if}
 				<div class="flex gap-2 mb-4">
 					<label for="new-dir" class="sr-only">Directory path</label>
 					<input id="new-dir" type="text" bind:value={newDir} class="input" placeholder="/mnt/user/appdata" on:keydown={(e) => e.key === 'Enter' && addDir()} />

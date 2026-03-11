@@ -3,6 +3,7 @@
 
 	export let hostname: string = '';
 	export let systemStatus: string = 'unknown';
+	export let coverageWarnings: string[] = [];
 	export let onBackup: (() => void) | undefined = undefined;
 	export let backupDisabled: boolean = false;
 
@@ -51,3 +52,13 @@
 		{/if}
 	</div>
 </div>
+
+{#if coverageWarnings.length > 0}
+	<div class="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
+		<p class="text-sm font-medium text-warning">Backup coverage needs attention</p>
+		<p class="mt-1 text-xs text-text-secondary">{coverageWarnings[0]}</p>
+		{#if coverageWarnings.length > 1}
+			<p class="mt-1 text-xs text-text-muted">+ {coverageWarnings.length - 1} more coverage warning{coverageWarnings.length > 2 ? 's' : ''}</p>
+		{/if}
+	</div>
+{/if}

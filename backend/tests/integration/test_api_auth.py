@@ -209,6 +209,30 @@ async def test_setup_persists_directories_as_watched_directories(client, tmp_pat
     assert directories[0]["enabled"] is True
 
 
+async def test_setup_defaults_unraid_appdata_when_no_directories_selected(client):
+    """Unraid setup should seed /mnt/user/appdata as a watched directory by default."""
+    from pathlib import Path
+    from unittest.mock import patch
+
+    appdata_path = Path("/mnt/user/appdata")
+    original_is_dir = Path.is_dir
+
+    def fake_is_dir(path_obj):
+        if path_obj == appdata_path:
+            return True
+        return original_is_dir(path_obj)
+
+    client._transport.app.state.platform = "unraid"
+    with patch.object(Path, "is_dir", fake_is_dir):
+        data = await do_setup(client)
+    api_key = data["api_key"]
+
+    resp = await client.get("/api/directories", headers=auth_headers(api_key))
+    assert resp.status_code == 200
+    directories = resp.json()["directories"]
+    assert any(entry["path"] == "/mnt/user/appdata" for entry in directories)
+
+
 # -- GET /api/auth/session ---------------------------------------------------
 
 

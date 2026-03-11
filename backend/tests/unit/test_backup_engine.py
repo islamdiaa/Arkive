@@ -120,3 +120,44 @@ class TestBackupEngine:
 
         snapshots = await engine.snapshots({"type": "local", "config": {"path": "/data"}})
         assert snapshots[0]["size"] == 12345
+
+    @pytest.mark.asyncio
+    async def test_backup_uses_resolved_host_for_snapshot_metadata(self, monkeypatch):
+        """Backups should pass the resolved host name to restic."""
+        from app.services.backup_engine import BackupEngine
+
+        config = MagicMock()
+        config.db_path = "/tmp/ignored.db"
+        config.rclone_config = "/tmp/rclone.conf"
+
+        engine = BackupEngine(config)
+        engine._get_password = AsyncMock(return_value="secret")
+        engine._get_bandwidth_limit = AsyncMock(return_value="")
+        engine._get_server_name = AsyncMock(return_value="AdamTower")
+
+        captured_cmd = []
+
+        async def fake_run_command(cmd, **kwargs):
+            captured_cmd[:] = cmd
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = json.dumps({
+                "message_type": "summary",
+                "snapshot_id": "abc123",
+                "total_bytes_processed": 42,
+                "files_new": 1,
+                "files_changed": 0,
+            })
+            result.stderr = ""
+            return result
+
+        monkeypatch.setattr("app.services.backup_engine.run_command", fake_run_command)
+
+        result = await engine.backup(
+            {"id": "target1", "name": "Local", "type": "local", "config": {"path": "/data"}},
+            ["/config/dumps"],
+        )
+
+        assert result["status"] == "success"
+        assert "--host" in captured_cmd
+        assert captured_cmd[captured_cmd.index("--host") + 1] == "AdamTower"

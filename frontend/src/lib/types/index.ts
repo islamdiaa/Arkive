@@ -143,6 +143,17 @@ export interface SystemStatus {
   databases_discovered: number;
 }
 
+export interface BackupCoverage {
+  readiness: 'migration_ready' | 'partial' | 'minimal';
+  migration_ready: boolean;
+  appdata_protected: boolean;
+  flash_protected: boolean;
+  watched_directories: number;
+  protected_directories: string[];
+  recommended_directories: string[];
+  warnings: string[];
+}
+
 // ── Storage ──
 export interface StorageInfo {
   total_bytes: number;

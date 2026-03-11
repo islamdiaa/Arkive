@@ -9,7 +9,12 @@ from typing import Any
 logger = logging.getLogger("arkive.host_identity")
 
 
-def resolve_hostname(*, app: Any | None = None, settings: dict[str, str] | None = None) -> str:
+def resolve_hostname(
+    *,
+    app: Any | None = None,
+    settings: dict[str, str] | None = None,
+    docker_client: Any | None = None,
+) -> str:
     """Resolve the best available server hostname.
 
     Preference order:
@@ -21,11 +26,18 @@ def resolve_hostname(*, app: Any | None = None, settings: dict[str, str] | None 
     if configured_name:
         return configured_name
 
-    discovery = getattr(getattr(app, "state", None), "discovery", None)
-    docker_client = getattr(discovery, "docker", None)
-    if docker_client is not None:
+    resolved_docker_client = docker_client
+    if resolved_docker_client is None:
+        discovery = getattr(getattr(app, "state", None), "discovery", None)
+        resolved_docker_client = getattr(discovery, "docker", None)
+
+    if resolved_docker_client is None:
+        direct_client = getattr(getattr(app, "state", None), "docker_client", None)
+        resolved_docker_client = direct_client
+
+    if resolved_docker_client is not None:
         try:
-            info = docker_client.info()
+            info = resolved_docker_client.info()
             daemon_name = str(info.get("Name", "") or "").strip()
             if daemon_name:
                 return daemon_name

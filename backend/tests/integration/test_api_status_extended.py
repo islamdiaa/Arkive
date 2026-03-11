@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
+from tests.conftest import do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -100,3 +101,43 @@ async def test_status_platform_falls_back_to_live_runtime_when_setting_missing(c
     assert resp.status_code == 200
     expected_platform = app.state.platform if isinstance(app.state.platform, str) else app.state.platform.value
     assert resp.json()["platform"] == expected_platform
+
+
+async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_covered(client):
+    """Coverage should become migration-ready when Unraid appdata and flash are protected."""
+    import aiosqlite
+
+    await do_setup(client, directories=["/mnt/user/appdata"])
+    transport = client._transport
+    app = transport.app
+    app.state.platform = "unraid"
+
+    async with aiosqlite.connect(app.state.config.db_path) as db:
+        await db.execute(
+            """INSERT INTO backup_jobs
+               (id, name, type, schedule, enabled, targets, directories, exclude_patterns,
+                include_databases, include_flash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "flash-job", "Flash Backup", "flash", "0 0 * * *", 1, "[]", "[]", "[]",
+                0, 1, "2026-03-08T00:00:00Z", "2026-03-08T00:00:00Z",
+            ),
+        )
+        await db.execute(
+            """INSERT INTO job_runs
+               (id, job_id, status, trigger, started_at, completed_at, flash_backed_up, flash_size_bytes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "flash-run", "flash-job", "success", "manual",
+                "2026-03-08T00:00:00Z", "2026-03-08T00:02:00Z", 1, 1234,
+            ),
+        )
+        await db.commit()
+
+    resp = await client.get("/api/status")
+    assert resp.status_code == 200
+    coverage = resp.json()["coverage"]
+    assert coverage["appdata_protected"] is True
+    assert coverage["flash_protected"] is True
+    assert coverage["migration_ready"] is True
+    assert coverage["warnings"] == []

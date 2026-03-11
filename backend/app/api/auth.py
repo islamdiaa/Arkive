@@ -34,6 +34,7 @@ from app.core.security import (
     verify_api_key,
     verify_browser_session,
 )
+from app.core.platform import Platform
 from app.models.settings import SetupCompleteRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -77,6 +78,20 @@ def _check_setup_rate_limit(request: Request) -> None:
         del _setup_attempts[oldest_ip]
 
     _setup_attempts[client_ip].append(now)
+
+
+def _default_setup_directories(request: Request) -> list[tuple[str, str]]:
+    """Return first-boot default watched directories for the current platform."""
+    platform = getattr(getattr(request.app, "state", None), "platform", None)
+    platform_value = platform.value if hasattr(platform, "value") else str(platform or "")
+    if platform_value != Platform.UNRAID.value:
+        return []
+
+    defaults: list[tuple[str, str]] = []
+    appdata_path = Path("/mnt/user/appdata")
+    if appdata_path.is_dir():
+        defaults.append((str(appdata_path), "Appdata"))
+    return defaults
 
 
 def _set_browser_session(response: Response, request: Request, api_key_hash: str) -> None:
@@ -195,12 +210,17 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
                 )
                 target_ids.append(target_id)
 
-    if not directory_ids and body.directories:
-        for index, directory in enumerate(body.directories, start=1):
+    candidate_directories = list(body.directories or [])
+    if not directory_ids and not candidate_directories:
+        candidate_directories = [path for path, _label in _default_setup_directories(request)]
+
+    if not directory_ids and candidate_directories:
+        default_labels = {path: label for path, label in _default_setup_directories(request)}
+        for index, directory in enumerate(candidate_directories, start=1):
             path = Path(directory)
             if not path.is_absolute():
                 continue
-            label = path.name or f"Directory {index}"
+            label = default_labels.get(str(path)) or path.name or f"Directory {index}"
             dir_id = str(uuid.uuid4())[:8]
             await db.execute(
                 """INSERT INTO watched_directories
@@ -219,7 +239,7 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
     for job_id, name, job_type, schedule in jobs:
         # Cloud Sync gets target_ids, all jobs get directory_ids
         job_targets = target_ids if job_type == "full" else []
-        job_dirs = directory_ids if directory_ids else body.directories
+        job_dirs = directory_ids if directory_ids else candidate_directories
         await db.execute(
             """INSERT INTO backup_jobs (id, name, type, schedule, targets, directories)
             VALUES (?, ?, ?, ?, ?, ?)""",

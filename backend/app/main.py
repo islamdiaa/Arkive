@@ -170,7 +170,7 @@ async def lifespan(app: FastAPI):
     discovery = DiscoveryEngine(docker_client, config) if docker_client else None
     db_dumper = DBDumper(docker_client, config) if docker_client else None
     flash_backup = FlashBackup(config, platform)
-    backup_engine = BackupEngine(config)
+    backup_engine = BackupEngine(config, docker_client=docker_client)
     cloud_manager = CloudManager(config)
     notifier = Notifier(config, event_bus)
     restore_plan = RestorePlanGenerator(config)

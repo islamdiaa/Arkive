@@ -167,10 +167,13 @@ class TestBackupEngineBandwidthLimit:
         target = {"id": "t1", "name": "local", "type": "local", "config": {"path": "/data"}}
 
         with patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")), \
+             patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")), \
              patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="1024")), \
              patch("app.services.backup_engine.run_command", side_effect=fake_run_command):
             await engine.backup(target, ["/config"])
 
+        assert "--host" in captured_cmd
+        assert captured_cmd[captured_cmd.index("--host") + 1] == "tower"
         assert "--limit-upload" in captured_cmd
         idx = captured_cmd.index("--limit-upload")
         assert captured_cmd[idx + 1] == "1024"
@@ -193,10 +196,13 @@ class TestBackupEngineBandwidthLimit:
         target = {"id": "t1", "name": "local", "type": "local", "config": {"path": "/data"}}
 
         with patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")), \
+             patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")), \
              patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="")), \
              patch("app.services.backup_engine.run_command", side_effect=fake_run_command):
             await engine.backup(target, ["/config"])
 
+        assert "--host" in captured_cmd
+        assert captured_cmd[captured_cmd.index("--host") + 1] == "tower"
         assert "--limit-upload" not in captured_cmd
 
     @pytest.mark.asyncio

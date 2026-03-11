@@ -69,6 +69,8 @@ async def test_status_databases_section(misc_status_client):
     assert "total" in data["targets"]
     assert "storage" in data
     assert "total_bytes" in data["storage"]
+    assert "coverage" in data
+    assert "warnings" in data["coverage"]
 
 
 async def test_status_reports_database_health_from_latest_dump_run(client):
@@ -193,6 +195,18 @@ async def test_status_includes_platform(misc_status_client):
     data = resp.json()
     assert "platform" in data
     assert data["platform"] in ("unraid", "linux", "unknown")
+
+
+async def test_status_warns_when_no_watched_directories(client):
+    """Coverage should warn when no filesystem paths are protected."""
+    await do_setup(client)
+
+    resp = await client.get("/api/status")
+    assert resp.status_code == 200
+    coverage = resp.json()["coverage"]
+    assert coverage["watched_directories"] == 0
+    assert coverage["migration_ready"] is False
+    assert any("No watched directories" in warning for warning in coverage["warnings"])
 
 
 async def test_status_includes_uptime(misc_status_client):

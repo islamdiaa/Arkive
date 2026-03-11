@@ -94,6 +94,7 @@
 
 	$: hostname = data?.status?.hostname ?? '';
 	$: resolvedStatus = data?.status?.health ?? 'unknown';
+	$: coverageWarnings = data?.status?.coverage?.warnings ?? [];
 	$: lastBackupValue = getLastBackupTime(data?.status)
 		? timeAgo(getLastBackupTime(data?.status) ?? '')
 		: 'Never';
@@ -116,6 +117,7 @@
 		<CommandStrip
 			{hostname}
 			systemStatus={resolvedStatus}
+			{coverageWarnings}
 			onBackup={handleBackup}
 			backupDisabled={$backupRunning}
 		/>
@@ -162,6 +164,51 @@
 				<p class="text-xs text-text-secondary mt-1">{data.status?.total_snapshots || 0} snapshots across {getTargetsConfigured(data.status)} targets</p>
 			</StatCard>
 		</div>
+
+		{#if data.status?.coverage}
+			<div class="rounded-lg border border-border bg-bg-surface p-5">
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<h3 class="font-semibold text-text">Recovery Coverage</h3>
+						<p class="mt-1 text-sm text-text-secondary">
+							{data.status.coverage.migration_ready
+								? 'This server is covering the essentials for migration and recovery.'
+								: 'Arkive is operational, but your current backup scope does not yet cover a full server migration.'}
+						</p>
+					</div>
+					<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium {data.status.coverage.migration_ready ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}">
+						{data.status.coverage.migration_ready ? 'Migration Ready' : 'Partial Coverage'}
+					</span>
+				</div>
+				<div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+					<div class="rounded-lg border border-border-muted bg-bg-elevated/50 p-3">
+						<div class="text-xs uppercase tracking-wide text-text-muted">Watched Directories</div>
+						<div class="mt-1 text-lg font-semibold text-text">{data.status.coverage.watched_directories}</div>
+					</div>
+					<div class="rounded-lg border border-border-muted bg-bg-elevated/50 p-3">
+						<div class="text-xs uppercase tracking-wide text-text-muted">Appdata</div>
+						<div class="mt-1 text-lg font-semibold {data.status.coverage.appdata_protected ? 'text-success' : 'text-warning'}">
+							{data.status.coverage.appdata_protected ? 'Protected' : 'Missing'}
+						</div>
+					</div>
+					<div class="rounded-lg border border-border-muted bg-bg-elevated/50 p-3">
+						<div class="text-xs uppercase tracking-wide text-text-muted">Flash Backup</div>
+						<div class="mt-1 text-lg font-semibold {data.status.coverage.flash_protected ? 'text-success' : 'text-warning'}">
+							{data.status.coverage.flash_protected ? 'Protected' : 'Missing'}
+						</div>
+					</div>
+				</div>
+				{#if data.status.coverage.warnings?.length}
+					<div class="mt-4 space-y-2">
+						{#each data.status.coverage.warnings as warning}
+							<div class="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-text-secondary">
+								{warning}
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Backup Progress -->
 		<BackupProgressPanel />
