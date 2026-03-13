@@ -133,7 +133,7 @@ class TestBackupEngine:
         engine = BackupEngine(config)
         engine._get_password = AsyncMock(return_value="secret")
         engine._get_bandwidth_limit = AsyncMock(return_value="")
-        engine._get_server_name = AsyncMock(return_value="AdamTower")
+        engine._get_server_name = AsyncMock(return_value="test-server")
 
         captured_cmd = []
 
@@ -160,4 +160,4 @@ class TestBackupEngine:
 
         assert result["status"] == "success"
         assert "--host" in captured_cmd
-        assert captured_cmd[captured_cmd.index("--host") + 1] == "AdamTower"
+        assert captured_cmd[captured_cmd.index("--host") + 1] == "test-server"

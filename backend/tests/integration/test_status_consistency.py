@@ -131,10 +131,10 @@ async def test_status_prefers_configured_or_host_hostname(client):
 
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_name', 'AdamTower')"
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_name', 'test-server')"
         )
         await db.commit()
 
     status = await client.get("/api/status")
     assert status.status_code == 200
-    assert status.json()["hostname"] == "AdamTower"
+    assert status.json()["hostname"] == "test-server"
