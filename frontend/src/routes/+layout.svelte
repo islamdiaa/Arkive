@@ -18,6 +18,10 @@
 
 	onMount(() => {
 		initTheme();
+		// Default sidebar closed on mobile
+		if (window.innerWidth < 1024) {
+			sidebarOpen.set(false);
+		}
 		api.getSession().then(async (session) => {
 			applySession(session);
 			if (session.setup_required) {
@@ -77,7 +81,7 @@
 {:else}
 	<div class="min-h-screen bg-page">
 		<Sidebar />
-		<div class={cn('transition-all duration-300', $sidebarOpen ? 'ml-64' : '')}>
+		<div class={cn('transition-all duration-300', $sidebarOpen ? 'lg:ml-64' : '')}>
 			<ConnectionBanner />
 			{#key $page.url.pathname}
 				<div

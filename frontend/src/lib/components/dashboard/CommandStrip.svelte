@@ -54,11 +54,14 @@
 </div>
 
 {#if coverageWarnings.length > 0}
-	<div class="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
-		<p class="text-sm font-medium text-warning">Backup coverage needs attention</p>
+	<a href="/settings/directories" class="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 block hover:bg-warning/15 transition-colors group">
+		<div class="flex items-center justify-between">
+			<p class="text-sm font-medium text-warning">Backup coverage needs attention</p>
+			<span class="text-xs text-warning/70 group-hover:text-warning transition-colors">Settings &rarr;</span>
+		</div>
 		<p class="mt-1 text-xs text-text-secondary">{coverageWarnings[0]}</p>
 		{#if coverageWarnings.length > 1}
 			<p class="mt-1 text-xs text-text-muted">+ {coverageWarnings.length - 1} more coverage warning{coverageWarnings.length > 2 ? 's' : ''}</p>
 		{/if}
-	</div>
+	</a>
 {/if}

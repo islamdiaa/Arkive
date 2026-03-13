@@ -62,7 +62,26 @@
 		if (href === '/') return currentPath === '/';
 		return currentPath === href || currentPath.startsWith(href + '/');
 	}
+
+	// Close sidebar on mobile when navigating
+	$: if (currentPath && isMobile()) {
+		sidebarOpen.set(false);
+	}
+
+	function isMobile(): boolean {
+		return typeof window !== 'undefined' && window.innerWidth < 1024;
+	}
 </script>
+
+<!-- Mobile backdrop -->
+{#if $sidebarOpen}
+	<button
+		class="fixed inset-0 z-30 bg-black/50 lg:hidden"
+		on:click={() => sidebarOpen.set(false)}
+		aria-label="Close sidebar"
+		tabindex="-1"
+	></button>
+{/if}
 
 <aside class={cn(
 	'fixed left-0 top-0 z-40 h-screen transition-transform duration-300',
