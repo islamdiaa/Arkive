@@ -113,6 +113,12 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
     app.state.platform = "unraid"
 
     async with aiosqlite.connect(app.state.config.db_path) as db:
+        # Coverage now requires a successful backup after the watched directory
+        # configuration exists, so pin the directory timestamp before the fake run.
+        await db.execute(
+            "UPDATE watched_directories SET created_at = ? WHERE path = ?",
+            ("2026-03-08T00:00:00Z", "/mnt/user/appdata"),
+        )
         await db.execute(
             """INSERT INTO backup_jobs
                (id, name, type, schedule, enabled, targets, directories, exclude_patterns,
