@@ -15,7 +15,7 @@ apscheduler==3.10.4
 croniter==3.0.3
 
 # Notifications (90+ services)
-apprise==1.9.1
+apprise==1.9.8
 
 # HTTP client
 httpx==0.28.1
