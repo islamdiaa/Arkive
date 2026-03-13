@@ -67,7 +67,7 @@ Arkive is designed to run as a long-lived container on your Unraid server or ano
 ```yaml
 services:
   arkive:
-    image: ghcr.io/kemetlabs/arkive:latest
+    image: ghcr.io/islamdiaa/arkive:latest
     container_name: arkive
     # On Unraid, run as root for flash backup and app-owned SQLite host reads.
     user: "0:0"
@@ -100,7 +100,7 @@ docker run -d \
   -v /mnt/user/appdata/arkive:/config \
   -v /mnt/user/appdata:/mnt/user/appdata:ro \
   -v /boot/config:/boot-config:ro \
-  ghcr.io/kemetlabs/arkive:latest
+  ghcr.io/islamdiaa/arkive:latest
 ```
 
 ### First Boot

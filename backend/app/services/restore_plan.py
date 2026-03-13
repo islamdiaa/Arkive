@@ -87,7 +87,7 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
   -v /mnt/user/appdata/arkive:/config \\
   -v /var/run/docker.sock:/var/run/docker.sock:ro \\
   -p 8200:8200 \\
-  ghcr.io/kemetlabs/arkive:latest</pre>
+  ghcr.io/islamdiaa/arkive:latest</pre>
 
 <h3>Step 2: Configure storage target</h3>
 <p>Add the same storage target(s) used for backups via the Arkive UI.</p>

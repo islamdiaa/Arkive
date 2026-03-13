@@ -1,6 +1,6 @@
 services:
   arkive:
-    image: kemetlabs/arkive:latest
+    image: islamdiaa/arkive:latest
     container_name: arkive
     restart: unless-stopped
     # Unraid full-coverage mode needs root inside the container to read flash config

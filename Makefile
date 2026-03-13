@@ -16,10 +16,10 @@ lint:
 	cd backend && ruff check app/ && ruff format --check app/
 
 build:
-	docker build -t ghcr.io/kemetlabs/arkive:latest .
+	docker build -t ghcr.io/islamdiaa/arkive:latest .
 
 push: build
-	docker push ghcr.io/kemetlabs/arkive:latest
+	docker push ghcr.io/islamdiaa/arkive:latest
 
 frontend-dev:
 	cd frontend && npm run dev

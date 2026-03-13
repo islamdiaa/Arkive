@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Arkive</Name>
-  <Repository>ghcr.io/kemetlabs/arkive:latest</Repository>
+  <Repository>ghcr.io/islamdiaa/arkive:latest</Repository>
   <Registry>https://github.com/kemetlabs/Arkive/pkgs/container/arkive</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>

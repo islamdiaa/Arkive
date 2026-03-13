@@ -286,7 +286,7 @@ class TestDiscovery:
         """Arkive should not discover its own container and config volume."""
         from app.services.discovery import DiscoveryEngine
 
-        current = _make_container("arkive", ["kemetlabs/arkive:latest"])
+        current = _make_container("arkive", ["islamdiaa/arkive:latest"])
         current.id = "abc123456789"
         other = _make_container("vaultwarden", ["vaultwarden/server:latest"])
         other.id = "def456789012"
