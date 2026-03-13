@@ -308,6 +308,13 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_bytes = 0
 
+    # Snapshot count
+    try:
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM snapshots")
+        total_snapshots = (await cursor.fetchone())["cnt"]
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        total_snapshots = 0
+
     user_shares_path = str(getattr(
         getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
     ))
@@ -331,5 +338,6 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         "targets": {"total": total_targets, "healthy": healthy_targets},
         "databases": {"total": total_databases, "healthy": healthy_databases},
         "storage": {"total_bytes": total_bytes},
+        "total_snapshots": total_snapshots,
         "coverage": coverage,
     }
