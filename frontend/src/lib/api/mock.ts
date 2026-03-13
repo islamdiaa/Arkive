@@ -241,6 +241,7 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean.endsWith('/test')) return { success: true };
   if (clean === '/restore') return { success: true, restore_id: `restore-${Date.now()}` };
   if (clean === '/discover/scan') return DEMO_CONTAINERS;
+  if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: [], platform: 'unraid' };
   if (clean === '/directories') return { ...data, id: `dir-new-${Date.now()}` };
 
   return { success: true };
@@ -314,7 +315,7 @@ export const mockApi = {
   addDirectory: async (data: any) => { await delay(500); return { ...data, id: 'dir-new-' + Date.now() }; },
   updateDirectory: async (_id: string, data: any) => { await delay(); return data; },
   deleteDirectory: async (_id: string) => { await delay(); return { success: true }; },
-  scanDirectories: async () => { await delay(1000); return DEMO_DIRECTORIES; },
+  scanDirectories: async () => { await delay(1000); return { ...DEMO_DIRECTORIES, suggestions: [], platform: 'unraid' }; },
 
   getLogs: async () => { await delay(); return DEMO_LOGS; },
   clearLogs: async () => { await delay(); return { success: true }; },
