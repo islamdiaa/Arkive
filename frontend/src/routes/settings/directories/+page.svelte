@@ -77,6 +77,7 @@
 	async function addDir() {
 		if (addingManual) return;
 		addingManual = true;
+		const addedPath = newPath;
 		try {
 			await api.addDirectory({
 				path: newPath,
@@ -91,7 +92,7 @@
 			directories = result.directories || [];
 			// Remove from suggestions if it was there.
 			if (scanned) {
-				suggestions = suggestions.filter((s: any) => s.path !== newPath);
+				suggestions = suggestions.filter((s: any) => s.path !== addedPath);
 			}
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Failed to add directory' });

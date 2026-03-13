@@ -206,12 +206,13 @@ async def scan_directories(db: aiosqlite.Connection = Depends(get_db)):
     watched_paths = {row["path"] for row in await cursor.fetchall()}
 
     # Well-known paths with curated metadata.
+    # Only include paths that are genuinely worth backing up — do NOT include
+    # media/isos here, as they should go through the normal skip-name and
+    # media-dominated filtering in the dynamic discovery pass.
     known_paths: dict[str, tuple[str, str, list[str]]] = {
         "/mnt/user/appdata": ("Appdata", "critical", ["*.log", "cache/", "thumbs/"]),
         "/mnt/user/system/docker": ("Docker", "recommended", []),
         "/mnt/user/domains": ("VMs", "recommended", []),
-        "/mnt/user/isos": ("ISOs", "optional", []),
-        "/mnt/user/media": ("Media", "optional", ["*.nfo", "*.srt"]),
     }
 
     def _build_scan_results() -> tuple[list[dict], list[dict]]:
