@@ -1,6 +1,5 @@
 """Phase 8: API integration tests for discovery with FakeDockerClient."""
 
-import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,8 +8,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import ArkiveConfig
-from app.core.database import init_db
 from app.services.discovery import DiscoveryEngine
 from tests.fakes.fake_docker import create_fake_docker_client
 
@@ -44,16 +41,19 @@ async def discovery_client(tmp_path):
     test_config.ensure_dirs()
     deps_mod._config = test_config
 
-    from unittest.mock import patch
     from contextlib import asynccontextmanager
+    from unittest.mock import patch
 
     @asynccontextmanager
     async def _noop_lifespan(app):
         yield
 
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig):
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+    ):
         from app.main import create_app
+
         test_app = create_app()
         test_app.router.lifespan_context = _noop_lifespan
 
@@ -131,9 +131,7 @@ class TestDiscoveryAPI:
 
         app = discovery_client._transport.app
         fake_docker = app.state.docker_client
-        fake_docker.containers._containers = {
-            "fake-postgres": fake_docker.containers._containers["fake-postgres"]
-        }
+        fake_docker.containers._containers = {"fake-postgres": fake_docker.containers._containers["fake-postgres"]}
 
         resp = await discovery_client.post("/api/discover/scan")
         assert resp.status_code == 200

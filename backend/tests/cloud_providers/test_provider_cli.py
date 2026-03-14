@@ -3,10 +3,10 @@
 Uses Click's CliRunner with mocked httpx.Client to simulate API responses
 for target listing, backup triggers, and snapshot queries.
 """
+
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 from click.testing import CliRunner
 
 from app.cli import cli
@@ -17,16 +17,18 @@ def _make_targets_response():
     """Build a realistic GET /api/targets response with all providers."""
     targets = []
     for i, (key, spec) in enumerate(ALL_PROVIDERS.items()):
-        targets.append({
-            "id": f"tgt-{key[:4]}",
-            "name": spec["name"],
-            "type": spec["type"],
-            "status": "ok",
-            "enabled": True,
-            "snapshot_count": i + 1,
-            "last_tested": "2026-02-28T10:00:00Z",
-            "config": {"redacted": "***"},
-        })
+        targets.append(
+            {
+                "id": f"tgt-{key[:4]}",
+                "name": spec["name"],
+                "type": spec["type"],
+                "status": "ok",
+                "enabled": True,
+                "snapshot_count": i + 1,
+                "last_tested": "2026-02-28T10:00:00Z",
+                "config": {"redacted": "***"},
+            }
+        )
     return {"items": targets, "targets": targets, "total": len(targets)}
 
 
@@ -59,15 +61,17 @@ def _make_snapshots_response():
     """Build a GET /api/snapshots response with snapshots from multiple targets."""
     snapshots = []
     for key in ALL_PROVIDERS:
-        snapshots.append({
-            "id": f"snap-{key[:4]}",
-            "target_id": f"tgt-{key[:4]}",
-            "target_name": ALL_PROVIDERS[key]["name"],
-            "time": "2026-02-28T03:00:00Z",
-            "hostname": "test-server",
-            "tags": [f"provider:{key}"],
-            "short_id": f"snap{key[:4]}",
-        })
+        snapshots.append(
+            {
+                "id": f"snap-{key[:4]}",
+                "target_id": f"tgt-{key[:4]}",
+                "target_name": ALL_PROVIDERS[key]["name"],
+                "time": "2026-02-28T03:00:00Z",
+                "hostname": "test-server",
+                "tags": [f"provider:{key}"],
+                "short_id": f"snap{key[:4]}",
+            }
+        )
     return {"snapshots": snapshots, "total": len(snapshots)}
 
 
@@ -90,18 +94,24 @@ def _make_mock_client(responses=None):
         elif "/api/snapshots" in url:
             resp.json.return_value = responses.get("snapshots", _make_snapshots_response())
         elif "/api/status" in url:
-            resp.json.return_value = responses.get("status", {
-                "version": "3.0.0", "status": "ok", "platform": "unraid",
-                "hostname": "test-server", "uptime_seconds": 3600,
-                "setup_completed": True,
-                "targets": {"total": 8, "healthy": 8},
-                "containers": {"total": 0, "running": 0},
-                "last_backup": {
-                    "status": "success",
-                    "started_at": "2026-02-28T03:00:00Z",
-                    "run_id": "run-001",
+            resp.json.return_value = responses.get(
+                "status",
+                {
+                    "version": "3.0.0",
+                    "status": "ok",
+                    "platform": "unraid",
+                    "hostname": "test-server",
+                    "uptime_seconds": 3600,
+                    "setup_completed": True,
+                    "targets": {"total": 8, "healthy": 8},
+                    "containers": {"total": 0, "running": 0},
+                    "last_backup": {
+                        "status": "success",
+                        "started_at": "2026-02-28T03:00:00Z",
+                        "run_id": "run-001",
+                    },
                 },
-            })
+            )
         else:
             resp.json.return_value = {}
         return resp
@@ -140,8 +150,7 @@ class TestCLITargets:
         assert result.exit_code == 0, result.output
         # Each provider should appear in output
         for key, spec in ALL_PROVIDERS.items():
-            assert spec["type"] in result.output, \
-                f"Provider {key} ({spec['type']}) missing from targets output"
+            assert spec["type"] in result.output, f"Provider {key} ({spec['type']}) missing from targets output"
 
     def test_targets_list_shows_status(self):
         runner = CliRunner()
@@ -167,9 +176,7 @@ class TestCLITargets:
 
     def test_targets_empty(self):
         runner = CliRunner()
-        mock_client = _make_mock_client(responses={
-            "targets": {"items": [], "targets": [], "total": 0}
-        })
+        mock_client = _make_mock_client(responses={"targets": {"items": [], "targets": [], "total": 0}})
 
         with patch("app.cli.httpx.Client", return_value=mock_client):
             result = runner.invoke(cli, ["targets"])
@@ -241,9 +248,9 @@ class TestCLISnapshots:
         # Should show snapshots from multiple targets
         for key, spec in ALL_PROVIDERS.items():
             short_id = f"snap{key[:4]}"
-            assert short_id in result.output or spec["name"] in result.output or \
-                f"tgt-{key[:4]}" in result.output, \
+            assert short_id in result.output or spec["name"] in result.output or f"tgt-{key[:4]}" in result.output, (
                 f"Snapshot for {key} missing from output"
+            )
 
     def test_snapshots_json(self):
         runner = CliRunner()

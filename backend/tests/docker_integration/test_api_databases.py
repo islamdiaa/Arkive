@@ -1,8 +1,6 @@
 """Phase 8: API integration tests for database dumps with FakeDockerClient."""
 
-import json
 import os
-import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -10,8 +8,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import ArkiveConfig
-from app.core.database import init_db
 from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
 from tests.fakes.fake_docker import create_fake_docker_client
@@ -46,16 +42,19 @@ async def db_client(tmp_path):
     test_config.ensure_dirs()
     deps_mod._config = test_config
 
-    from unittest.mock import patch
     from contextlib import asynccontextmanager
+    from unittest.mock import patch
 
     @asynccontextmanager
     async def _noop_lifespan(app):
         yield
 
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig):
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+    ):
         from app.main import create_app
+
         test_app = create_app()
         test_app.router.lifespan_context = _noop_lifespan
 

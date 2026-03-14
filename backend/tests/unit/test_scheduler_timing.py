@@ -1,12 +1,11 @@
 """Tests for scheduler system job timing and APScheduler configuration."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import aiosqlite
 import pytest
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-
-import aiosqlite
 
 from app.services.scheduler import (
     SYSTEM_JOB_DISCOVERY,
@@ -16,7 +15,6 @@ from app.services.scheduler import (
     SYSTEM_JOB_RETENTION,
     ArkiveScheduler,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -89,7 +87,10 @@ class TestSystemJobRegistration:
         return jobs
 
     def test_registers_exactly_five_system_jobs(self, scheduler):
-        """_register_system_jobs must register exactly 5 jobs (discovery, retention, health, log prune, integrity check)."""
+        """_register_system_jobs must register exactly 5 jobs.
+
+        Jobs: discovery, retention, health, log prune, integrity check.
+        """
         scheduler._register_system_jobs()
         jobs = scheduler.scheduler.get_jobs()
         assert len(jobs) == 5
@@ -250,11 +251,15 @@ class TestActivityLogPrune:
             """)
             # Insert an old row (200 days ago) and a recent row (1 day ago)
             await db.execute(
-                "INSERT INTO activity_log (type, action, message, timestamp) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-200 days'))",
+                "INSERT INTO activity_log (type, action, message, timestamp)"
+                " VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ',"
+                " 'now', '-200 days'))",
                 ("system", "old_event", "should be pruned"),
             )
             await db.execute(
-                "INSERT INTO activity_log (type, action, message, timestamp) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'))",
+                "INSERT INTO activity_log (type, action, message, timestamp)"
+                " VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ',"
+                " 'now', '-1 days'))",
                 ("system", "recent_event", "should be kept"),
             )
             await db.commit()
@@ -266,13 +271,9 @@ class TestActivityLogPrune:
             count = (await cursor.fetchone())[0]
             # Old row deleted, recent row kept, plus the prune activity log entry
             assert count >= 1
-            cursor = await db.execute(
-                "SELECT message FROM activity_log WHERE action = 'old_event'"
-            )
+            cursor = await db.execute("SELECT message FROM activity_log WHERE action = 'old_event'")
             old_row = await cursor.fetchone()
             assert old_row is None, "Old row should have been pruned"
-            cursor = await db.execute(
-                "SELECT message FROM activity_log WHERE action = 'recent_event'"
-            )
+            cursor = await db.execute("SELECT message FROM activity_log WHERE action = 'recent_event'")
             recent_row = await cursor.fetchone()
             assert recent_row is not None, "Recent row should be kept"

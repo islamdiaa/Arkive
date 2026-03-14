@@ -3,11 +3,12 @@ API integration tests for snapshot endpoints.
 
 Tests: list, detail, filter by target, delete, not-found cases.
 """
-import pytest
-import aiosqlite
 
-from tests.conftest import do_setup, auth_headers
+import aiosqlite
+import pytest
+
 from app.core.dependencies import get_config
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,9 +40,7 @@ async def _seed_snapshot(client):
 async def test_list_snapshots_empty(client):
     """After setup with no snapshots, list should return empty."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/snapshots", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/snapshots", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []
@@ -63,16 +62,12 @@ async def test_list_snapshots_filter_by_target(client):
     api_key = await _seed_snapshot(client)
 
     # Matching target
-    resp = await client.get(
-        "/api/snapshots?target_id=target1", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/snapshots?target_id=target1", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
 
     # Non-matching target
-    resp = await client.get(
-        "/api/snapshots?target_id=nonexistent", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/snapshots?target_id=nonexistent", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
     assert resp.json()["items"] == []
@@ -81,9 +76,7 @@ async def test_list_snapshots_filter_by_target(client):
 async def test_get_snapshot_detail_via_list(client):
     """After seeding a snapshot, it should be retrievable via the list endpoint."""
     api_key = await _seed_snapshot(client)
-    resp = await client.get(
-        "/api/snapshots?target_id=target1", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/snapshots?target_id=target1", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
@@ -97,9 +90,7 @@ async def test_get_snapshot_detail_via_list(client):
 async def test_get_snapshot_not_found(client):
     """GET /api/snapshots with nonexistent target_id should return empty."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/snapshots?target_id=nonexistent", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/snapshots?target_id=nonexistent", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
 
@@ -107,7 +98,5 @@ async def test_get_snapshot_not_found(client):
 async def test_snapshot_browse_not_found(client):
     """GET /api/snapshots/{id}/browse for nonexistent snapshot returns 404."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/snapshots/nonexistent/browse", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/snapshots/nonexistent/browse", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 404

@@ -9,20 +9,19 @@ Tests verify:
 """
 
 import sqlite3
-import pytest
-from unittest.mock import AsyncMock, MagicMock, call, patch
-
-pytestmark = pytest.mark.forked
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
+import pytest
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.database import SCHEMA_SQL
 from app.services.scheduler import (
-    ArkiveScheduler,
     SYSTEM_JOB_INTEGRITY_CHECK,
+    ArkiveScheduler,
 )
 
+pytestmark = pytest.mark.forked
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -48,6 +47,7 @@ def mock_config(tmp_path):
     config.config_dir = tmp_path
 
     from app.core.security import _load_fernet_from_dir, _reset_fernet
+
     _reset_fernet()
     _load_fernet_from_dir(str(tmp_path))
 
@@ -90,8 +90,7 @@ def scheduler(mock_orchestrator, mock_config, mock_backup_engine, mock_notifier)
 # ---------------------------------------------------------------------------
 
 
-async def _insert_target(db_path, target_id="t1", name="Local", type_="local",
-                          enabled=1, config_str="{}"):
+async def _insert_target(db_path, target_id="t1", name="Local", type_="local", enabled=1, config_str="{}"):
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """INSERT OR REPLACE INTO storage_targets (id, name, type, enabled, config, status)
@@ -184,9 +183,7 @@ class TestIntegrityCheckExecution:
 
         async with aiosqlite.connect(mock_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM activity_log WHERE type = 'system' AND action = 'integrity_check'"
-            )
+            cursor = await db.execute("SELECT * FROM activity_log WHERE type = 'system' AND action = 'integrity_check'")
             row = await cursor.fetchone()
 
         assert row is not None
@@ -223,9 +220,7 @@ class TestIntegrityCheckNotifications:
     """Verify that failed checks send notifications via notifier."""
 
     @pytest.mark.asyncio
-    async def test_notification_sent_on_check_failure(
-        self, scheduler, mock_backup_engine, mock_notifier, mock_config
-    ):
+    async def test_notification_sent_on_check_failure(self, scheduler, mock_backup_engine, mock_notifier, mock_config):
         """When check() raises, notifier.send() is called with integrity.failed."""
         await _insert_target(mock_config.db_path, "t1", "MyRepo", "local", 1, "{}")
         mock_backup_engine.check.side_effect = RuntimeError("pack integrity error")
@@ -253,9 +248,7 @@ class TestIntegrityCheckNotifications:
         assert "corrupt index" in body
 
     @pytest.mark.asyncio
-    async def test_notification_not_sent_on_success(
-        self, scheduler, mock_backup_engine, mock_notifier, mock_config
-    ):
+    async def test_notification_not_sent_on_success(self, scheduler, mock_backup_engine, mock_notifier, mock_config):
         """No notification is sent when check() succeeds."""
         await _insert_target(mock_config.db_path, "t1", "Local", "local", 1, "{}")
         mock_backup_engine.check.return_value = {"status": "success", "output": ""}
@@ -278,9 +271,7 @@ class TestIntegrityCheckNotifications:
         assert mock_notifier.send.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_no_notification_without_notifier(
-        self, mock_orchestrator, mock_config, mock_backup_engine
-    ):
+    async def test_no_notification_without_notifier(self, mock_orchestrator, mock_config, mock_backup_engine):
         """No error when notifier is None and check() fails."""
         sched = ArkiveScheduler(
             orchestrator=mock_orchestrator,
@@ -358,8 +349,7 @@ class TestIntegrityCheckIdempotency:
         scheduler._register_system_jobs()
         scheduler._register_system_jobs()
 
-        jobs = [j for j in scheduler.scheduler.get_jobs()
-                if j.id == SYSTEM_JOB_INTEGRITY_CHECK]
+        jobs = [j for j in scheduler.scheduler.get_jobs() if j.id == SYSTEM_JOB_INTEGRITY_CHECK]
         assert len(jobs) == 1
 
     def test_integrity_job_id_is_unique_in_scheduler(self, scheduler):

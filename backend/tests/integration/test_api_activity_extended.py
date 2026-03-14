@@ -3,9 +3,10 @@ API integration tests for the GET /api/activity endpoint.
 
 Tests: response structure, pagination, type/severity filtering.
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,9 +79,7 @@ async def test_activity_default_pagination(client):
 async def test_activity_custom_limit(client):
     """Custom limit parameter is respected."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?limit=5", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?limit=5", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["limit"] == 5
@@ -90,9 +89,7 @@ async def test_activity_custom_limit(client):
 async def test_activity_custom_offset(client):
     """Custom offset parameter is respected."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?offset=100", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?offset=100", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["offset"] == 100
@@ -101,9 +98,7 @@ async def test_activity_custom_offset(client):
 async def test_activity_limit_exceeds_max(client):
     """Limit above 200 should be rejected (422 validation error)."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?limit=999", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?limit=999", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 422
 
 
@@ -126,9 +121,7 @@ async def test_activity_has_more_false_when_no_data(client):
 async def test_activity_filter_by_type(client):
     """Filtering by type parameter should not error."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?type=backup", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?type=backup", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["items"], list)
@@ -140,9 +133,7 @@ async def test_activity_filter_by_type(client):
 async def test_activity_filter_by_severity(client):
     """Filtering by severity parameter should not error."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?severity=info", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?severity=info", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["items"], list)
@@ -153,9 +144,7 @@ async def test_activity_filter_by_severity(client):
 async def test_activity_filter_by_nonexistent_type(client):
     """Filtering by a type with no matches returns empty list."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/activity?type=nonexistent_type_xyz", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/activity?type=nonexistent_type_xyz", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []

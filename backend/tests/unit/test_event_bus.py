@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 from app.core.event_bus import EventBus
 
 

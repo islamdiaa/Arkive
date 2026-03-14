@@ -3,10 +3,9 @@
 import json
 import logging
 import os
-from pathlib import Path
 
 from app.core.config import ArkiveConfig
-from app.core.security import decrypt_value, encrypt_value
+from app.core.security import decrypt_value
 from app.utils.subprocess_runner import run_command
 
 logger = logging.getLogger("arkive.cloud_manager")
@@ -73,12 +72,16 @@ class CloudManager:
 
         result = await run_command(
             ["rclone", "lsd", f"{target_id}:"],
-            env=env, timeout=30,
+            env=env,
+            timeout=30,
         )
 
         if result.returncode == 0:
-            return {"status": "ok", "message": "Connection successful",
-                    "latency_ms": int(result.duration_seconds * 1000)}
+            return {
+                "status": "ok",
+                "message": "Connection successful",
+                "latency_ms": int(result.duration_seconds * 1000),
+            }
         return {"status": "error", "message": result.stderr[:200]}
 
     def _read_config(self) -> list[str]:

@@ -2,14 +2,13 @@
 
 import json
 import os
-import sqlite3
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
 
+import app.services.orchestrator as orch_mod
 from app.core.config import ArkiveConfig
 from app.core.database import init_db
 from app.core.event_bus import EventBus
@@ -22,19 +21,23 @@ from app.services.flash_backup import FlashBackup
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator
 from tests.fakes.fake_docker import create_fake_docker_client
-import app.services.orchestrator as orch_mod
 
 
 def _mock_backup_engine(engine: BackupEngine) -> BackupEngine:
     """Patch backup engine to succeed without real restic."""
+
     async def _fake_init_repo(target):
         return True
+
     async def _fake_backup(target, paths, excludes=None, tags=None, cancel_check=None, **kwargs):
         return {"status": "success", "snapshot_id": "abc12345", "total_bytes_processed": 1024, "files_new": 2}
+
     async def _fake_forget(target, **kwargs):
         return {"status": "success"}
+
     async def _fake_snapshots(target):
         return []
+
     engine.init_repo = _fake_init_repo
     engine.backup = _fake_backup
     engine.forget = _fake_forget
@@ -143,6 +146,7 @@ def pipeline_config(tmp_path):
     orch_mod.LOCK_FILE = original_lock
     os.environ.pop("ARKIVE_CONFIG_DIR", None)
     from app.core.security import _reset_fernet
+
     _reset_fernet()
 
 
@@ -179,9 +183,7 @@ class TestPipelineIntegration:
         # Verify DB records
         async with aiosqlite.connect(pipeline_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            run = await (await db.execute(
-                "SELECT * FROM job_runs WHERE id = ?", (result["run_id"],)
-            )).fetchone()
+            run = await (await db.execute("SELECT * FROM job_runs WHERE id = ?", (result["run_id"],))).fetchone()
             assert run is not None
             assert run["status"] == "success"
             assert run["databases_discovered"] > 0
@@ -204,16 +206,16 @@ class TestPipelineIntegration:
         )
 
         result = await orch.run_backup(
-            job_id=job_id, trigger="manual", skip_databases=True,
+            job_id=job_id,
+            trigger="manual",
+            skip_databases=True,
         )
 
         assert result["status"] == "success"
 
         async with aiosqlite.connect(pipeline_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            run = await (await db.execute(
-                "SELECT * FROM job_runs WHERE id = ?", (result["run_id"],)
-            )).fetchone()
+            run = await (await db.execute("SELECT * FROM job_runs WHERE id = ?", (result["run_id"],))).fetchone()
             # Databases should not have been dumped
             assert (run["databases_dumped"] or 0) == 0
 
@@ -236,16 +238,16 @@ class TestPipelineIntegration:
         )
 
         result = await orch.run_backup(
-            job_id=job_id, trigger="manual", skip_flash=True,
+            job_id=job_id,
+            trigger="manual",
+            skip_flash=True,
         )
 
         assert result["status"] == "success"
 
         async with aiosqlite.connect(pipeline_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            run = await (await db.execute(
-                "SELECT * FROM job_runs WHERE id = ?", (result["run_id"],)
-            )).fetchone()
+            run = await (await db.execute("SELECT * FROM job_runs WHERE id = ?", (result["run_id"],))).fetchone()
             assert (run["flash_backed_up"] or 0) == 0
 
     async def test_pipeline_no_docker(self, pipeline_config, tmp_path, fake_boot_config):
@@ -268,7 +270,5 @@ class TestPipelineIntegration:
 
         async with aiosqlite.connect(pipeline_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            run = await (await db.execute(
-                "SELECT * FROM job_runs WHERE id = ?", (result["run_id"],)
-            )).fetchone()
+            run = await (await db.execute("SELECT * FROM job_runs WHERE id = ?", (result["run_id"],))).fetchone()
             assert (run["databases_discovered"] or 0) == 0

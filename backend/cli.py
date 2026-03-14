@@ -31,13 +31,14 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import UTC
 from pathlib import Path
 
 import click
 
 from app.core.config import ArkiveConfig
-from app.core.database import SCHEMA_SQL, init_db, flush_wal
-from app.core.security import generate_api_key, hash_api_key, verify_api_key
+from app.core.database import init_db
+from app.core.security import generate_api_key, hash_api_key
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -52,13 +53,14 @@ EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_PARTIAL = 2
 EXIT_CONFIG_ERROR = 3
-EXIT_NOT_SETUP = 4        # Setup has not been completed
+EXIT_NOT_SETUP = 4  # Setup has not been completed
 EXIT_CONNECTION_REFUSED = 5  # API server is unreachable
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _run_async(coro):
     """Run an async coroutine from synchronous Click context."""
@@ -70,6 +72,7 @@ def _run_async(coro):
     if loop and loop.is_running():
         # If we're already in an async context, create a new event loop in a thread
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     else:
@@ -220,9 +223,12 @@ def _build_restic_env(target_config: dict) -> dict:
 
     # S3 / B2 / cloud credentials
     for env_key in [
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-        "B2_ACCOUNT_ID", "B2_ACCOUNT_KEY",
-        "AZURE_ACCOUNT_NAME", "AZURE_ACCOUNT_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "B2_ACCOUNT_ID",
+        "B2_ACCOUNT_KEY",
+        "AZURE_ACCOUNT_NAME",
+        "AZURE_ACCOUNT_KEY",
         "GOOGLE_APPLICATION_CREDENTIALS",
     ]:
         val = target_config.get(env_key.lower(), target_config.get(env_key, ""))
@@ -236,6 +242,7 @@ def _build_restic_env(target_config: dict) -> dict:
 # Root group
 # ===========================================================================
 
+
 @click.group()
 @click.option("--json", "json_out", is_flag=True, help="Output as JSON", envvar="ARKIVE_JSON")
 @click.pass_context
@@ -248,6 +255,7 @@ def cli(ctx, json_out: bool):
 # ===========================================================================
 # db — Database operations
 # ===========================================================================
+
 
 @cli.group()
 @click.pass_context
@@ -294,13 +302,15 @@ def db_migrate(ctx, db_path: str | None):
     """
     resolved = _get_db_path(db_path)
     if not resolved.exists():
-        click.echo(click.style(f"Error: Database not found at {resolved}. Run 'arkive db init' first.", fg="red"),
-                    err=True)
+        click.echo(
+            click.style(f"Error: Database not found at {resolved}. Run 'arkive db init' first.", fg="red"), err=True
+        )
         sys.exit(EXIT_CONFIG_ERROR)
 
     click.echo(f"Running migrations on {resolved} ...")
 
     from app.core.database import run_migrations
+
     count = _run_async(run_migrations(resolved))
     if count:
         click.echo(click.style(f"Applied {count} migration(s).", fg="green"))
@@ -325,8 +335,9 @@ def db_backup(ctx, db_path: str | None, output: str | None):
         sys.exit(EXIT_CONFIG_ERROR)
 
     if output is None:
-        from datetime import datetime, timezone
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        from datetime import datetime
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         backup_dir = DEFAULT_CONFIG_DIR / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         output = str(backup_dir / f"arkive_{timestamp}.db")
@@ -393,8 +404,15 @@ def db_check(ctx, db_path: str | None):
 
     # Row counts for key tables
     row_counts = {}
-    for table in ["backup_jobs", "storage_targets", "job_runs", "snapshots",
-                   "discovered_containers", "activity_log", "settings"]:
+    for table in [
+        "backup_jobs",
+        "storage_targets",
+        "job_runs",
+        "snapshots",
+        "discovered_containers",
+        "activity_log",
+        "settings",
+    ]:
         try:
             cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")  # noqa: S608
             row_counts[table] = cursor.fetchone()[0]
@@ -415,8 +433,10 @@ def db_check(ctx, db_path: str | None):
         click.echo("")
         click.echo(f"  Path:           {resolved}")
         click.echo(f"  Integrity:      {_check_mark(integrity == 'ok')} ({integrity})")
-        click.echo(f"  Foreign Keys:   {_check_mark(checks['foreign_key_errors'] == 0)} "
-                    f"({checks['foreign_key_errors']} errors)")
+        click.echo(
+            f"  Foreign Keys:   {_check_mark(checks['foreign_key_errors'] == 0)} "
+            f"({checks['foreign_key_errors']} errors)"
+        )
         click.echo(f"  Journal Mode:   {checks['journal_mode']}")
         click.echo(f"  Schema Version: {checks['schema_version']}")
         click.echo(f"  Tables:         {checks['table_count']}")
@@ -433,6 +453,7 @@ def db_check(ctx, db_path: str | None):
 # ===========================================================================
 # key — API key management
 # ===========================================================================
+
 
 @cli.group()
 @click.pass_context
@@ -543,11 +564,15 @@ def key_show_hash(ctx, db_path: str | None):
     consistent = stored_hash is not None and file_hash is not None and stored_hash == file_hash
 
     if json_out:
-        click.echo(json.dumps({
-            "stored_hash": stored_hash,
-            "file_exists": file_key is not None,
-            "consistent": consistent,
-        }))
+        click.echo(
+            json.dumps(
+                {
+                    "stored_hash": stored_hash,
+                    "file_exists": file_key is not None,
+                    "consistent": consistent,
+                }
+            )
+        )
     else:
         click.echo("")
         click.echo(click.style("  API Key Info", bold=True))
@@ -569,6 +594,7 @@ def key_show_hash(ctx, db_path: str | None):
 # ===========================================================================
 # job — Backup job operations
 # ===========================================================================
+
 
 @cli.group()
 @click.pass_context
@@ -674,7 +700,7 @@ def job_run(ctx, job_id: str, db_path: str | None):
     For full execution, use the API endpoint POST /api/jobs/{id}/run instead.
     """
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     json_out = ctx.obj.get("json", False)
     resolved = _get_db_path(db_path)
@@ -694,7 +720,7 @@ def job_run(ctx, job_id: str, db_path: str | None):
 
     # Create a run record
     run_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         "INSERT INTO job_runs (id, job_id, status, trigger, started_at) VALUES (?, ?, 'pending', 'cli', ?)",
         (run_id, job_id, now),
@@ -711,8 +737,8 @@ def job_run(ctx, job_id: str, db_path: str | None):
         click.echo(f"  Run ID:   {run_id}")
         click.echo(f"  Job ID:   {job_id}")
         click.echo(f"  Job Name: {row['name']}")
-        click.echo(f"  Trigger:  CLI")
-        click.echo(f"  Status:   pending")
+        click.echo("  Trigger:  CLI")
+        click.echo("  Status:   pending")
         click.echo("")
         click.echo("  The backup scheduler will pick up this run.")
         click.echo("")
@@ -728,15 +754,16 @@ def job_run(ctx, job_id: str, db_path: str | None):
 @click.option("--include-flash/--no-flash", default=True, help="Include Unraid flash backup")
 @click.option("--db-path", default=None, help="Custom database path")
 @click.pass_context
-def job_create(ctx, name: str, schedule: str, job_type: str, include_databases: bool,
-               include_flash: bool, db_path: str | None):
+def job_create(
+    ctx, name: str, schedule: str, job_type: str, include_databases: bool, include_flash: bool, db_path: str | None
+):
     """Create a new backup job.
 
     Creates a job record in the database. The job will be picked up by
     the scheduler when the API server is running.
     """
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     json_out = ctx.obj.get("json", False)
     resolved = _get_db_path(db_path)
@@ -744,7 +771,7 @@ def job_create(ctx, name: str, schedule: str, job_type: str, include_databases: 
     conn = _get_db_connection(resolved)
 
     job_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     conn.execute(
         "INSERT INTO backup_jobs (id, name, type, schedule, enabled, targets, directories, "
@@ -756,10 +783,18 @@ def job_create(ctx, name: str, schedule: str, job_type: str, include_databases: 
     conn.close()
 
     if json_out:
-        click.echo(json.dumps({
-            "id": job_id, "name": name, "type": job_type, "schedule": schedule,
-            "include_databases": include_databases, "include_flash": include_flash,
-        }))
+        click.echo(
+            json.dumps(
+                {
+                    "id": job_id,
+                    "name": name,
+                    "type": job_type,
+                    "schedule": schedule,
+                    "include_databases": include_databases,
+                    "include_flash": include_flash,
+                }
+            )
+        )
     else:
         click.echo("")
         click.echo(click.style("  Backup Job Created", fg="green", bold=True))
@@ -778,6 +813,7 @@ def job_create(ctx, name: str, schedule: str, job_type: str, include_databases: 
 # ===========================================================================
 # restic — Restic operations
 # ===========================================================================
+
 
 @cli.group()
 @click.pass_context
@@ -802,6 +838,7 @@ def _get_target_env(target_id: str, db_path: Path) -> dict:
     # Try to decrypt config if encrypted
     try:
         from app.core.security import decrypt_config
+
         config = decrypt_config(config_str)
     except Exception:
         try:
@@ -820,7 +857,11 @@ def _run_restic(args: list[str], env: dict, json_flag: bool = True) -> subproces
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300, env=env,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
         )
         return result
     except FileNotFoundError:
@@ -997,8 +1038,12 @@ def restic_snapshots(ctx, target_id: str, last_n: int, db_path: str | None):
 
 @restic.command("stats")
 @click.option("--target-id", required=True, help="Storage target ID")
-@click.option("--mode", default="restore-size", type=click.Choice(["restore-size", "files-by-contents", "raw-data"]),
-              help="Stats mode")
+@click.option(
+    "--mode",
+    default="restore-size",
+    type=click.Choice(["restore-size", "files-by-contents", "raw-data"]),
+    help="Stats mode",
+)
 @click.option("--db-path", default=None, help="Custom database path")
 @click.pass_context
 def restic_stats(ctx, target_id: str, mode: str, db_path: str | None):
@@ -1051,6 +1096,7 @@ def restic_stats(ctx, target_id: str, mode: str, db_path: str | None):
 # discovery — Container discovery
 # ===========================================================================
 
+
 @cli.group()
 @click.pass_context
 def discovery(ctx):
@@ -1073,6 +1119,7 @@ def discovery_scan(ctx, db_path: str | None):
 
     try:
         import docker as docker_lib
+
         client = docker_lib.from_env()
         containers = client.containers.list(all=True)
     except Exception as e:
@@ -1104,12 +1151,14 @@ def discovery_scan(ctx, db_path: str | None):
         # Extract mounts
         mounts = container.attrs.get("Mounts", [])
         for m in mounts:
-            info["mounts"].append({
-                "source": m.get("Source", ""),
-                "destination": m.get("Destination", ""),
-                "type": m.get("Type", ""),
-                "rw": m.get("RW", True),
-            })
+            info["mounts"].append(
+                {
+                    "source": m.get("Source", ""),
+                    "destination": m.get("Destination", ""),
+                    "type": m.get("Type", ""),
+                    "rw": m.get("RW", True),
+                }
+            )
 
         # Detect databases by image name patterns
         image_lower = info["image"].lower()
@@ -1186,14 +1235,19 @@ def discovery_scan(ctx, db_path: str | None):
     stopped = len(discovered) - running
 
     if json_out:
-        click.echo(json.dumps({
-            "total_containers": len(discovered),
-            "running": running,
-            "stopped": stopped,
-            "databases_found": len(databases_found),
-            "containers": discovered,
-            "databases": databases_found,
-        }, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "total_containers": len(discovered),
+                    "running": running,
+                    "stopped": stopped,
+                    "databases_found": len(databases_found),
+                    "containers": discovered,
+                    "databases": databases_found,
+                },
+                indent=2,
+            )
+        )
     else:
         click.echo("")
         click.echo(click.style("  Discovery Results", bold=True))
@@ -1214,8 +1268,9 @@ def discovery_scan(ctx, db_path: str | None):
             for c in discovered:
                 status_color = "green" if c["status"] == "running" else "yellow"
                 db_indicator = f" [{len(c['databases'])} db]" if c["databases"] else ""
-                click.echo(f"    {c['name']:<30} {c['image']:<35} "
-                           f"{click.style(c['status'], fg=status_color)}{db_indicator}")
+                click.echo(
+                    f"    {c['name']:<30} {c['image']:<35} {click.style(c['status'], fg=status_color)}{db_indicator}"
+                )
             click.echo("")
 
     sys.exit(0)
@@ -1280,8 +1335,7 @@ def discovery_list(ctx, db_path: str | None, with_databases: bool):
         dbs = str(len(item["databases"]))
         last_scanned = (item.get("last_scanned") or "?")[:19]
 
-        click.echo(f"  {name:<30} {image:<35} "
-                    f"{click.style(status, fg=status_color):<21} {dbs:<5} {last_scanned}")
+        click.echo(f"  {name:<30} {image:<35} {click.style(status, fg=status_color):<21} {dbs:<5} {last_scanned}")
 
     click.echo("")
     click.echo(f"  Total: {len(items)} container(s)")
@@ -1292,6 +1346,7 @@ def discovery_list(ctx, db_path: str | None, with_databases: bool):
 # ===========================================================================
 # version — Show version info
 # ===========================================================================
+
 
 @cli.command("version")
 @click.pass_context
@@ -1311,7 +1366,10 @@ def version(ctx):
     # Check restic version
     try:
         result = subprocess.run(
-            [RESTIC_BIN, "version"], capture_output=True, text=True, timeout=5,
+            [RESTIC_BIN, "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             info["restic_version"] = result.stdout.strip()
@@ -1323,6 +1381,7 @@ def version(ctx):
     # Check Docker
     try:
         import docker as docker_lib
+
         client = docker_lib.from_env()
         docker_version = client.version()
         info["docker_version"] = docker_version.get("Version", "unknown")
@@ -1335,6 +1394,7 @@ def version(ctx):
     # Platform detection
     try:
         from app.core.platform import detect_platform
+
         detected = detect_platform()
         info["detected_platform"] = detected.value
     except Exception:
@@ -1367,6 +1427,7 @@ def version(ctx):
 # ===========================================================================
 # Entry point
 # ===========================================================================
+
 
 def main():
     """Entry point for the CLI."""

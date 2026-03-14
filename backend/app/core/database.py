@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(time DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_target_id ON snapshots(target_id);
 
 CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +137,7 @@ CREATE TABLE IF NOT EXISTS activity_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp ON activity_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_log_type ON activity_log(type);
 
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -210,7 +212,12 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_restore_runs_started_at ON restore_runs(started_at DESC)",
     ],
+    3: [
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_target_id ON snapshots(target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_log_type ON activity_log(type)",
+    ],
 }
+
 
 async def run_migrations(db_path: str | Path) -> int:
     """Apply pending schema migrations. Returns number of migrations applied."""
@@ -234,9 +241,7 @@ async def run_migrations(db_path: str | Path) -> int:
             try:
                 for sql in MIGRATIONS[version]:
                     await db.execute(sql)
-                await db.execute(
-                    "INSERT INTO schema_version (version) VALUES (?)", (version,)
-                )
+                await db.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
             except Exception as exc:
                 await db.rollback()
                 logger.error("Migration %d failed: %s", version, exc)

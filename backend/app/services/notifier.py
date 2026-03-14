@@ -7,7 +7,7 @@ and recovery alerts.
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -38,6 +38,44 @@ class Notifier:
         self._suppressed_counts: dict[tuple[str, str], int] = {}
         # event_type -> last status ("success" / "failed")
         self._last_event_status: dict[str, str] = {}
+        # Timestamp of last cleanup run
+        self._last_cleanup: float = 0.0
+
+    def _cleanup_stale_state(self) -> None:
+        """Remove stale entries from throttle dicts to prevent unbounded growth."""
+        now = time.time()
+        # Only run cleanup every 10 minutes
+        if now - self._last_cleanup < 600:
+            return
+        self._last_cleanup = now
+
+        cutoff = now - THROTTLE_COOLDOWN
+        # Prune _last_sent entries older than cooldown
+        stale_keys = [k for k, ts in self._last_sent.items() if ts < cutoff]
+        for k in stale_keys:
+            del self._last_sent[k]
+
+        # Prune _send_counts: remove timestamps > 1h and empty channels
+        one_hour_ago = now - 3600
+        stale_channels = []
+        for ch, timestamps in self._send_counts.items():
+            self._send_counts[ch] = [ts for ts in timestamps if ts > one_hour_ago]
+            if not self._send_counts[ch]:
+                stale_channels.append(ch)
+        for ch in stale_channels:
+            del self._send_counts[ch]
+
+        # Cap _suppressed_counts to prevent unbounded growth.
+        # Don't prune based on _last_sent — suppressed counts are consumed on next
+        # successful send (to include "N more since last alert" in the body).
+        max_suppressed = 500
+        if len(self._suppressed_counts) > max_suppressed:
+            self._suppressed_counts.clear()
+
+        # Cap _last_event_status to prevent unbounded growth
+        max_event_types = 100
+        if len(self._last_event_status) > max_event_types:
+            self._last_event_status.clear()
 
     def _is_rate_limited(self, channel_id: str) -> bool:
         """Check if a channel has exceeded its per-hour rate limit."""
@@ -48,9 +86,7 @@ class Notifier:
             self._send_counts[channel_id] = []
 
         # Prune timestamps older than 1 hour
-        self._send_counts[channel_id] = [
-            ts for ts in self._send_counts[channel_id] if ts > one_hour_ago
-        ]
+        self._send_counts[channel_id] = [ts for ts in self._send_counts[channel_id] if ts > one_hour_ago]
 
         return len(self._send_counts[channel_id]) >= MAX_PER_HOUR
 
@@ -100,6 +136,8 @@ class Notifier:
         Applies per-channel rate limiting, cooldown-based deduplication,
         and recovery alert detection before sending.
         """
+        self._cleanup_stale_state()
+
         results = []
         try:
             import apprise
@@ -112,9 +150,7 @@ class Notifier:
 
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM notification_channels WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM notification_channels WHERE enabled = 1")
             channels = await cursor.fetchall()
 
         for channel in channels:
@@ -133,7 +169,9 @@ class Notifier:
                     url = decrypt_value(url)
                 except Exception:
                     logger.error("Decryption failed for channel %s — skipping", channel_id)
-                    results.append({"channel_id": channel_id, "status": "failed", "error": "Credential decryption failed"})
+                    results.append(
+                        {"channel_id": channel_id, "status": "failed", "error": "Credential decryption failed"}
+                    )
                     continue
             key = (channel_id, event_type)
 
@@ -141,12 +179,15 @@ class Notifier:
             if self._is_rate_limited(channel_id):
                 logger.info(
                     "Rate limited: channel %s exceeded %d/hour",
-                    channel_id, MAX_PER_HOUR,
+                    channel_id,
+                    MAX_PER_HOUR,
                 )
-                results.append({
-                    "channel_id": channel_id,
-                    "status": "rate_limited",
-                })
+                results.append(
+                    {
+                        "channel_id": channel_id,
+                        "status": "rate_limited",
+                    }
+                )
                 continue
 
             # --- Cooldown / deduplication check ---
@@ -154,12 +195,16 @@ class Notifier:
                 self._suppressed_counts[key] = self._suppressed_counts.get(key, 0) + 1
                 logger.info(
                     "Throttled: channel %s, event %s (suppressed %d)",
-                    channel_id, event_type, self._suppressed_counts[key],
+                    channel_id,
+                    event_type,
+                    self._suppressed_counts[key],
                 )
-                results.append({
-                    "channel_id": channel_id,
-                    "status": "throttled",
-                })
+                results.append(
+                    {
+                        "channel_id": channel_id,
+                        "status": "throttled",
+                    }
+                )
                 continue
 
             # --- Build final body with suppressed summary if applicable ---
@@ -196,7 +241,7 @@ class Notifier:
                 async with aiosqlite.connect(self.config.db_path) as db:
                     await db.execute(
                         "UPDATE notification_channels SET last_sent = ?, last_status = ? WHERE id = ?",
-                        (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), status, channel_id),
+                        (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), status, channel_id),
                     )
                     await db.commit()
 
@@ -213,12 +258,15 @@ class Notifier:
             self._last_event_status[failure_event] = "success"
 
         # Also publish to event bus for SSE
-        await self.event_bus.publish("notification", {
-            "event_type": event_type,
-            "title": title,
-            "severity": severity,
-            "results": results,
-        })
+        await self.event_bus.publish(
+            "notification",
+            {
+                "event_type": event_type,
+                "title": title,
+                "severity": severity,
+                "results": results,
+            },
+        )
 
         return results
 
@@ -226,6 +274,7 @@ class Notifier:
         """Send a test notification to a URL (bypasses throttling)."""
         try:
             import apprise
+
             ap = apprise.Apprise()
             ap.add(url)
             sent = await ap.async_notify(

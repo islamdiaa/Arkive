@@ -4,7 +4,6 @@ import pytest
 
 from tests.conftest import build_test_client
 
-
 pytestmark = pytest.mark.asyncio
 
 

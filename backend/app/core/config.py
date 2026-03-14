@@ -41,6 +41,7 @@ class ArkiveConfig(BaseSettings):
     user_shares_path: Path = Path("/mnt/user")
     profiles_dir: Path = Path("/app/profiles")
     flash_retention: int = 7
+
     @property
     def db_path(self) -> Path:
         return self.config_dir / "arkive.db"

@@ -1,10 +1,10 @@
 """Unit tests for Jinja2 autoescaping in RestorePlanGenerator."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from pathlib import Path
+from unittest.mock import MagicMock
 
-from app.services.restore_plan import RestorePlanGenerator, RESTORE_PLAN_TEMPLATE
+import pytest
+
+from app.services.restore_plan import RESTORE_PLAN_TEMPLATE, RestorePlanGenerator
 
 
 @pytest.fixture
@@ -24,9 +24,11 @@ def generator(mock_config):
 # Template rendering helpers
 # ---------------------------------------------------------------------------
 
+
 def _render_template(targets=None, databases=None, containers=None, directories=None, **kwargs):
     """Render the restore plan template directly via Environment (bypasses DB/weasyprint)."""
     from jinja2 import Environment, select_autoescape
+
     env = Environment(autoescape=select_autoescape(["html"]))
     tmpl = env.from_string(RESTORE_PLAN_TEMPLATE)
     return tmpl.render(
@@ -45,6 +47,7 @@ def _render_template(targets=None, databases=None, containers=None, directories=
 # ---------------------------------------------------------------------------
 # Security: HTML injection in user-supplied fields
 # ---------------------------------------------------------------------------
+
 
 class TestAutoescape:
     """Verify user-supplied data is HTML-escaped in template output."""
@@ -66,13 +69,15 @@ class TestAutoescape:
     def test_html_special_chars_in_db_name_are_escaped(self):
         """Angle brackets in database names must not appear raw in HTML output."""
         malicious_db_name = '<script>alert("xss")</script>'
-        databases = [{
-            "container_name": "mycontainer",
-            "db_type": "postgres",
-            "db_name": malicious_db_name,
-            "restore_cmd": "psql ...",
-            "full_restore_cmd": "docker exec ...",
-        }]
+        databases = [
+            {
+                "container_name": "mycontainer",
+                "db_type": "postgres",
+                "db_name": malicious_db_name,
+                "restore_cmd": "psql ...",
+                "full_restore_cmd": "docker exec ...",
+            }
+        ]
         html = _render_template(databases=databases)
 
         # Raw script tag must NOT appear
@@ -84,12 +89,14 @@ class TestAutoescape:
     def test_script_tag_in_container_name_is_escaped(self):
         """XSS payload in container name must be HTML-escaped."""
         malicious_container = "<script>alert(1)</script>"
-        containers = [{
-            "name": malicious_container,
-            "image": "nginx:latest",
-            "status": "running",
-            "priority": 1,
-        }]
+        containers = [
+            {
+                "name": malicious_container,
+                "image": "nginx:latest",
+                "status": "running",
+                "priority": 1,
+            }
+        ]
         html = _render_template(containers=containers)
 
         assert "<script>" not in html
@@ -97,13 +104,15 @@ class TestAutoescape:
 
     def test_script_tag_in_target_name_is_escaped(self):
         """XSS payload in storage target name must be HTML-escaped."""
-        malicious_target_name = '<img src=x onerror=alert(1)>'
-        targets = [{
-            "name": malicious_target_name,
-            "type": "local",
-            "snapshot_count": 5,
-            "total_size_display": "1.0 GB",
-        }]
+        malicious_target_name = "<img src=x onerror=alert(1)>"
+        targets = [
+            {
+                "name": malicious_target_name,
+                "type": "local",
+                "snapshot_count": 5,
+                "total_size_display": "1.0 GB",
+            }
+        ]
         html = _render_template(targets=targets)
 
         assert "<img src=x" not in html
@@ -111,22 +120,26 @@ class TestAutoescape:
 
     def test_ampersand_in_db_name_is_escaped(self):
         """Ampersands in database names must be entity-escaped."""
-        databases = [{
-            "container_name": "myapp",
-            "db_type": "postgres",
-            "db_name": "app&db",
-            "restore_cmd": "psql ...",
-            "full_restore_cmd": "docker exec ...",
-        }]
+        databases = [
+            {
+                "container_name": "myapp",
+                "db_type": "postgres",
+                "db_name": "app&db",
+                "restore_cmd": "psql ...",
+                "full_restore_cmd": "docker exec ...",
+            }
+        ]
         html = _render_template(databases=databases)
         assert "&amp;db" in html
 
     def test_quotes_in_directory_label_are_escaped(self):
         """Double quotes in directory labels must be escaped."""
-        directories = [{
-            "path": "/mnt/user/data",
-            "label": 'My "important" data',
-        }]
+        directories = [
+            {
+                "path": "/mnt/user/data",
+                "label": 'My "important" data',
+            }
+        ]
         html = _render_template(directories=directories)
         # The label with raw double quotes should not appear unescaped in attribute contexts;
         # in text context Jinja2 escapes " as &#34; or &quot;
@@ -135,13 +148,15 @@ class TestAutoescape:
     def test_normal_inputs_produce_valid_html(self):
         """Normal alphanumeric inputs render correctly without mangling."""
         targets = [{"name": "My Backup", "type": "b2", "snapshot_count": 10, "total_size_display": "5.0 GB"}]
-        databases = [{
-            "container_name": "postgres_app",
-            "db_type": "postgres",
-            "db_name": "appdb",
-            "restore_cmd": "psql -U postgres -d appdb < dump.sql",
-            "full_restore_cmd": "docker exec ... psql ...",
-        }]
+        databases = [
+            {
+                "container_name": "postgres_app",
+                "db_type": "postgres",
+                "db_name": "appdb",
+                "restore_cmd": "psql -U postgres -d appdb < dump.sql",
+                "full_restore_cmd": "docker exec ... psql ...",
+            }
+        ]
         containers = [{"name": "myapp", "image": "nginx:latest", "status": "running", "priority": 1}]
         directories = [{"path": "/mnt/user/data", "label": "User Data"}]
 
@@ -165,11 +180,12 @@ class TestAutoescape:
     def test_template_uses_environment_with_autoescape(self):
         """Verify the template environment has autoescaping enabled for HTML."""
         from jinja2 import Environment, select_autoescape
+
         env = Environment(autoescape=select_autoescape(["html"]))
         # Check that autoescape is enabled for .html extension
         assert env.is_async is False
         # Render a simple XSS probe through the environment
         tmpl = env.from_string("<p>{{ val }}</p>")
-        result = tmpl.render(val='<script>evil()</script>')
+        result = tmpl.render(val="<script>evil()</script>")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result

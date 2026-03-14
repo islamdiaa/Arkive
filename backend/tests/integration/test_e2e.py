@@ -5,13 +5,11 @@ Tests the complete user journey with mocked Docker and restic dependencies.
 These tests exercise the full API surface from setup through backup execution.
 """
 
-import json
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,11 +29,15 @@ async def _full_setup(client, tmp_path):
     target_path = str(tmp_path / "backups")
     os.makedirs(target_path, exist_ok=True)
 
-    resp = await client.post("/api/targets", json={
-        "name": "Local",
-        "type": "local",
-        "config": {"path": target_path},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Local",
+            "type": "local",
+            "config": {"path": target_path},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     target_id = resp.json()["id"]
 
@@ -87,9 +89,13 @@ async def test_setup_then_create_target_then_link_to_job(client, tmp_path):
     job_id = cloud_sync["id"]
 
     # Link target to job
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "targets": [target_id],
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "targets": [target_id],
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert target_id in resp.json()["targets"]
 
@@ -140,11 +146,15 @@ async def test_setup_then_check_activity_log(client, tmp_path):
     api_key, _ = await _full_setup(client, tmp_path)
 
     # Create a custom job to generate activity
-    await client.post("/api/jobs", json={
-        "name": "E2E Job",
-        "type": "full",
-        "schedule": "0 3 * * *",
-    }, headers=auth_headers(api_key))
+    await client.post(
+        "/api/jobs",
+        json={
+            "name": "E2E Job",
+            "type": "full",
+            "schedule": "0 3 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
 
     resp = await client.get("/api/activity", headers=auth_headers(api_key))
     assert resp.status_code == 200
@@ -187,11 +197,15 @@ async def test_full_job_crud_lifecycle(client, tmp_path):
     api_key, _ = await _full_setup(client, tmp_path)
 
     # Create
-    resp = await client.post("/api/jobs", json={
-        "name": "Lifecycle Job",
-        "type": "full",
-        "schedule": "0 6 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Lifecycle Job",
+            "type": "full",
+            "schedule": "0 6 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     job_id = resp.json()["id"]
 
@@ -201,11 +215,15 @@ async def test_full_job_crud_lifecycle(client, tmp_path):
     assert resp.json()["name"] == "Lifecycle Job"
 
     # Update
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "name": "Updated Job",
-        "schedule": "30 3 * * *",
-        "enabled": False,
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "name": "Updated Job",
+            "schedule": "30 3 * * *",
+            "enabled": False,
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert resp.json()["name"] == "Updated Job"
     assert resp.json()["schedule"] == "30 3 * * *"
@@ -228,11 +246,15 @@ async def test_full_target_crud_lifecycle(client, tmp_path):
     os.makedirs(target_path2, exist_ok=True)
 
     # Create
-    resp = await client.post("/api/targets", json={
-        "name": "Lifecycle Target",
-        "type": "local",
-        "config": {"path": target_path2},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Lifecycle Target",
+            "type": "local",
+            "config": {"path": target_path2},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     target_id = resp.json()["id"]
 
@@ -242,9 +264,13 @@ async def test_full_target_crud_lifecycle(client, tmp_path):
     assert resp.json()["name"] == "Lifecycle Target"
 
     # Update
-    resp = await client.put(f"/api/targets/{target_id}", json={
-        "name": "Renamed Target",
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/targets/{target_id}",
+        json={
+            "name": "Renamed Target",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert resp.json()["name"] == "Renamed Target"
 
@@ -265,10 +291,14 @@ async def test_directory_lifecycle_with_job_linkage(client, tmp_path):
     watch_dir = str(tmp_path / "appdata")
     os.makedirs(watch_dir, exist_ok=True)
 
-    resp = await client.post("/api/directories", json={
-        "path": watch_dir,
-        "label": "App Data",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": watch_dir,
+            "label": "App Data",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     dir_id = resp.json()["id"]
 
@@ -276,9 +306,13 @@ async def test_directory_lifecycle_with_job_linkage(client, tmp_path):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "directories": [dir_id],
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "directories": [dir_id],
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert dir_id in resp.json()["directories"]
 

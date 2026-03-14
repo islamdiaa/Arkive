@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 import yaml
@@ -52,9 +52,7 @@ def _is_sensitive(key: str, encrypted: int) -> bool:
 @router.get("")
 async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
     """Get all application settings with sensitive values redacted."""
-    cursor = await db.execute(
-        "SELECT key, value, encrypted, updated_at FROM settings ORDER BY key"
-    )
+    cursor = await db.execute("SELECT key, value, encrypted, updated_at FROM settings ORDER BY key")
     rows = await cursor.fetchall()
 
     items = []
@@ -63,14 +61,16 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         key = row["key"]
         sensitive = _is_sensitive(key, row["encrypted"])
         values[key] = row["value"]
-        items.append({
-            "key": key,
-            "value": REDACTED if sensitive else row["value"],
-            "encrypted": bool(row["encrypted"]),
-            "sensitive": sensitive,
-            "has_value": bool(row["value"]),
-            "updated_at": row["updated_at"],
-        })
+        items.append(
+            {
+                "key": key,
+                "value": REDACTED if sensitive else row["value"],
+                "encrypted": bool(row["encrypted"]),
+                "sensitive": sensitive,
+                "has_value": bool(row["value"]),
+                "updated_at": row["updated_at"],
+            }
+        )
 
     keep_daily = int(values.get("keep_daily", "7") or 7)
     keep_weekly = int(values.get("keep_weekly", "4") or 4)
@@ -106,17 +106,34 @@ class ResetConfirm(BaseModel):
 
 
 WRITABLE_SETTINGS = {
-    "server_name", "timezone", "theme", "log_level", "web_url",
+    "server_name",
+    "timezone",
+    "theme",
+    "log_level",
+    "web_url",
     "retention_days",
-    "keep_daily", "keep_weekly", "keep_monthly", "flash_retention",
-    "backup_schedule", "db_dump_schedule", "cloud_sync_schedule", "flash_schedule",
-    "notify_on_success", "notify_on_failure",
-    "min_disk_space_bytes", "warn_disk_space_bytes",
+    "keep_daily",
+    "keep_weekly",
+    "keep_monthly",
+    "flash_retention",
+    "backup_schedule",
+    "db_dump_schedule",
+    "cloud_sync_schedule",
+    "flash_schedule",
+    "notify_on_success",
+    "notify_on_failure",
+    "min_disk_space_bytes",
+    "warn_disk_space_bytes",
     "bandwidth_limit",
 }
 READONLY_SETTINGS = {
-    "api_key_hash", "api_key", "encryption_password", "restic_password",
-    "setup_completed_at", "setup_completed", "platform",
+    "api_key_hash",
+    "api_key",
+    "encryption_password",
+    "restic_password",
+    "setup_completed_at",
+    "setup_completed",
+    "platform",
 }
 
 
@@ -153,11 +170,12 @@ async def update_settings_bulk(
         tz_val = settings_payload["timezone"]
         try:
             import zoneinfo
+
             zoneinfo.ZoneInfo(tz_val)
         except (KeyError, Exception):
             raise HTTPException(status_code=422, detail=f"Invalid timezone: '{tz_val}'")
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     updated = []
 
     # Validate retention values
@@ -214,13 +232,15 @@ async def update_settings_bulk(
                 (key, value, encrypted, now),
             )
 
-        updated.append({
-            "key": key,
-            "value": REDACTED if _is_sensitive(key, encrypted) else value,
-            "encrypted": bool(encrypted),
-            "sensitive": _is_sensitive(key, encrypted),
-            "updated_at": now,
-        })
+        updated.append(
+            {
+                "key": key,
+                "value": REDACTED if _is_sensitive(key, encrypted) else value,
+                "encrypted": bool(encrypted),
+                "sensitive": _is_sensitive(key, encrypted),
+                "updated_at": now,
+            }
+        )
 
     await db.commit()
 
@@ -253,6 +273,7 @@ async def update_setting(
     if key == "timezone":
         try:
             import zoneinfo
+
             zoneinfo.ZoneInfo(body.value)
         except (KeyError, Exception):
             raise HTTPException(status_code=422, detail=f"Invalid timezone: '{body.value}'")
@@ -290,7 +311,7 @@ async def update_setting(
                 detail="bandwidth_limit must be a positive integer (KiB/s) or empty to disable",
             )
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     encrypted = 1 if _is_sensitive(key, 0) else 0
 
     cursor = await db.execute("SELECT key FROM settings WHERE key = ?", (key,))
@@ -319,7 +340,6 @@ async def update_setting(
     }
 
 
-
 @router.post("/reset")
 async def reset_settings(
     body: ResetConfirm,
@@ -332,9 +352,16 @@ async def reset_settings(
             detail='Reset requires confirmation. Send { "confirm": true } in the request body.',
         )
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    preserved_keys = {"api_key_hash", "encryption_password", "restic_password", "setup_completed", "setup_completed_at", "api_key"}
+    preserved_keys = {
+        "api_key_hash",
+        "encryption_password",
+        "restic_password",
+        "setup_completed",
+        "setup_completed_at",
+        "api_key",
+    }
     placeholders = ", ".join("?" for _ in preserved_keys)  # nosec B608
     await db.execute(
         f"DELETE FROM settings WHERE key NOT IN ({placeholders})",  # nosec B608
@@ -360,9 +387,14 @@ async def reset_settings(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("settings", "reset", "All settings reset to defaults",
-         json.dumps({"preserved": sorted(preserved_keys), "reset_at": now}),
-         "warning", now),
+        (
+            "settings",
+            "reset",
+            "All settings reset to defaults",
+            json.dumps({"preserved": sorted(preserved_keys), "reset_at": now}),
+            "warning",
+            now,
+        ),
     )
     await db.commit()
 
@@ -398,13 +430,13 @@ async def cron_preview(
         )
 
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cron_iter = croniter(cron_expr, now)
         next_runs = []
         for _ in range(3):
             next_time = cron_iter.get_next(datetime)
             if next_time.tzinfo is None:
-                next_time = next_time.replace(tzinfo=timezone.utc)
+                next_time = next_time.replace(tzinfo=UTC)
             next_runs.append(next_time.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
         return {"cron": cron_expr, "next_runs": next_runs, "count": len(next_runs)}
@@ -446,9 +478,7 @@ async def _get_all_targets_for_export(db: aiosqlite.Connection) -> list[dict]:
     targets = []
     for row in rows:
         t = dict(row)
-        t["config"] = _redact_export_config(
-            decrypt_config(t.get("config", "{}"), str(config.config_dir))
-        )
+        t["config"] = _redact_export_config(decrypt_config(t.get("config", "{}"), str(config.config_dir)))
         t["enabled"] = bool(t.get("enabled", 1))
         targets.append(t)
     return targets
@@ -495,7 +525,9 @@ async def _get_all_notifications_for_export(db: aiosqlite.Connection) -> list[di
     for row in rows:
         ch = dict(row)
         try:
-            ch["events"] = json.loads(ch.get("events", "[]")) if isinstance(ch.get("events"), str) else ch.get("events", [])
+            ch["events"] = (
+                json.loads(ch.get("events", "[]")) if isinstance(ch.get("events"), str) else ch.get("events", [])
+            )
         except (json.JSONDecodeError, TypeError):
             ch["events"] = []
         ch["enabled"] = bool(ch.get("enabled", 1))
@@ -509,7 +541,7 @@ async def export_config(db: aiosqlite.Connection = Depends(get_db)):
     config = {
         "arkive_config": {
             "version": 1,
-            "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "settings": await _get_all_settings_for_export(db),
             "storage_targets": await _get_all_targets_for_export(db),
             "backup_jobs": await _get_all_jobs_for_export(db),
@@ -549,7 +581,7 @@ async def import_config(
         raise HTTPException(status_code=400, detail="Invalid config format. Expected 'arkive_config' root key.")
 
     arkive_config = config["arkive_config"]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     restored = {
         "settings": 0,
@@ -575,9 +607,7 @@ async def import_config(
         if key == "bandwidth_limit":
             val_for_check = str(value) if value is not None else ""
             if not _BANDWIDTH_RE.match(val_for_check):
-                logger.warning(
-                    "Config import: skipping invalid bandwidth_limit '%s'", val_for_check
-                )
+                logger.warning("Config import: skipping invalid bandwidth_limit '%s'", val_for_check)
                 continue
 
         cursor = await db.execute("SELECT key FROM settings WHERE key = ?", (key,))
@@ -609,11 +639,19 @@ async def import_config(
                    (id, name, type, enabled, config, status, last_tested,
                     snapshot_count, total_size_bytes, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (tid, t.get("name", "Unnamed"), t.get("type", "local"),
-                 1 if t.get("enabled", True) else 0, cfg_str,
-                 t.get("status", "unknown"), t.get("last_tested"),
-                 t.get("snapshot_count"), t.get("total_size_bytes"),
-                 t.get("created_at", now), t.get("updated_at", now)),
+                (
+                    tid,
+                    t.get("name", "Unnamed"),
+                    t.get("type", "local"),
+                    1 if t.get("enabled", True) else 0,
+                    cfg_str,
+                    t.get("status", "unknown"),
+                    t.get("last_tested"),
+                    t.get("snapshot_count"),
+                    t.get("total_size_bytes"),
+                    t.get("created_at", now),
+                    t.get("updated_at", now),
+                ),
             )
             restored["storage_targets"] += 1
 
@@ -629,15 +667,24 @@ async def import_config(
                     exclude_patterns, include_databases, include_flash,
                     created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (jid, j.get("name", "Unnamed Job"), j.get("type", "full"),
-                 j.get("schedule", "0 2 * * *"),
-                 1 if j.get("enabled", True) else 0,
-                 json.dumps(j.get("targets", [])) if isinstance(j.get("targets"), list) else j.get("targets", "[]"),
-                 json.dumps(j.get("directories", [])) if isinstance(j.get("directories"), list) else j.get("directories", "[]"),
-                 json.dumps(j.get("exclude_patterns", [])) if isinstance(j.get("exclude_patterns"), list) else j.get("exclude_patterns", "[]"),
-                 1 if j.get("include_databases", True) else 0,
-                 1 if j.get("include_flash", True) else 0,
-                 j.get("created_at", now), j.get("updated_at", now)),
+                (
+                    jid,
+                    j.get("name", "Unnamed Job"),
+                    j.get("type", "full"),
+                    j.get("schedule", "0 2 * * *"),
+                    1 if j.get("enabled", True) else 0,
+                    json.dumps(j.get("targets", [])) if isinstance(j.get("targets"), list) else j.get("targets", "[]"),
+                    json.dumps(j.get("directories", []))
+                    if isinstance(j.get("directories"), list)
+                    else j.get("directories", "[]"),
+                    json.dumps(j.get("exclude_patterns", []))
+                    if isinstance(j.get("exclude_patterns"), list)
+                    else j.get("exclude_patterns", "[]"),
+                    1 if j.get("include_databases", True) else 0,
+                    1 if j.get("include_flash", True) else 0,
+                    j.get("created_at", now),
+                    j.get("updated_at", now),
+                ),
             )
             restored["backup_jobs"] += 1
 
@@ -652,11 +699,19 @@ async def import_config(
                    (id, path, label, exclude_patterns, enabled, size_bytes,
                     file_count, last_scanned, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (did, d.get("path", "/unknown"), d.get("label", "Unnamed"),
-                 json.dumps(d.get("exclude_patterns", [])) if isinstance(d.get("exclude_patterns"), list) else d.get("exclude_patterns", "[]"),
-                 1 if d.get("enabled", True) else 0,
-                 d.get("size_bytes"), d.get("file_count"),
-                 d.get("last_scanned"), d.get("created_at", now)),
+                (
+                    did,
+                    d.get("path", "/unknown"),
+                    d.get("label", "Unnamed"),
+                    json.dumps(d.get("exclude_patterns", []))
+                    if isinstance(d.get("exclude_patterns"), list)
+                    else d.get("exclude_patterns", "[]"),
+                    1 if d.get("enabled", True) else 0,
+                    d.get("size_bytes"),
+                    d.get("file_count"),
+                    d.get("last_scanned"),
+                    d.get("created_at", now),
+                ),
             )
             restored["watched_directories"] += 1
 
@@ -675,10 +730,17 @@ async def import_config(
                    (id, type, name, enabled, config, events, last_sent,
                     last_status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (chid, ch.get("type", "webhook"), ch.get("name", "Unnamed"),
-                 1 if ch.get("enabled", True) else 0, cfg_str, events_str,
-                 ch.get("last_sent"), ch.get("last_status"),
-                 ch.get("created_at", now)),
+                (
+                    chid,
+                    ch.get("type", "webhook"),
+                    ch.get("name", "Unnamed"),
+                    1 if ch.get("enabled", True) else 0,
+                    cfg_str,
+                    events_str,
+                    ch.get("last_sent"),
+                    ch.get("last_status"),
+                    ch.get("created_at", now),
+                ),
             )
             restored["notification_channels"] += 1
 
@@ -688,8 +750,7 @@ async def import_config(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("settings", "imported", "Configuration imported from YAML",
-         json.dumps(restored), "info", now),
+        ("settings", "imported", "Configuration imported from YAML", json.dumps(restored), "info", now),
     )
     await db.commit()
 

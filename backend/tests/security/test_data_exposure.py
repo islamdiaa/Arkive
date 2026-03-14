@@ -5,8 +5,8 @@ Security tests — sensitive data exposure, config encryption, response redactio
 import os
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,6 +19,7 @@ pytestmark = pytest.mark.asyncio
 async def test_target_config_encrypted_at_rest(client, tmp_path):
     """Storage target config should be encrypted in the database."""
     import aiosqlite
+
     from app.core.dependencies import get_config
 
     data = await do_setup(client, encryption_password="test-pass")
@@ -27,20 +28,22 @@ async def test_target_config_encrypted_at_rest(client, tmp_path):
     target_path = str(tmp_path / "backups")
     os.makedirs(target_path, exist_ok=True)
 
-    resp = await client.post("/api/targets", json={
-        "name": "Encrypted Target",
-        "type": "local",
-        "config": {"path": target_path},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Encrypted Target",
+            "type": "local",
+            "config": {"path": target_path},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     target_id = resp.json()["id"]
 
     # Check raw DB value
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
-        cursor = await db.execute(
-            "SELECT config FROM storage_targets WHERE id = ?", (target_id,)
-        )
+        cursor = await db.execute("SELECT config FROM storage_targets WHERE id = ?", (target_id,))
         row = await cursor.fetchone()
         raw_config = row[0]
 
@@ -51,16 +54,15 @@ async def test_target_config_encrypted_at_rest(client, tmp_path):
 async def test_api_key_stored_as_hash(client):
     """API key should be stored as SHA-256 hash, not plaintext."""
     import aiosqlite
+
     from app.core.dependencies import get_config
 
     data = await do_setup(client)
-    api_key = data["api_key"]
+    data["api_key"]
 
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
-        cursor = await db.execute(
-            "SELECT value FROM settings WHERE key = 'api_key_hash'"
-        )
+        cursor = await db.execute("SELECT value FROM settings WHERE key = 'api_key_hash'")
         row = await cursor.fetchone()
         stored_value = row[0]
 
@@ -72,15 +74,14 @@ async def test_api_key_stored_as_hash(client):
 async def test_encryption_password_encrypted(client):
     """Encryption password should be stored encrypted."""
     import aiosqlite
+
     from app.core.dependencies import get_config
 
-    data = await do_setup(client, encryption_password="super-secret")
+    await do_setup(client, encryption_password="super-secret")
     config = get_config()
 
     async with aiosqlite.connect(config.db_path) as db:
-        cursor = await db.execute(
-            "SELECT value FROM settings WHERE key = 'encryption_password'"
-        )
+        cursor = await db.execute("SELECT value FROM settings WHERE key = 'encryption_password'")
         row = await cursor.fetchone()
         stored_value = row[0]
 
@@ -112,12 +113,16 @@ async def test_notification_url_redacted(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/notifications", json={
-        "type": "discord",
-        "name": "Discord",
-        "url": "https://discord.com/api/webhooks/123456789/abcdefghijklmnop",
-        "events": ["backup.completed"],
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/notifications",
+        json={
+            "type": "discord",
+            "name": "Discord",
+            "url": "https://discord.com/api/webhooks/123456789/abcdefghijklmnop",
+            "events": ["backup.completed"],
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
 
     resp = await client.get("/api/notifications", headers=auth_headers(api_key))

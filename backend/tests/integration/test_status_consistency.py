@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
-import aiosqlite
 from unittest.mock import patch
+
+import aiosqlite
 
 from tests.conftest import do_setup
 
@@ -21,12 +22,16 @@ async def test_status_uses_latest_discovery_after_backup_refresh(client):
                 "running",
                 "[]",
                 "[]",
-                json.dumps([{
-                    "container_name": "paperless-paperless-1",
-                    "db_type": "postgres",
-                    "db_name": "docs",
-                    "host_path": None,
-                }]),
+                json.dumps(
+                    [
+                        {
+                            "container_name": "paperless-paperless-1",
+                            "db_type": "postgres",
+                            "db_name": "docs",
+                            "host_path": None,
+                        }
+                    ]
+                ),
                 "paperless-ngx",
                 "critical",
                 "paperless",
@@ -99,6 +104,7 @@ async def test_status_uses_latest_discovery_after_backup_refresh(client):
             return None
 
     from app.services.orchestrator import BackupOrchestrator
+
     app = client._transport.app
     orchestrator = BackupOrchestrator(
         discovery=StubDiscovery(),
@@ -130,9 +136,7 @@ async def test_status_prefers_configured_or_host_hostname(client):
     db_path = client._transport.app.state.config.db_path
 
     async with aiosqlite.connect(db_path) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES ('server_name', 'test-server')"
-        )
+        await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('server_name', 'test-server')")
         await db.commit()
 
     status = await client.get("/api/status")

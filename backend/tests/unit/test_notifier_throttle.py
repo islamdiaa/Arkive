@@ -1,14 +1,11 @@
 """Tests for notifier throttling, deduplication, and recovery alerts."""
 
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from app.services.notifier import MAX_PER_HOUR, THROTTLE_COOLDOWN, Notifier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -123,16 +120,18 @@ class TestNotifierThrottle:
 
     @pytest.mark.asyncio
     async def test_send_within_cooldown_suppressed(self, mock_config, mock_event_bus, mock_apprise):
-        """Same event on same channel within 15 min cooldown -> second send suppressed."""
+        """Same event on same channel within 24h cooldown -> second send suppressed."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}):
-            mock_aiosqlite.connect.return_value = FakeDB()
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+        ):
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             mock_aiosqlite.Row = MagicMock()
 
             # First send should go through
@@ -142,7 +141,7 @@ class TestNotifierThrottle:
             assert apprise_instance.async_notify.call_count == 1
 
             # Reset DB mock for second call
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
 
             # Second send within cooldown should be throttled
             results2 = await notifier.send("backup.failed", "Backup failed again", "Error details 2", "error")
@@ -156,14 +155,16 @@ class TestNotifierThrottle:
         """After cooldown expires with suppressed messages, send includes summary."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
-            mock_aiosqlite.connect.return_value = FakeDB()
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             mock_aiosqlite.Row = MagicMock()
 
             # Time starts at 1000
@@ -175,19 +176,19 @@ class TestNotifierThrottle:
 
             # Second send at 1001 — within cooldown, should be suppressed
             mock_time.time.return_value = 1001.0
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results2 = await notifier.send("backup.failed", "Backup failed", "Error", "error")
             assert results2[0]["status"] == "throttled"
 
             # Third send at 1002 — also suppressed
             mock_time.time.return_value = 1002.0
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results3 = await notifier.send("backup.failed", "Backup failed", "Error", "error")
             assert results3[0]["status"] == "throttled"
 
             # Now advance past cooldown (1000 + 901 = 1901)
             mock_time.time.return_value = 1000.0 + THROTTLE_COOLDOWN + 1
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             apprise_instance.async_notify.reset_mock()
 
             results4 = await notifier.send("backup.failed", "Backup failed", "Error details", "error")
@@ -203,13 +204,15 @@ class TestNotifierThrottle:
         """11th notification in an hour on a channel is rate-limited."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["*"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
 
             base_time = 1000.0
@@ -218,15 +221,13 @@ class TestNotifierThrottle:
             # (to avoid cooldown throttling)
             for i in range(MAX_PER_HOUR):
                 mock_time.time.return_value = base_time + i
-                mock_aiosqlite.connect.return_value = FakeDB()
-                results = await notifier.send(
-                    f"event.type.{i}", f"Title {i}", f"Body {i}", "info"
-                )
+                mock_aiosqlite.connect.return_value = fake_db_cls()
+                results = await notifier.send(f"event.type.{i}", f"Title {i}", f"Body {i}", "info")
                 assert results[0]["status"] == "sent", f"Send {i} should succeed"
 
             # 11th notification should be rate limited
             mock_time.time.return_value = base_time + MAX_PER_HOUR
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results = await notifier.send("event.type.extra", "Title extra", "Body extra", "info")
             assert results[0]["status"] == "rate_limited"
 
@@ -235,14 +236,16 @@ class TestNotifierThrottle:
         """After a backup.failed, a backup.success should get RECOVERED prefix."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed", "backup.success"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
-            mock_aiosqlite.connect.return_value = FakeDB()
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
 
@@ -251,7 +254,7 @@ class TestNotifierThrottle:
 
             # Now send success — should trigger recovery
             mock_time.time.return_value = 2000.0
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             apprise_instance.async_notify.reset_mock()
 
             await notifier.send("backup.success", "Backup completed", "All good", "success")
@@ -265,14 +268,16 @@ class TestNotifierThrottle:
         """Different event types on same channel should both be sent (no cross-throttle)."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.success", "discovery.completed"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
-            mock_aiosqlite.connect.return_value = FakeDB()
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
 
@@ -282,7 +287,7 @@ class TestNotifierThrottle:
 
             # Send different event type on same channel — should NOT be throttled
             mock_time.time.return_value = 1001.0
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results2 = await notifier.send("discovery.completed", "Discovery done", "Found 5", "info")
             assert results2[0]["status"] == "sent"
 
@@ -294,14 +299,16 @@ class TestNotifierThrottle:
         """backup.success without prior backup.failed should NOT get RECOVERED prefix."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.success"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
-            mock_aiosqlite.connect.return_value = FakeDB()
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
 
@@ -317,13 +324,15 @@ class TestNotifierThrottle:
         """Rate limit should reset after timestamps age past 1 hour."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["*"])]
-        FakeDB = _patch_db_for_channels(channels)
+        fake_db_cls = _patch_db_for_channels(channels)
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
 
             base_time = 1000.0
@@ -331,17 +340,17 @@ class TestNotifierThrottle:
             # Fill up the rate limit
             for i in range(MAX_PER_HOUR):
                 mock_time.time.return_value = base_time + i
-                mock_aiosqlite.connect.return_value = FakeDB()
+                mock_aiosqlite.connect.return_value = fake_db_cls()
                 await notifier.send(f"event.{i}", f"T{i}", f"B{i}", "info")
 
             # Should be rate limited now
             mock_time.time.return_value = base_time + MAX_PER_HOUR
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results = await notifier.send("event.extra", "T", "B", "info")
             assert results[0]["status"] == "rate_limited"
 
             # Advance past 1 hour — all old timestamps should be pruned
             mock_time.time.return_value = base_time + 3601
-            mock_aiosqlite.connect.return_value = FakeDB()
+            mock_aiosqlite.connect.return_value = fake_db_cls()
             results = await notifier.send("event.after_hour", "T", "B", "info")
             assert results[0]["status"] == "sent"

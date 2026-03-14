@@ -8,16 +8,15 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.dependencies import get_config, get_db, get_event_bus, get_orchestrator, get_scheduler, require_auth
-from app.services.orchestrator import cleanup_stale_backup_lock
-
 from app.models.jobs import BackupJobCreate, BackupJobUpdate
+from app.services.orchestrator import cleanup_stale_backup_lock
 
 logger = logging.getLogger("arkive.api.jobs")
 router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
@@ -26,6 +25,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(require_
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _row_to_job(row: aiosqlite.Row) -> dict:
     """Convert a backup_jobs Row to a dict with parsed JSON fields."""
@@ -50,15 +50,13 @@ async def _enrich_job(db: aiosqlite.Connection, job: dict) -> dict:
     )
     last_run_row = await cursor.fetchone()
     job["last_run"] = (
-        {"started_at": last_run_row["started_at"], "status": last_run_row["status"]}
-        if last_run_row
-        else None
+        {"started_at": last_run_row["started_at"], "status": last_run_row["status"]} if last_run_row else None
     )
 
     next_run = None
     if job.get("schedule") and job.get("enabled"):
         try:
-            cron = croniter(job["schedule"], datetime.now(timezone.utc))
+            cron = croniter(job["schedule"], datetime.now(UTC))
             next_dt = cron.get_next(datetime)
             next_run = next_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, KeyError) as exc:
@@ -82,6 +80,7 @@ def _severity_to_level(severity: str) -> str:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_jobs(
@@ -130,8 +129,14 @@ async def list_all_runs(
         days: Filter to runs within the last N days
     """
     allowed_sort = {
-        "id", "started_at", "status", "duration_seconds",
-        "databases_dumped", "total_size_bytes", "job_name", "target_count",
+        "id",
+        "started_at",
+        "status",
+        "duration_seconds",
+        "databases_dumped",
+        "total_size_bytes",
+        "job_name",
+        "target_count",
     }
     if sort_by not in allowed_sort:
         sort_by = "started_at"
@@ -151,7 +156,8 @@ async def list_all_runs(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""  # nosec B608
 
     cursor = await db.execute(
-        f"SELECT COUNT(*) FROM job_runs r {where_clause}", params  # nosec B608
+        f"SELECT COUNT(*) FROM job_runs r {where_clause}",
+        params,  # nosec B608
     )
     total = (await cursor.fetchone())[0]
 
@@ -310,7 +316,7 @@ async def create_job(
     # Validate directory paths — reject paths starting with '-' to prevent CLI injection
     for path in body.directories:
         if path.startswith("-"):
-            raise HTTPException(422, f"Invalid path: paths cannot start with '-'")
+            raise HTTPException(422, "Invalid path: paths cannot start with '-'")
 
     # Validate cron expression
     cron_parts = body.schedule.strip().split()
@@ -325,7 +331,7 @@ async def create_job(
         raise HTTPException(status_code=422, detail=f"Invalid cron expression: {exc}")
 
     job_id = str(uuid.uuid4())[:8]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     await db.execute(
         """INSERT INTO backup_jobs
@@ -334,12 +340,17 @@ async def create_job(
             created_at, updated_at)
            VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            job_id, body.name, body.type, body.schedule,
-            json.dumps(body.targets), json.dumps(body.directories),
+            job_id,
+            body.name,
+            body.type,
+            body.schedule,
+            json.dumps(body.targets),
+            json.dumps(body.directories),
             json.dumps(body.exclude_patterns),
             1 if body.include_databases else 0,
             1 if body.include_flash else 0,
-            now, now,
+            now,
+            now,
         ),
     )
 
@@ -347,9 +358,14 @@ async def create_job(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("job", "created", f"Backup job '{body.name}' created",
-         json.dumps({"job_id": job_id, "job_name": body.name, "job_type": body.type}),
-         "info", now),
+        (
+            "job",
+            "created",
+            f"Backup job '{body.name}' created",
+            json.dumps({"job_id": job_id, "job_name": body.name, "job_type": body.type}),
+            "info",
+            now,
+        ),
     )
     await db.commit()
 
@@ -357,13 +373,15 @@ async def create_job(
     if scheduler is not None:
         try:
             if callable(getattr(scheduler, "add_job", None)):
-                await scheduler.add_job({
-                    "id": job_id,
-                    "name": body.name,
-                    "schedule": body.schedule,
-                    "enabled": True,
-                    "type": body.type,
-                })
+                await scheduler.add_job(
+                    {
+                        "id": job_id,
+                        "name": body.name,
+                        "schedule": body.schedule,
+                        "enabled": True,
+                        "type": body.type,
+                    }
+                )
             elif callable(getattr(scheduler, "reschedule_job", None)):
                 # Current scheduler implementation supports reschedule/add semantics.
                 await scheduler.reschedule_job(job_id, body.schedule)
@@ -410,9 +428,9 @@ async def update_job(
     if body.directories is not None:
         for path in body.directories:
             if path.startswith("-"):
-                raise HTTPException(422, f"Invalid path: paths cannot start with '-'")
+                raise HTTPException(422, "Invalid path: paths cannot start with '-'")
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     updates: list[str] = []
     params: list = []
 
@@ -446,7 +464,8 @@ async def update_job(
     params.append(job_id)
 
     await db.execute(
-        f"UPDATE backup_jobs SET {', '.join(updates)} WHERE id = ?", params  # nosec B608
+        f"UPDATE backup_jobs SET {', '.join(updates)} WHERE id = ?",
+        params,  # nosec B608
     )
 
     # Activity log
@@ -454,9 +473,14 @@ async def update_job(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("job", "updated", f"Backup job '{row['name']}' updated",
-         json.dumps({"job_id": job_id, "changed_fields": changed}),
-         "info", now),
+        (
+            "job",
+            "updated",
+            f"Backup job '{row['name']}' updated",
+            json.dumps({"job_id": job_id, "changed_fields": changed}),
+            "info",
+            now,
+        ),
     )
     await db.commit()
 
@@ -514,13 +538,18 @@ async def delete_job(
 
     await db.execute("DELETE FROM backup_jobs WHERE id = ?", (job_id,))
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("job", "deleted", f"Backup job '{job_name}' deleted",
-         json.dumps({"job_id": job_id, "job_name": job_name, "job_type": job.get("type", "unknown")}),
-         "warning", now),
+        (
+            "job",
+            "deleted",
+            f"Backup job '{job_name}' deleted",
+            json.dumps({"job_id": job_id, "job_name": job_name, "job_type": job.get("type", "unknown")}),
+            "warning",
+            now,
+        ),
     )
     await db.commit()
 
@@ -545,7 +574,7 @@ async def run_job(
     cleanup_stale_backup_lock(config.config_dir)
     if os.path.exists(lock_file):
         try:
-            with open(lock_file, "r") as f:
+            with open(lock_file) as f:
                 lock_info = json.loads(f.read())
             raise HTTPException(
                 status_code=409,
@@ -561,7 +590,7 @@ async def run_job(
 
     job = _row_to_job(row)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_id = str(uuid.uuid4())[:8]
 
     # Create the run row immediately so list/detail endpoints can return it
@@ -588,6 +617,7 @@ async def run_job(
 
     # Launch pipeline in background — orchestrator creates its own run record
     if orchestrator is not None:
+
         async def _run_backup():
             async with aiosqlite.connect(config.db_path) as bg_db:
                 bg_db.row_factory = aiosqlite.Row
@@ -655,9 +685,7 @@ async def get_job_history(
     offset: int = 0,
 ):
     """Get run history for a specific job."""
-    cursor = await db.execute(
-        "SELECT COUNT(*) FROM job_runs WHERE job_id = ?", (job_id,)
-    )
+    cursor = await db.execute("SELECT COUNT(*) FROM job_runs WHERE job_id = ?", (job_id,))
     total = (await cursor.fetchone())[0]
 
     cursor = await db.execute(

@@ -2,7 +2,6 @@
 
 import posixpath
 
-
 _OBJECT_STORE_TYPES = {"b2", "s3", "wasabi"}
 
 

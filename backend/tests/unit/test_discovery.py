@@ -1,9 +1,9 @@
 """Tests for the discovery service — 10 test cases."""
+
 import sqlite3
-from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 
 
 def _make_container(name, image_tags, status="running", env=None, mounts=None, labels=None):
@@ -26,13 +26,11 @@ class TestDiscovery:
     def test_match_vaultwarden_by_image(self):
         """Vaultwarden image should match the vaultwarden profile."""
         from app.services.discovery import DiscoveryEngine
-        svc = DiscoveryEngine.__new__(DiscoveryEngine)
+
+        DiscoveryEngine.__new__(DiscoveryEngine)
         container = _make_container("vaultwarden", ["vaultwarden/server:latest"])
         # Profile matching is based on image pattern
-        assert any(
-            pat in container.image.tags[0]
-            for pat in ["vaultwarden/server", "bitwardenrs/server"]
-        )
+        assert any(pat in container.image.tags[0] for pat in ["vaultwarden/server", "bitwardenrs/server"])
 
     def test_match_immich_by_image(self):
         """Immich image should match the immich profile."""
@@ -70,10 +68,7 @@ class TestDiscovery:
         container = _make_container("nginx", ["nginx:latest"])
         # No env vars, no known DB patterns
         env_list = container.attrs["Config"]["Env"]
-        has_db_env = any(
-            k in str(env_list)
-            for k in ["POSTGRES_", "MYSQL_", "MONGO_", "REDIS_"]
-        )
+        has_db_env = any(k in str(env_list) for k in ["POSTGRES_", "MYSQL_", "MONGO_", "REDIS_"])
         assert not has_db_env
 
     def test_handle_container_with_multiple_databases(self):
@@ -149,14 +144,16 @@ class TestDiscovery:
 
         profile = {
             "name": "immich",
-            "databases": [{
-                "type": "postgres",
-                "env_vars": {
-                    "db_name": ["DB_DATABASE_NAME", "POSTGRES_DB"],
-                    "db_user": ["DB_USERNAME", "POSTGRES_USER"],
-                    "db_host": ["DB_HOSTNAME", "DB_HOST"],
-                },
-            }],
+            "databases": [
+                {
+                    "type": "postgres",
+                    "env_vars": {
+                        "db_name": ["DB_DATABASE_NAME", "POSTGRES_DB"],
+                        "db_user": ["DB_USERNAME", "POSTGRES_USER"],
+                        "db_host": ["DB_HOSTNAME", "DB_HOST"],
+                    },
+                }
+            ],
         }
 
         found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app, db])
@@ -197,14 +194,16 @@ class TestDiscovery:
 
         profile = {
             "name": "paperless-ngx",
-            "databases": [{
-                "type": "postgres",
-                "env_vars": {
-                    "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
-                    "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
-                    "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
-                },
-            }],
+            "databases": [
+                {
+                    "type": "postgres",
+                    "env_vars": {
+                        "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
+                        "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
+                        "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
+                    },
+                }
+            ],
         }
 
         found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app, db])
@@ -230,14 +229,16 @@ class TestDiscovery:
 
         profile = {
             "name": "paperless-ngx",
-            "databases": [{
-                "type": "postgres",
-                "env_vars": {
-                    "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
-                    "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
-                    "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
-                },
-            }],
+            "databases": [
+                {
+                    "type": "postgres",
+                    "env_vars": {
+                        "db_name": ["PAPERLESS_DBNAME", "POSTGRES_DB"],
+                        "db_user": ["PAPERLESS_DBUSER", "POSTGRES_USER"],
+                        "db_host": ["PAPERLESS_DBHOST", "POSTGRES_HOST"],
+                    },
+                }
+            ],
         }
 
         found = engine._detect_from_profile(app, profile, [], engine._get_env_vars(app), [app])

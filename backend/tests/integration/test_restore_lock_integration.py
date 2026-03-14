@@ -8,16 +8,17 @@ NOTE: Lock paths are resolved at call time from ARKIVE_CONFIG_DIR (set to
 tmp_path by the client fixture), so all helpers derive paths at runtime
 rather than importing the module-level constants which default to /config/.
 """
+
 import json
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
-from tests.conftest import do_setup, auth_headers
 from app.services.orchestrator import _get_proc_start_time
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -113,11 +114,14 @@ async def test_restore_blocked_when_restore_running(client, tmp_path):
     # Write a restore lock that looks like the current live process
     pid = os.getpid()
     proc_start = _get_proc_start_time(pid) or ""
-    _write_lock(restore_lock, {
-        "pid": pid,
-        "proc_start_time": proc_start,
-        "started_at": "2026-01-01T00:00:00Z",
-    })
+    _write_lock(
+        restore_lock,
+        {
+            "pid": pid,
+            "proc_start_time": proc_start,
+            "started_at": "2026-01-01T00:00:00Z",
+        },
+    )
 
     try:
         restore_to = str(tmp_path / "restores" / "blocked-by-restore")
@@ -146,8 +150,8 @@ async def test_restore_blocked_when_restore_running(client, tmp_path):
 
 async def test_backup_blocked_when_restore_running(tmp_path):
     """BackupOrchestrator._acquire_lock returns False when restore.lock exists."""
-    from app.services.orchestrator import BackupOrchestrator
     from app.core.config import ArkiveConfig
+    from app.services.orchestrator import BackupOrchestrator
 
     config = ArkiveConfig(config_dir=tmp_path)
     orchestrator = BackupOrchestrator(
@@ -165,14 +169,19 @@ async def test_backup_blocked_when_restore_running(tmp_path):
     restore_lock_path = tmp_path / "restore.lock"
     lock_file_path = tmp_path / "backup.lock"
 
-    _write_lock(restore_lock_path, {
-        "pid": os.getpid(),
-        "started_at": "2026-01-01T00:00:00Z",
-    })
+    _write_lock(
+        restore_lock_path,
+        {
+            "pid": os.getpid(),
+            "started_at": "2026-01-01T00:00:00Z",
+        },
+    )
 
     try:
-        with patch("app.services.orchestrator.RESTORE_LOCK_FILE", restore_lock_path), \
-             patch("app.services.orchestrator.LOCK_FILE", lock_file_path):
+        with (
+            patch("app.services.orchestrator.RESTORE_LOCK_FILE", restore_lock_path),
+            patch("app.services.orchestrator.LOCK_FILE", lock_file_path),
+        ):
             result = orchestrator._acquire_lock("test-run-001")
 
         assert result is False, "Expected _acquire_lock to return False while restore is running"
@@ -194,10 +203,12 @@ async def test_restore_lock_stale_recovery(client, tmp_path):
     target_id = await _create_target(client, api_key, tmp_path)
 
     mock_engine = AsyncMock()
-    mock_engine.restore = AsyncMock(return_value={
-        "status": "success",
-        "output": "restored 1 file",
-    })
+    mock_engine.restore = AsyncMock(
+        return_value={
+            "status": "success",
+            "output": "restored 1 file",
+        }
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -208,11 +219,14 @@ async def test_restore_lock_stale_recovery(client, tmp_path):
 
     # Dead PID that definitely does not exist
     dead_pid = 999999
-    _write_lock(restore_lock, {
-        "pid": dead_pid,
-        "proc_start_time": "9999999999",  # bogus — won't match any recycled PID
-        "started_at": "2026-01-01T00:00:00Z",
-    })
+    _write_lock(
+        restore_lock,
+        {
+            "pid": dead_pid,
+            "proc_start_time": "9999999999",  # bogus — won't match any recycled PID
+            "started_at": "2026-01-01T00:00:00Z",
+        },
+    )
     assert not os.path.exists(f"/proc/{dead_pid}"), f"PID {dead_pid} unexpectedly alive"
 
     try:
@@ -249,10 +263,12 @@ async def test_restore_lock_released_after_success(client, tmp_path):
     target_id = await _create_target(client, api_key, tmp_path)
 
     mock_engine = AsyncMock()
-    mock_engine.restore = AsyncMock(return_value={
-        "status": "success",
-        "output": "restored 5 files",
-    })
+    mock_engine.restore = AsyncMock(
+        return_value={
+            "status": "success",
+            "output": "restored 5 files",
+        }
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -278,9 +294,7 @@ async def test_restore_lock_released_after_success(client, tmp_path):
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "success"
 
-        assert not restore_lock.exists(), (
-            "restore.lock should be removed after successful restore"
-        )
+        assert not restore_lock.exists(), "restore.lock should be removed after successful restore"
     finally:
         app.state.backup_engine = original_engine
         lock.unlink(missing_ok=True)
@@ -333,9 +347,7 @@ async def test_restore_lock_released_after_failure(client, tmp_path):
             )
         assert resp.status_code == 500, resp.text
 
-        assert not restore_lock.exists(), (
-            "restore.lock should be removed even after a failed restore"
-        )
+        assert not restore_lock.exists(), "restore.lock should be removed even after a failed restore"
     finally:
         app.state.backup_engine = original_engine
         lock.unlink(missing_ok=True)
@@ -349,10 +361,12 @@ async def test_restore_run_persisted_on_success(client, tmp_path):
     target_id = await _create_target(client, api_key, tmp_path)
 
     mock_engine = AsyncMock()
-    mock_engine.restore = AsyncMock(return_value={
-        "status": "success",
-        "output": "restored 3 files",
-    })
+    mock_engine.restore = AsyncMock(
+        return_value={
+            "status": "success",
+            "output": "restored 3 files",
+        }
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -375,7 +389,9 @@ async def test_restore_run_persisted_on_success(client, tmp_path):
         async with aiosqlite.connect(app.state.config.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT status, snapshot_id, target_id, restore_to, error_message FROM restore_runs ORDER BY started_at DESC LIMIT 1"
+                "SELECT status, snapshot_id, target_id, restore_to,"
+                " error_message FROM restore_runs"
+                " ORDER BY started_at DESC LIMIT 1"
             )
             row = await cursor.fetchone()
 
@@ -423,7 +439,9 @@ async def test_restore_run_persisted_on_failure(client, tmp_path):
         async with aiosqlite.connect(app.state.config.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT status, snapshot_id, target_id, restore_to, error_message FROM restore_runs ORDER BY started_at DESC LIMIT 1"
+                "SELECT status, snapshot_id, target_id, restore_to,"
+                " error_message FROM restore_runs"
+                " ORDER BY started_at DESC LIMIT 1"
             )
             row = await cursor.fetchone()
 

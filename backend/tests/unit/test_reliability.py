@@ -13,19 +13,18 @@ Tests cover:
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
-from app.services.scheduler import ArkiveScheduler, SYSTEM_JOB_DISCOVERY, SYSTEM_JOB_RETENTION, SYSTEM_JOB_HEALTH
-
+from app.services.scheduler import SYSTEM_JOB_DISCOVERY, SYSTEM_JOB_HEALTH, SYSTEM_JOB_RETENTION, ArkiveScheduler
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_orchestrator():
@@ -53,6 +52,7 @@ def scheduler(mock_orchestrator, mock_config):
 # ---------------------------------------------------------------------------
 # Scheduler reliability tests
 # ---------------------------------------------------------------------------
+
 
 class TestSchedulerReliability:
     """Test scheduler error handling and recovery."""
@@ -130,6 +130,7 @@ class TestSchedulerReliability:
 # Shutdown tests
 # ---------------------------------------------------------------------------
 
+
 class TestShutdownReliability:
     """Test graceful shutdown behavior."""
 
@@ -139,6 +140,7 @@ class TestShutdownReliability:
         mock_orchestrator._active_runs = {"run1": False}
 
         waited = 0
+
         # Simulate: backup completes after 2 seconds
         async def simulate_backup():
             await asyncio.sleep(0.1)
@@ -177,6 +179,7 @@ class TestShutdownReliability:
 # Notification isolation tests
 # ---------------------------------------------------------------------------
 
+
 class TestNotificationIsolation:
     """Test that notification failures don't break backup pipeline."""
 
@@ -201,7 +204,7 @@ class TestNotificationIsolation:
     @pytest.mark.asyncio
     async def test_notifier_rate_limiting(self):
         """Rate limiting returns throttled status without raising."""
-        from app.services.notifier import Notifier, MAX_PER_HOUR
+        from app.services.notifier import MAX_PER_HOUR, Notifier
 
         config = MagicMock()
         config.db_path = ":memory:"
@@ -222,6 +225,7 @@ class TestNotificationIsolation:
 # Logging sensitive value tests
 # ---------------------------------------------------------------------------
 
+
 class TestLogSensitiveFiltering:
     """Test that sensitive values are redacted from logs."""
 
@@ -231,9 +235,13 @@ class TestLogSensitiveFiltering:
 
         f = _SensitiveFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
             msg="Setting password=mysecretpassword123 for user",
-            args=(), exc_info=None,
+            args=(),
+            exc_info=None,
         )
         f.filter(record)
         assert "mysecretpassword123" not in record.msg
@@ -245,9 +253,13 @@ class TestLogSensitiveFiltering:
 
         f = _SensitiveFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
             msg="Using api_key=ark_abc123def456 for auth",
-            args=(), exc_info=None,
+            args=(),
+            exc_info=None,
         )
         f.filter(record)
         assert "ark_abc123def456" not in record.msg
@@ -259,9 +271,13 @@ class TestLogSensitiveFiltering:
 
         f = _SensitiveFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
             msg="Setting token=eyJhbGciOiJIUz for service",
-            args=(), exc_info=None,
+            args=(),
+            exc_info=None,
         )
         f.filter(record)
         assert "eyJhbGciOiJIUz" not in record.msg
@@ -274,8 +290,13 @@ class TestLogSensitiveFiltering:
         f = _SensitiveFilter()
         original_msg = "Backup completed successfully in 42s"
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg=original_msg, args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=original_msg,
+            args=(),
+            exc_info=None,
         )
         f.filter(record)
         assert record.msg == original_msg
@@ -286,7 +307,10 @@ class TestLogSensitiveFiltering:
 
         f = _SensitiveFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
             msg="Config: %s",
             args=("secret_key=abc123xyz",),
             exc_info=None,
@@ -298,6 +322,7 @@ class TestLogSensitiveFiltering:
 # ---------------------------------------------------------------------------
 # Backup engine retry tests
 # ---------------------------------------------------------------------------
+
 
 class TestBackupEngineRetry:
     """Test retry logic for transient network errors."""
@@ -406,31 +431,38 @@ class TestBackupEngineRetry:
 # Error categorization tests
 # ---------------------------------------------------------------------------
 
+
 class TestErrorCategorization:
     """Test that errors are correctly categorized for user feedback."""
 
     def test_categorize_network_error(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("Connection refused by remote host") == "network_error"
 
     def test_categorize_auth_error(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("401 Unauthorized") == "auth_error"
 
     def test_categorize_storage_full(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("No space left on device") == "storage_full"
 
     def test_categorize_unknown(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("some random error xyz") == "unknown"
 
     def test_categorize_container_error(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("Container is not running") == "container_error"
 
     def test_categorize_permission_error(self):
         from app.services.orchestrator import categorize_error
+
         assert categorize_error("Permission denied: /some/path") == "permission_error"
 
 
@@ -438,28 +470,27 @@ class TestErrorCategorization:
 # Startup self-healing tests
 # ---------------------------------------------------------------------------
 
+
 class TestStartupSelfHealing:
     """Test that startup correctly heals dirty state."""
 
     @pytest.mark.asyncio
     async def test_interrupted_runs_marked_on_startup(self):
         """job_runs with status='running' are marked as 'interrupted' on startup."""
+        import tempfile
+
         import aiosqlite
+
         from app.core.database import init_db
 
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
 
             # Insert a job and a "running" run
             async with aiosqlite.connect(db_path) as db:
-                await db.execute(
-                    "INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')"
-                )
-                await db.execute(
-                    "INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'running')"
-                )
+                await db.execute("INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')")
+                await db.execute("INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'running')")
                 await db.commit()
 
             # Simulate Step 7: mark stale runs as failed (matches main.py self-healing)
@@ -467,7 +498,7 @@ class TestStartupSelfHealing:
                 await db.execute(
                     "UPDATE job_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
                     "completed_at = ? WHERE status = 'running'",
-                    (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+                    (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),),
                 )
                 await db.commit()
 
@@ -482,21 +513,19 @@ class TestStartupSelfHealing:
     @pytest.mark.asyncio
     async def test_completed_runs_not_affected(self):
         """job_runs with status='success' are NOT changed by self-healing."""
+        import tempfile
+
         import aiosqlite
+
         from app.core.database import init_db
 
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
 
             async with aiosqlite.connect(db_path) as db:
-                await db.execute(
-                    "INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')"
-                )
-                await db.execute(
-                    "INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'success')"
-                )
+                await db.execute("INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')")
+                await db.execute("INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'success')")
                 await db.commit()
 
             # Self-healing step (matches main.py — marks running as failed)
@@ -504,7 +533,7 @@ class TestStartupSelfHealing:
                 await db.execute(
                     "UPDATE job_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
                     "completed_at = ? WHERE status = 'running'",
-                    (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+                    (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),),
                 )
                 await db.commit()
 
@@ -520,16 +549,19 @@ class TestStartupSelfHealing:
 # Database WAL tests
 # ---------------------------------------------------------------------------
 
+
 class TestDatabaseWAL:
     """Test WAL mode is enabled and flushed correctly."""
 
     @pytest.mark.asyncio
     async def test_wal_mode_enabled(self):
         """Database is created with WAL journal mode."""
+        import tempfile
+
         import aiosqlite
+
         from app.core.database import init_db
 
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
@@ -542,10 +574,10 @@ class TestDatabaseWAL:
     @pytest.mark.asyncio
     async def test_flush_wal(self):
         """flush_wal runs PRAGMA wal_checkpoint(TRUNCATE) without error."""
-        import aiosqlite
-        from app.core.database import init_db, flush_wal
-
         import tempfile
+
+        from app.core.database import flush_wal, init_db
+
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
@@ -557,18 +589,23 @@ class TestDatabaseWAL:
 # Orchestrator lock tests
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorLocking:
     """Test backup lock behavior for concurrent execution safety."""
 
     def test_lock_acquisition_and_release(self, tmp_path):
-        from app.services.orchestrator import BackupOrchestrator, LOCK_FILE
+        from app.services.orchestrator import BackupOrchestrator
 
         with patch("app.services.orchestrator.LOCK_FILE", tmp_path / "backup.lock"):
             orch = BackupOrchestrator(
-                discovery=None, db_dumper=None,
-                flash_backup=MagicMock(), backup_engine=MagicMock(),
-                cloud_manager=MagicMock(), notifier=MagicMock(),
-                event_bus=MagicMock(), config=MagicMock(),
+                discovery=None,
+                db_dumper=None,
+                flash_backup=MagicMock(),
+                backup_engine=MagicMock(),
+                cloud_manager=MagicMock(),
+                notifier=MagicMock(),
+                event_bus=MagicMock(),
+                config=MagicMock(),
             )
             lock_file = tmp_path / "backup.lock"
 
@@ -586,6 +623,7 @@ class TestOrchestratorLocking:
     def test_stale_lock_detection(self, tmp_path):
         """Stale locks from dead processes are cleaned up."""
         import json
+
         from app.services.orchestrator import BackupOrchestrator
 
         lock_file = tmp_path / "backup.lock"
@@ -593,10 +631,14 @@ class TestOrchestratorLocking:
         lock_file.write_text(json.dumps({"pid": 999999999}))
 
         orch = BackupOrchestrator(
-            discovery=None, db_dumper=None,
-            flash_backup=MagicMock(), backup_engine=MagicMock(),
-            cloud_manager=MagicMock(), notifier=MagicMock(),
-            event_bus=MagicMock(), config=MagicMock(),
+            discovery=None,
+            db_dumper=None,
+            flash_backup=MagicMock(),
+            backup_engine=MagicMock(),
+            cloud_manager=MagicMock(),
+            notifier=MagicMock(),
+            event_bus=MagicMock(),
+            config=MagicMock(),
         )
 
         with patch("app.services.orchestrator.LOCK_FILE", lock_file):

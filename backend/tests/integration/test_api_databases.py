@@ -3,13 +3,14 @@ API integration tests for database management endpoints.
 
 Tests: list databases, list with data, dump not found.
 """
+
 import json
 
-import pytest
 import aiosqlite
+import pytest
 
-from tests.conftest import do_setup, auth_headers
 from app.core.dependencies import get_config
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -19,10 +20,18 @@ async def _seed_container_with_db(client):
     data = await do_setup(client)
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
-        databases_json = json.dumps([
-            {"type": "mysql", "name": "mydb", "db_name": "mydb", "db_type": "mysql",
-             "source": "env", "host_path": "/data/mysql"},
-        ])
+        databases_json = json.dumps(
+            [
+                {
+                    "type": "mysql",
+                    "name": "mydb",
+                    "db_name": "mydb",
+                    "db_type": "mysql",
+                    "source": "env",
+                    "host_path": "/data/mysql",
+                },
+            ]
+        )
         await db.execute(
             """INSERT INTO discovered_containers (name, image, status, databases, profile, priority)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -35,9 +44,7 @@ async def _seed_container_with_db(client):
 async def test_list_databases_empty(client):
     """GET /api/databases with no containers should return empty list."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/databases", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/databases", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []

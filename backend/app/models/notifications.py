@@ -4,7 +4,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-VALID_NOTIFICATION_TYPES = {"slack", "discord", "telegram", "email", "ntfy", "gotify", "pushover", "webhook", "uptimekuma"}
+VALID_NOTIFICATION_TYPES = {
+    "slack",
+    "discord",
+    "telegram",
+    "email",
+    "ntfy",
+    "gotify",
+    "pushover",
+    "webhook",
+    "uptimekuma",
+}
 
 
 class NotificationChannelCreate(BaseModel):

@@ -27,7 +27,7 @@ async def event_stream(
                         "event": event.get("event", "message"),
                         "data": json.dumps(event.get("data", {})),
                     }
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "ping", "data": json.dumps({"type": "keepalive"})}
         finally:
             event_bus.unsubscribe(queue)

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from app.core.platform import Platform, _looks_like_unraid_flash, detect_platform
 
 

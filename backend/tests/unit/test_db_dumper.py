@@ -1,7 +1,7 @@
 """Tests for the DB dumper service — 8 test cases."""
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from pathlib import Path
+
+from unittest.mock import MagicMock
+
 from app.models.discovery import DiscoveredDatabase
 from app.services.db_dumper import DBDumper
 
@@ -13,10 +13,7 @@ class TestDbDumper:
         """Postgres dumps should be portable to a fresh instance."""
         user = "testuser"
         db_name = "testdb"
-        cmd = (
-            f"pg_dump --clean --create --if-exists --no-owner --no-privileges "
-            f"-U {user} -d {db_name}"
-        )
+        cmd = f"pg_dump --clean --create --if-exists --no-owner --no-privileges -U {user} -d {db_name}"
         assert f"-U {user}" in cmd
         assert f"-d {db_name}" in cmd
         assert "pg_dump" in cmd
@@ -41,7 +38,9 @@ class TestDbDumper:
         docker_client.containers.get.return_value = container
 
         dumper = DBDumper(docker_client, config)
-        db = DiscoveredDatabase(container_name="postgres-paperless", db_type="postgres", db_name="paperless", host_path=None)
+        db = DiscoveredDatabase(
+            container_name="postgres-paperless", db_type="postgres", db_name="paperless", host_path=None
+        )
 
         result = dumper._dump_postgres_blocking(db)
 

@@ -7,13 +7,14 @@ Uses a module-scoped client to avoid hitting the setup rate limiter.
 """
 
 import os
+from contextlib import asynccontextmanager
+from unittest.mock import MagicMock, patch
+
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock, patch
 from httpx import ASGITransport, AsyncClient
-from contextlib import asynccontextmanager
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -21,6 +22,7 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 # ---------------------------------------------------------------------------
 # Module-scoped fixtures — one setup call for all tests in this module
 # ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def _noop_lifespan(app):
@@ -51,16 +53,19 @@ async def module_client(tmp_path_factory):
     await db_mod.init_db(db_path)
 
     from app.core.security import _load_fernet_from_dir, _reset_fernet
+
     _reset_fernet()
     _load_fernet_from_dir(str(config_dir))
 
     test_config = TestConfig()
     deps_mod._config = test_config
 
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig):
-
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+    ):
         from app.main import create_app
+
         test_app = create_app()
         test_app.router.lifespan_context = _noop_lifespan
         test_app.state.config = test_config
@@ -86,6 +91,7 @@ async def module_client(tmp_path_factory):
     deps_mod._config = original_deps_config
 
     from app.core.security import _reset_fernet
+
     _reset_fernet()
 
     if "ARKIVE_CONFIG_DIR" in os.environ:
@@ -103,8 +109,8 @@ async def api_key(module_client):
 # GET /{target_id} — ID validation
 # ---------------------------------------------------------------------------
 
-class TestGetTargetIdValidation:
 
+class TestGetTargetIdValidation:
     async def test_path_traversal_encoded_slash_returns_400_or_404(self, module_client, api_key):
         """URL-encoded slash in target ID — FastAPI may decode it; should be rejected."""
         resp = await module_client.get("/api/targets/..%2Fetc%2Fpasswd", headers=auth_headers(api_key))
@@ -144,8 +150,8 @@ class TestGetTargetIdValidation:
 # PUT /{target_id} — ID validation
 # ---------------------------------------------------------------------------
 
-class TestPutTargetIdValidation:
 
+class TestPutTargetIdValidation:
     async def test_special_chars_in_put_returns_400(self, module_client, api_key):
         resp = await module_client.put(
             "/api/targets/foo;bar",
@@ -176,8 +182,8 @@ class TestPutTargetIdValidation:
 # DELETE /{target_id} — ID validation
 # ---------------------------------------------------------------------------
 
-class TestDeleteTargetIdValidation:
 
+class TestDeleteTargetIdValidation:
     async def test_special_chars_in_delete_returns_400(self, module_client, api_key):
         resp = await module_client.delete(
             "/api/targets/foo;rm+-rf",
@@ -205,8 +211,8 @@ class TestDeleteTargetIdValidation:
 # POST /{target_id}/test — ID validation
 # ---------------------------------------------------------------------------
 
-class TestTestTargetIdValidation:
 
+class TestTestTargetIdValidation:
     async def test_special_chars_in_test_endpoint_returns_400(self, module_client, api_key):
         resp = await module_client.post(
             "/api/targets/foo;bar/test",
@@ -234,8 +240,8 @@ class TestTestTargetIdValidation:
 # GET /{target_id}/usage — ID validation
 # ---------------------------------------------------------------------------
 
-class TestUsageTargetIdValidation:
 
+class TestUsageTargetIdValidation:
     async def test_special_chars_in_usage_returns_400(self, module_client, api_key):
         resp = await module_client.get(
             "/api/targets/foo;bar/usage",

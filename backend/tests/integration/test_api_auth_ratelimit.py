@@ -11,11 +11,11 @@ Covers:
 """
 
 import time
+
 import pytest
 
 import app.api.auth as auth_mod
 from tests.conftest import do_setup
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,6 +23,7 @@ pytestmark = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 # Fixture: clear the module-level _setup_attempts dict between tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def clear_setup_rate_limit():
@@ -65,7 +66,7 @@ async def test_sixth_attempt_returns_429(client):
     for i in range(5):
         resp = await _post_setup(client)
         # First call: 201; subsequent calls: 409 (already set up)
-        assert resp.status_code in (201, 409), f"Unexpected {resp.status_code} on attempt {i+1}"
+        assert resp.status_code in (201, 409), f"Unexpected {resp.status_code} on attempt {i + 1}"
 
     # 6th attempt must be rate-limited
     resp = await _post_setup(client)
@@ -111,9 +112,7 @@ async def test_different_ips_have_independent_limits(client, monkeypatch):
 
     # A fresh IP ("127.0.0.1" — httpx ASGITransport default) should still work fine.
     resp = await _post_setup(client)
-    assert resp.status_code == 201, (
-        f"Different IP should not be rate-limited; got {resp.status_code}: {resp.text}"
-    )
+    assert resp.status_code == 201, f"Different IP should not be rate-limited; got {resp.status_code}: {resp.text}"
 
 
 async def test_rate_limit_fires_before_already_set_up_check(client):
@@ -132,9 +131,7 @@ async def test_rate_limit_fires_before_already_set_up_check(client):
     # (we don't want a fresh 201 to reset our manually-injected state)
     # Actually: with the counter already at limit, even this should 429.
     resp = await _post_setup(client)
-    assert resp.status_code == 429, (
-        f"Rate limit should fire before 409 check; got {resp.status_code}: {resp.text}"
-    )
+    assert resp.status_code == 429, f"Rate limit should fire before 409 check; got {resp.status_code}: {resp.text}"
 
 
 async def test_normal_setup_flow_unaffected(client):

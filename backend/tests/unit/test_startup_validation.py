@@ -6,18 +6,12 @@ module level (which causes segfaults in the assertion rewriter due to heavy
 native extensions like docker-py).
 """
 
-import os
-import shutil
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helper: run the validation logic inline (re-implement the exact checks)
 # ---------------------------------------------------------------------------
+
 
 def _run_startup_validation(dev_mode: bool, docker_exists: bool, which_map: dict) -> None:
     """
@@ -27,7 +21,6 @@ def _run_startup_validation(dev_mode: bool, docker_exists: bool, which_map: dict
     Raises SystemExit when production mode detects a missing dependency.
     """
     import logging
-    import shutil as _shutil
 
     logger = logging.getLogger("arkive.main")
 
@@ -38,9 +31,7 @@ def _run_startup_validation(dev_mode: bool, docker_exists: bool, which_map: dict
             logger.warning("Docker socket not found — running in limited mode (dev)")
         else:
             logger.critical("Docker socket not found at /var/run/docker.sock")
-            raise SystemExit(
-                "Docker socket required. Mount with -v /var/run/docker.sock:/var/run/docker.sock:ro"
-            )
+            raise SystemExit("Docker socket required. Mount with -v /var/run/docker.sock:/var/run/docker.sock:ro")
 
     for binary in ["restic", "rclone"]:
         found = which_map.get(binary)
@@ -49,9 +40,7 @@ def _run_startup_validation(dev_mode: bool, docker_exists: bool, which_map: dict
                 logger.warning("Binary not found: %s — limited mode (dev)", binary)
             else:
                 logger.critical("Required binary not found: %s", binary)
-                raise SystemExit(
-                    f"Required binary not found: {binary}. Install it or check your PATH."
-                )
+                raise SystemExit(f"Required binary not found: {binary}. Install it or check your PATH.")
 
     # sqlite3 is optional
     if not which_map.get("sqlite3"):

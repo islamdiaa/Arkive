@@ -3,15 +3,16 @@ Extended API integration tests for notification endpoints.
 
 Covers: update 404, URL update triggers re-encryption, test failure path.
 """
+
 import json
+from unittest.mock import AsyncMock
 
 import aiosqlite
 import pytest
-from unittest.mock import AsyncMock
 
-from tests.conftest import do_setup, auth_headers
 from app.core.dependencies import get_config
 from app.core.security import decrypt_value
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,9 +78,7 @@ async def test_update_channel_name(client):
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT name FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT name FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
         assert row["name"] == "RenamedChannel"
 
@@ -101,9 +100,7 @@ async def test_update_channel_url_triggers_reencryption(client):
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT config FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT config FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
         config_data = json.loads(row["config"])
         encrypted_url = config_data["url"]
@@ -129,9 +126,7 @@ async def test_update_channel_enabled_toggle(client):
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT enabled FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT enabled FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
         assert row["enabled"] == 0
 
@@ -152,9 +147,7 @@ async def test_update_channel_events(client):
     config = get_config()
     async with aiosqlite.connect(config.db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT events FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT events FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
         stored_events = json.loads(row["events"])
         assert stored_events == new_events
@@ -171,9 +164,7 @@ async def test_notification_test_notifier_failure(client):
     channel_id = await _create_channel(client, api_key)
 
     mock_notifier = AsyncMock()
-    mock_notifier.test_channel = AsyncMock(
-        return_value={"status": "failed", "error": "Connection timed out"}
-    )
+    mock_notifier.test_channel = AsyncMock(return_value={"status": "failed", "error": "Connection timed out"})
 
     app = client._transport.app
     original_notifier = app.state.notifier
@@ -199,9 +190,7 @@ async def test_notification_test_success(client):
     channel_id = await _create_channel(client, api_key)
 
     mock_notifier = AsyncMock()
-    mock_notifier.test_channel = AsyncMock(
-        return_value={"status": "success", "message": "Test notification sent"}
-    )
+    mock_notifier.test_channel = AsyncMock(return_value={"status": "success", "message": "Test notification sent"})
 
     app = client._transport.app
     original_notifier = app.state.notifier

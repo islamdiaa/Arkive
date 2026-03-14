@@ -4,11 +4,10 @@ config import bypass, OAuth DoS, input validation, security headers.
 """
 
 import os
-import re
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 # ---------------------------------------------------------------------------
 # Command Injection Prevention (db_dumper)
@@ -124,8 +123,7 @@ def test_restore_request_validates_restore_to():
         )
 
     # Reject system directories
-    for blocked in ["/etc", "/etc/shadow", "/usr/bin", "/bin", "/sbin",
-                    "/boot", "/proc", "/sys", "/dev", "/root"]:
+    for blocked in ["/etc", "/etc/shadow", "/usr/bin", "/bin", "/sbin", "/boot", "/proc", "/sys", "/dev", "/root"]:
         with pytest.raises(Exception):
             RestoreRequest(
                 snapshot_id="abc123",
@@ -185,17 +183,20 @@ async def test_config_import_blocks_protected_settings(client):
 
     # Try importing a YAML that attempts to overwrite api_key_hash
     import yaml
-    malicious_config = yaml.dump({
-        "arkive_config": {
-            "version": 1,
-            "settings": [
-                {"key": "api_key_hash", "value": "malicious_hash", "encrypted": False},
-                {"key": "encryption_password", "value": "malicious_pw", "encrypted": True},
-                {"key": "platform", "value": "hacked", "encrypted": False},
-                {"key": "server_name", "value": "test-server", "encrypted": False},
-            ],
+
+    malicious_config = yaml.dump(
+        {
+            "arkive_config": {
+                "version": 1,
+                "settings": [
+                    {"key": "api_key_hash", "value": "malicious_hash", "encrypted": False},
+                    {"key": "encryption_password", "value": "malicious_pw", "encrypted": True},
+                    {"key": "platform", "value": "hacked", "encrypted": False},
+                    {"key": "server_name", "value": "test-server", "encrypted": False},
+                ],
+            }
         }
-    })
+    )
 
     resp = await client.post(
         "/api/settings/import",
@@ -229,11 +230,15 @@ async def test_target_local_path_rejects_traversal(client, tmp_path):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/targets", json={
-        "name": "Evil Target",
-        "type": "local",
-        "config": {"path": "/tmp/../etc"},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Evil Target",
+            "type": "local",
+            "config": {"path": "/tmp/../etc"},
+        },
+        headers=auth_headers(api_key),
+    )
     # Should be rejected due to traversal or blocked directory
     assert resp.status_code == 422
 
@@ -244,11 +249,15 @@ async def test_target_local_path_rejects_system_dirs(client):
     api_key = data["api_key"]
 
     for blocked_path in ["/etc", "/usr", "/bin", "/boot", "/proc", "/sys"]:
-        resp = await client.post("/api/targets", json={
-            "name": f"System Target {blocked_path}",
-            "type": "local",
-            "config": {"path": blocked_path},
-        }, headers=auth_headers(api_key))
+        resp = await client.post(
+            "/api/targets",
+            json={
+                "name": f"System Target {blocked_path}",
+                "type": "local",
+                "config": {"path": blocked_path},
+            },
+            headers=auth_headers(api_key),
+        )
         assert resp.status_code == 422, f"Expected 422 for {blocked_path}, got {resp.status_code}"
 
 
@@ -262,10 +271,14 @@ async def test_directory_rejects_relative_path(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/directories", json={
-        "path": "relative/path",
-        "label": "Evil",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": "relative/path",
+            "label": "Evil",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 400
 
 
@@ -274,10 +287,14 @@ async def test_directory_rejects_system_paths(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/directories", json={
-        "path": "/etc",
-        "label": "System",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": "/etc",
+            "label": "System",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 400
 
 
@@ -307,9 +324,10 @@ async def test_security_headers_present(client):
 def test_fernet_keyfile_atomic_creation(tmp_path):
     """Keyfile should be created atomically with correct permissions."""
     import os
+
     os.environ["ARKIVE_CONFIG_DIR"] = str(tmp_path)
 
-    from app.core.security import _reset_fernet, _get_fernet
+    from app.core.security import _get_fernet, _reset_fernet
 
     _reset_fernet()
     _get_fernet()
@@ -342,11 +360,15 @@ async def test_error_responses_no_internal_details(client):
     assert "File " not in body  # Python stack trace indicator
 
     # 422 response (validation error)
-    resp = await client.post("/api/jobs", json={
-        "name": "",
-        "type": "invalid_type",
-        "schedule": "not-cron",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "",
+            "type": "invalid_type",
+            "schedule": "not-cron",
+        },
+        headers=auth_headers(api_key),
+    )
     body = resp.text
     assert "Traceback" not in body
 
@@ -364,11 +386,15 @@ async def test_target_name_sanitized(client, tmp_path):
     target_path = str(tmp_path / "xss_test")
     os.makedirs(target_path, exist_ok=True)
 
-    resp = await client.post("/api/targets", json={
-        "name": "<script>alert(1)</script>My Target",
-        "type": "local",
-        "config": {"path": target_path},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "<script>alert(1)</script>My Target",
+            "type": "local",
+            "config": {"path": target_path},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     # Verify HTML was stripped
     assert "<script>" not in resp.json()["name"]

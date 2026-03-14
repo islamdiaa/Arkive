@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -14,7 +14,7 @@ async def persist_discovery_results(
 ) -> None:
     """Persist discovery scan results into discovered_containers."""
     current_names = {c.name for c in containers}
-    scanned_at = datetime.now(timezone.utc).isoformat()
+    scanned_at = datetime.now(UTC).isoformat()
 
     for c in containers:
         await db.execute(

@@ -3,14 +3,14 @@ Extended API integration tests for restore endpoints.
 
 Covers: dry_run mode, success path with mocked engine, PDF generation.
 """
+
 import os
+from unittest.mock import AsyncMock
 
 import aiosqlite
 import pytest
-from unittest.mock import AsyncMock
 
-from tests.conftest import do_setup, auth_headers
-from app.core.dependencies import get_config
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -40,10 +40,12 @@ async def test_restore_dry_run(client, tmp_path):
     target_id = await _create_target(client, api_key, tmp_path)
 
     mock_engine = AsyncMock()
-    mock_engine.ls = AsyncMock(return_value=[
-        {"name": "file1.txt", "type": "file", "size": 100, "modified": "2025-01-01T00:00:00Z"},
-        {"name": "file2.txt", "type": "file", "size": 200, "modified": "2025-01-01T00:00:00Z"},
-    ])
+    mock_engine.ls = AsyncMock(
+        return_value=[
+            {"name": "file1.txt", "type": "file", "size": 100, "modified": "2025-01-01T00:00:00Z"},
+            {"name": "file2.txt", "type": "file", "size": 200, "modified": "2025-01-01T00:00:00Z"},
+        ]
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -154,10 +156,12 @@ async def test_restore_success_path(client, tmp_path):
     restore_to = str(tmp_path / "restores" / "restore-dest")
 
     mock_engine = AsyncMock()
-    mock_engine.restore = AsyncMock(return_value={
-        "status": "success",
-        "output": "restored 42 files",
-    })
+    mock_engine.restore = AsyncMock(
+        return_value={
+            "status": "success",
+            "output": "restored 42 files",
+        }
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -204,11 +208,13 @@ async def test_restore_failed_result_returns_and_persists_error_message(client, 
     restore_to = str(tmp_path / "restores" / "restore-failed-result")
 
     mock_engine = AsyncMock()
-    mock_engine.restore = AsyncMock(return_value={
-        "status": "failed",
-        "error": "destination already contains conflicting file",
-        "output": "",
-    })
+    mock_engine.restore = AsyncMock(
+        return_value={
+            "status": "failed",
+            "error": "destination already contains conflicting file",
+            "output": "",
+        }
+    )
 
     app = client._transport.app
     original_engine = app.state.backup_engine
@@ -304,9 +310,7 @@ async def test_restore_plan_pdf_with_mock_service(client, tmp_path):
     app.state.restore_plan = mock_restore_plan
 
     try:
-        resp = await client.get(
-            "/api/restore/plan/pdf", headers=auth_headers(api_key)
-        )
+        resp = await client.get("/api/restore/plan/pdf", headers=auth_headers(api_key))
         assert resp.status_code == 200
         assert "pdf" in resp.headers.get("content-type", "").lower()
         assert len(resp.content) > 0
@@ -332,9 +336,7 @@ async def test_restore_plan_pdf_html_fallback(client, tmp_path):
     app.state.restore_plan = mock_restore_plan
 
     try:
-        resp = await client.get(
-            "/api/restore/plan/pdf", headers=auth_headers(api_key)
-        )
+        resp = await client.get("/api/restore/plan/pdf", headers=auth_headers(api_key))
         assert resp.status_code == 200
         assert "html" in resp.headers.get("content-type", "").lower()
     finally:
@@ -348,9 +350,7 @@ async def test_restore_plan_pdf_service_none(client):
 
     # restore_plan is None in test fixture, so .generate() raises AttributeError
     try:
-        resp = await client.get(
-            "/api/restore/plan/pdf", headers=auth_headers(api_key)
-        )
+        resp = await client.get("/api/restore/plan/pdf", headers=auth_headers(api_key))
         # Should get a 500 from the unhandled AttributeError
         assert resp.status_code == 500
     except (AttributeError, Exception):

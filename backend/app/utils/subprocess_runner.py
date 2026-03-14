@@ -41,9 +41,7 @@ async def run_command(
             cwd=cwd,
         )
 
-        communicate_task = asyncio.create_task(
-            process.communicate(input=input_data.encode() if input_data else None)
-        )
+        communicate_task = asyncio.create_task(process.communicate(input=input_data.encode() if input_data else None))
         deadline = time.monotonic() + timeout
 
         while True:
@@ -71,7 +69,7 @@ async def run_command(
                 )
 
             if wait_timeout <= 0:
-                raise asyncio.TimeoutError
+                raise TimeoutError
 
             done, _ = await asyncio.wait({communicate_task}, timeout=wait_timeout)
             if communicate_task in done:
@@ -92,7 +90,7 @@ async def run_command(
             logger.debug("Command succeeded in %.2fs: %s", duration, cmd_str)
         return result
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         duration = time.monotonic() - start
         logger.error("Command timed out after %ds: %s", timeout, cmd_str)
         try:

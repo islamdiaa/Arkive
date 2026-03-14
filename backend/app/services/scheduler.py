@@ -1,8 +1,6 @@
 """APScheduler-based job scheduler — no cron dependency."""
 
-import json
 import logging
-from datetime import datetime
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10,9 +8,9 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.activity import log_activity
-from app.services.discovery_persistence import persist_discovery_results
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.discovery_persistence import persist_discovery_results
 
 logger = logging.getLogger("arkive.scheduler")
 
@@ -27,8 +25,9 @@ SYSTEM_JOB_INTEGRITY_CHECK = "system_integrity_check"
 class ArkiveScheduler:
     """Manages scheduled backup jobs using APScheduler."""
 
-    def __init__(self, orchestrator, config: ArkiveConfig,
-                 discovery=None, backup_engine=None, cloud_manager=None, notifier=None):
+    def __init__(
+        self, orchestrator, config: ArkiveConfig, discovery=None, backup_engine=None, cloud_manager=None, notifier=None
+    ):
         self.orchestrator = orchestrator
         self.config = config
         self.discovery = discovery
@@ -37,9 +36,9 @@ class ArkiveScheduler:
         self.notifier = notifier
         self.scheduler = AsyncIOScheduler(
             job_defaults={
-                'misfire_grace_time': 3600,
-                'coalesce': True,
-                'max_instances': 1,
+                "misfire_grace_time": 3600,
+                "coalesce": True,
+                "max_instances": 1,
             }
         )
         self._job_map: dict[str, str] = {}  # backup_job_id -> apscheduler_job_id
@@ -48,9 +47,7 @@ class ArkiveScheduler:
         """Load all enabled jobs from DB, register system jobs, and start scheduler."""
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM backup_jobs WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM backup_jobs WHERE enabled = 1")
             jobs = await cursor.fetchall()
 
         for job in jobs:
@@ -61,6 +58,7 @@ class ArkiveScheduler:
         # Add error listener so job exceptions are always logged
         # APScheduler uses mask= parameter; EVENT_JOB_ERROR = 8192
         from apscheduler.events import EVENT_JOB_ERROR
+
         self.scheduler.add_listener(self._on_job_error, mask=EVENT_JOB_ERROR)
 
         self.scheduler.start()
@@ -119,7 +117,7 @@ class ArkiveScheduler:
         if not self.scheduler.get_job(SYSTEM_JOB_RETENTION):
             self.scheduler.add_job(
                 self._run_retention_cleanup,
-                trigger=CronTrigger(day_of_week='sun', hour=4, minute=0),
+                trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
                 id=SYSTEM_JOB_RETENTION,
                 replace_existing=True,
                 name="Retention Cleanup",
@@ -152,7 +150,7 @@ class ArkiveScheduler:
         if not self.scheduler.get_job(SYSTEM_JOB_INTEGRITY_CHECK):
             self.scheduler.add_job(
                 self._run_integrity_check,
-                trigger=CronTrigger(day_of_week='sun', hour=5, minute=0),
+                trigger=CronTrigger(day_of_week="sun", hour=5, minute=0),
                 id=SYSTEM_JOB_INTEGRITY_CHECK,
                 replace_existing=True,
                 name="Integrity Check",
@@ -174,7 +172,9 @@ class ArkiveScheduler:
                 await persist_discovery_results(db, containers or [])
                 await db.commit()
                 await log_activity(
-                    db, "system", "discovery_scan",
+                    db,
+                    "system",
+                    "discovery_scan",
                     f"Discovery scan completed: {count} containers found",
                     {"container_count": count},
                 )
@@ -216,14 +216,11 @@ class ArkiveScheduler:
                     except (ValueError, TypeError):
                         pass
 
-            logger.info("Retention settings: daily=%d, weekly=%d, monthly=%d",
-                        keep_daily, keep_weekly, keep_monthly)
+            logger.info("Retention settings: daily=%d, weekly=%d, monthly=%d", keep_daily, keep_weekly, keep_monthly)
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -244,25 +241,32 @@ class ArkiveScheduler:
                         keep_weekly=keep_weekly,
                         keep_monthly=keep_monthly,
                     )
-                    results.append({
-                        "target_id": target["id"],
-                        "status": result.get("status", "unknown"),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": result.get("status", "unknown"),
+                        }
+                    )
                     logger.info(
                         "Retention cleanup for target %s: %s",
-                        target["id"], result.get("status"),
+                        target["id"],
+                        result.get("status"),
                     )
                 except Exception as e:
                     logger.error("Retention cleanup failed for target %s: %s", target["id"], e)
-                    results.append({
-                        "target_id": target["id"],
-                        "status": "failed",
-                        "error": str(e),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": "failed",
+                            "error": str(e),
+                        }
+                    )
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await log_activity(
-                    db, "system", "retention_cleanup",
+                    db,
+                    "system",
+                    "retention_cleanup",
                     f"Retention cleanup completed for {len(targets)} targets",
                     {"results": results},
                 )
@@ -279,9 +283,7 @@ class ArkiveScheduler:
             logger.info("System job: starting health check")
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -309,7 +311,9 @@ class ArkiveScheduler:
                         await db.commit()
                     logger.info(
                         "Health check for target %s (%s): %s",
-                        target["id"], target.get("name"), new_status,
+                        target["id"],
+                        target.get("name"),
+                        new_status,
                     )
                 except Exception as e:
                     logger.error("Health check failed for target %s: %s", target["id"], e)
@@ -325,11 +329,13 @@ class ArkiveScheduler:
                             )
                             await db.commit()
                     except Exception:
-                        pass
+                        logger.warning("Failed to update target %s status to error", target["id"], exc_info=True)
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await log_activity(
-                    db, "system", "health_check",
+                    db,
+                    "system",
+                    "health_check",
                     f"Health check completed for {len(targets)} targets",
                     {"target_count": len(targets)},
                 )
@@ -348,7 +354,9 @@ class ArkiveScheduler:
                 deleted = cursor.rowcount
                 await db.commit()
                 await log_activity(
-                    db, "system", "activity_log_prune",
+                    db,
+                    "system",
+                    "activity_log_prune",
                     f"Activity log pruned: {deleted} entries older than 90 days removed",
                     {"deleted_count": deleted},
                 )
@@ -371,9 +379,7 @@ class ArkiveScheduler:
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -389,25 +395,33 @@ class ArkiveScheduler:
                         str(self.config.config_dir),
                     )
                     result = await self.backup_engine.check(target)
-                    results.append({
-                        "target_id": target["id"],
-                        "status": result.get("status", "unknown"),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": result.get("status", "unknown"),
+                        }
+                    )
                     logger.info(
                         "Integrity check for target %s (%s): %s",
-                        target["id"], target_name, result.get("status"),
+                        target["id"],
+                        target_name,
+                        result.get("status"),
                     )
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(
                         "Integrity check failed for target %s (%s): %s",
-                        target["id"], target_name, error_msg,
+                        target["id"],
+                        target_name,
+                        error_msg,
                     )
-                    results.append({
-                        "target_id": target["id"],
-                        "status": "failed",
-                        "error": error_msg,
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": "failed",
+                            "error": error_msg,
+                        }
+                    )
                     if self.notifier:
                         try:
                             await self.notifier.send(
@@ -417,19 +431,17 @@ class ArkiveScheduler:
                                 "error",
                             )
                         except Exception as notify_err:
-                            logger.error(
-                                "Failed to send integrity failure notification: %s", notify_err
-                            )
+                            logger.error("Failed to send integrity failure notification: %s", notify_err)
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await log_activity(
-                    db, "system", "integrity_check",
+                    db,
+                    "system",
+                    "integrity_check",
                     f"Integrity check completed for {len(targets)} targets",
                     {"results": results},
                 )
-            logger.info(
-                "System job: integrity check complete — %d targets processed", len(targets)
-            )
+            logger.info("System job: integrity check complete — %d targets processed", len(targets))
         except Exception as e:
             logger.error("System job: integrity check failed: %s", e)
 

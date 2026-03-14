@@ -3,8 +3,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
 
 def test_config_defaults():
     """Test ArkiveConfig default values."""
@@ -21,7 +19,9 @@ def test_config_env_override():
     os.environ["ARKIVE_LOG_LEVEL"] = "DEBUG"
     try:
         from importlib import reload
+
         import app.core.config as config_mod
+
         reload(config_mod)
         config = config_mod.ArkiveConfig()
         assert config.port == 9999
@@ -42,4 +42,5 @@ def test_config_dirs():
     assert config.log_dir.exists()
     # Cleanup
     import shutil
+
     shutil.rmtree("/tmp/arkive-test-config", ignore_errors=True)

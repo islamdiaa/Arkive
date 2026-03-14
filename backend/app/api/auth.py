@@ -1,12 +1,13 @@
 """Authentication and setup API routes."""
 
 import json
+import logging
 import os
 import sqlite3
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -22,6 +23,7 @@ from app.core.dependencies import (
     get_scheduler,
     require_auth,
 )
+from app.core.platform import Platform
 from app.core.security import (
     BROWSER_SESSION_COOKIE,
     BROWSER_SESSION_TTL,
@@ -34,14 +36,15 @@ from app.core.security import (
     verify_api_key,
     verify_browser_session,
 )
-from app.core.platform import Platform
 from app.models.settings import SetupCompleteRequest
+
+logger = logging.getLogger("arkive.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Simple in-memory rate limiter for the setup endpoint (unauthenticated surface)
 _setup_attempts: dict[str, list[float]] = defaultdict(list)
-SETUP_RATE_LIMIT = 5    # max attempts per window
+SETUP_RATE_LIMIT = 5  # max attempts per window
 SETUP_RATE_WINDOW = 900  # 15 minutes in seconds
 _MAX_TRACKED_IPS = 10_000  # cap to prevent memory exhaustion from distributed attacks
 
@@ -62,9 +65,7 @@ def _check_setup_rate_limit(request: Request) -> None:
     window_start = now - SETUP_RATE_WINDOW
 
     # Prune timestamps outside the current window
-    _setup_attempts[client_ip] = [
-        ts for ts in _setup_attempts[client_ip] if ts > window_start
-    ]
+    _setup_attempts[client_ip] = [ts for ts in _setup_attempts[client_ip] if ts > window_start]
 
     # Remove empty entries to prevent unbounded dict growth
     if not _setup_attempts[client_ip]:
@@ -141,8 +142,13 @@ async def _session_payload(request: Request, db: aiosqlite.Connection) -> dict[s
 
 
 @router.post("/setup", status_code=201)
-async def complete_setup(request: Request, response: Response, body: SetupCompleteRequest, db: aiosqlite.Connection = Depends(get_db),
-                         scheduler=Depends(get_scheduler)):
+async def complete_setup(
+    request: Request,
+    response: Response,
+    body: SetupCompleteRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    scheduler=Depends(get_scheduler),
+):
     """Complete initial setup — generates API key, stores encryption password, creates default jobs."""
     # Rate-limit FIRST — before any other check so attackers can't probe indefinitely
     _check_setup_rate_limit(request)
@@ -157,7 +163,7 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
     # Generate API key
     api_key = generate_api_key()
     api_key_hash = hash_api_key(api_key)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Extract web_url from request (M4) — auto-detect from request base_url
     web_url = str(request.base_url).rstrip("/")
@@ -201,7 +207,9 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
                 errors.extend(_validate_local_path(storage_config))
             if not errors:
                 target_id = str(uuid.uuid4())[:8]
-                encrypted_config = encrypt_config(storage_config, str(Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config"))))
+                encrypted_config = encrypt_config(
+                    storage_config, str(Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")))
+                )
                 await db.execute(
                     """INSERT INTO storage_targets
                        (id, name, type, enabled, config, status, created_at, updated_at)
@@ -245,14 +253,16 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
             VALUES (?, ?, ?, ?, ?, ?)""",
             (job_id, name, job_type, schedule, json.dumps(job_targets), json.dumps(job_dirs)),
         )
-        jobs_created.append({
-            "id": job_id,
-            "name": name,
-            "type": job_type,
-            "schedule": schedule,
-            "targets": job_targets,
-            "directories": list(job_dirs),
-        })
+        jobs_created.append(
+            {
+                "id": job_id,
+                "name": name,
+                "type": job_type,
+                "schedule": schedule,
+                "targets": job_targets,
+                "directories": list(job_dirs),
+            }
+        )
 
     await db.commit()
 
@@ -286,7 +296,7 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
                 await scheduler.trigger_job(full_job["id"])
                 first_backup_triggered = True
         except Exception:
-            pass  # Non-fatal: first backup will run on next schedule
+            logger.warning("Failed to trigger first backup — will run on next schedule", exc_info=True)
 
     _set_browser_session(response, request, api_key_hash)
 
@@ -355,7 +365,7 @@ async def rotate_api_key(
     # This endpoint requires auth via the dependency
     api_key = generate_api_key()
     api_key_hash = hash_api_key(api_key)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     await db.execute(
         "UPDATE settings SET value = ?, updated_at = ? WHERE key = 'api_key_hash'",

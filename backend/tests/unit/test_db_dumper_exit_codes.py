@@ -1,15 +1,15 @@
 """Tests for exit code capture and SQLite injection fixes in db_dumper.py."""
-import gzip
-import io
-import os
-import pytest
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _make_db(container_name="testcontainer", db_type="postgres", db_name="testdb", host_path=None):
     """Create a minimal DiscoveredDatabase mock."""
     from app.models.discovery import DiscoveredDatabase
+
     return DiscoveredDatabase(
         container_name=container_name,
         db_type=db_type,
@@ -20,8 +20,8 @@ def _make_db(container_name="testcontainer", db_type="postgres", db_name="testdb
 
 def _make_dumper(tmp_path):
     """Create a DBDumper with mocked docker client and tmp dump dir."""
-    from app.services.db_dumper import DBDumper
     from app.core.config import ArkiveConfig
+    from app.services.db_dumper import DBDumper
 
     config = MagicMock(spec=ArkiveConfig)
     config.dump_dir = tmp_path
@@ -31,13 +31,14 @@ def _make_dumper(tmp_path):
 
 def _streaming_exec_run(exit_code: int, stdout_chunks: list[bytes], stderr_chunks: list[bytes]):
     """Build the (exit_code, generator) tuple that docker-py returns for stream=True, demux=True."""
+
     def _gen():
         for s, e in zip(stdout_chunks, stderr_chunks):
             yield (s, e)
         # Yield any remaining chunks
-        for s in stdout_chunks[len(stderr_chunks):]:
+        for s in stdout_chunks[len(stderr_chunks) :]:
             yield (s, None)
-        for e in stderr_chunks[len(stdout_chunks):]:
+        for e in stderr_chunks[len(stdout_chunks) :]:
             yield (None, e)
 
     return exit_code, _gen()
@@ -46,6 +47,7 @@ def _streaming_exec_run(exit_code: int, stdout_chunks: list[bytes], stderr_chunk
 # ---------------------------------------------------------------------------
 # Task A — exit code tests
 # ---------------------------------------------------------------------------
+
 
 class TestPostgresExitCode:
     """pg_dump non-zero exit code must produce failure status."""
@@ -140,9 +142,13 @@ class TestMariaDBExitCode:
 
         stderr_msg = b"mysqldump: Got error: 1045: Access denied"
         container = MagicMock()
-        container.attrs = {"Config": {"Env": [
-            "MYSQL_ROOT_PASSWORD=secret",
-        ]}}
+        container.attrs = {
+            "Config": {
+                "Env": [
+                    "MYSQL_ROOT_PASSWORD=secret",
+                ]
+            }
+        }
         container.exec_run.return_value = _streaming_exec_run(
             exit_code=1,
             stdout_chunks=[],
@@ -161,9 +167,13 @@ class TestMariaDBExitCode:
 
         fake_sql = b"-- MariaDB dump\n" + b"y" * 200
         container = MagicMock()
-        container.attrs = {"Config": {"Env": [
-            "MYSQL_ROOT_PASSWORD=secret",
-        ]}}
+        container.attrs = {
+            "Config": {
+                "Env": [
+                    "MYSQL_ROOT_PASSWORD=secret",
+                ]
+            }
+        }
         container.exec_run.return_value = _streaming_exec_run(
             exit_code=0,
             stdout_chunks=[fake_sql],
@@ -241,10 +251,14 @@ class TestMongoDBExitCode:
 
         stderr_msg = b"authentication failed for user admin"
         container = MagicMock()
-        container.attrs = {"Config": {"Env": [
-            "MONGO_INITDB_ROOT_USERNAME=admin",
-            "MONGO_INITDB_ROOT_PASSWORD=pass",
-        ]}}
+        container.attrs = {
+            "Config": {
+                "Env": [
+                    "MONGO_INITDB_ROOT_USERNAME=admin",
+                    "MONGO_INITDB_ROOT_PASSWORD=pass",
+                ]
+            }
+        }
         container.exec_run.return_value = _streaming_exec_run(
             exit_code=1,
             stdout_chunks=[],
@@ -261,6 +275,7 @@ class TestMongoDBExitCode:
 # ---------------------------------------------------------------------------
 # Task B — SQLite injection tests
 # ---------------------------------------------------------------------------
+
 
 class TestSQLiteInjection:
     """SQLite backup path must be shell-safe."""
@@ -282,6 +297,7 @@ class TestSQLiteInjection:
             dump_arg = cmd[2]
             # Extract path from .backup 'path'
             import shlex
+
             path = shlex.split(dump_arg.replace(".backup ", ""))[0]
             Path(path).write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
             return mock_result
@@ -351,13 +367,13 @@ class TestSQLiteInjection:
             captured_cmd.extend(cmd)
             # Write the dump file
             backup_arg = cmd[2]
-            path_part = backup_arg[len(".backup "):]
+            path_part = backup_arg[len(".backup ") :]
             path = shlex.split(path_part)[0]
             Path(path).write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
             return mock_result
 
         with patch("app.services.db_dumper.run_command", side_effect=fake_run):
-            result = await dumper._dump_sqlite(db)
+            await dumper._dump_sqlite(db)
 
         # The .backup argument must be properly quoted (contains the space path)
         backup_arg = captured_cmd[2]
@@ -396,12 +412,11 @@ class TestSQLiteInjection:
 # Guard: ensure no _, output patterns slipped back in
 # ---------------------------------------------------------------------------
 
+
 class TestNoDiscardedExitCodes:
     """Regression guard: source file must not contain '_, output =' patterns."""
 
     def test_no_discarded_exit_codes_in_source(self):
         source_path = Path(__file__).parent.parent.parent / "app" / "services" / "db_dumper.py"
         source = source_path.read_text()
-        assert "_, output" not in source, (
-            "db_dumper.py still contains '_, output' — exit codes are being discarded!"
-        )
+        assert "_, output" not in source, "db_dumper.py still contains '_, output' — exit codes are being discarded!"

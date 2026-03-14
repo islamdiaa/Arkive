@@ -3,9 +3,10 @@ API integration tests for notification channel endpoints.
 
 Tests: list, create, list after create, URL redaction, update, delete, not found.
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,9 +35,7 @@ async def _create_channel(client, api_key):
 async def test_list_notifications_empty(client):
     """GET /api/notifications should return empty list after setup."""
     api_key = await setup_auth(client)
-    resp = await client.get(
-        "/api/notifications", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/notifications", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []
@@ -67,9 +66,7 @@ async def test_list_after_create(client):
     api_key = await setup_auth(client)
     await _create_channel(client, api_key)
 
-    resp = await client.get(
-        "/api/notifications", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/notifications", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
@@ -81,9 +78,7 @@ async def test_url_redacted_in_list(client):
     api_key = await setup_auth(client)
     await _create_channel(client, api_key)
 
-    resp = await client.get(
-        "/api/notifications", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/notifications", headers=auth_headers(api_key))
     items = resp.json()["items"]
     url = items[0]["config"]["url"]
     # Long URLs get truncated with dots
@@ -109,16 +104,12 @@ async def test_delete_notification(client):
     api_key = await setup_auth(client)
     channel_id = await _create_channel(client, api_key)
 
-    resp = await client.delete(
-        f"/api/notifications/{channel_id}", headers=auth_headers(api_key)
-    )
+    resp = await client.delete(f"/api/notifications/{channel_id}", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert resp.json()["status"] == "deleted"
 
     # Verify it is gone
-    resp = await client.get(
-        "/api/notifications", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/notifications", headers=auth_headers(api_key))
     assert resp.json()["total"] == 0
 
 

@@ -4,12 +4,14 @@ API integration tests for restore endpoints.
 Tests: restore plan preview, restore nonexistent target, restore plan PDF service unavailable,
        POST /api/restore/test integrity verification.
 """
+
 import hashlib
 import os
-import pytest
 from unittest.mock import AsyncMock
 
-from tests.conftest import do_setup, auth_headers
+import pytest
+
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -17,9 +19,7 @@ pytestmark = pytest.mark.asyncio
 async def test_restore_plan_preview(client):
     """GET /api/restore/plan/preview should return hostname, targets, containers."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/restore/plan/preview", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/restore/plan/preview", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "hostname" in body
@@ -49,9 +49,7 @@ async def test_restore_plan_pdf_service_unavailable(client):
     # restore_plan is None in test fixture, causing an AttributeError.
     # The ASGI transport may raise or return 500 depending on error middleware.
     try:
-        resp = await client.get(
-            "/api/restore/plan/pdf", headers=auth_headers(data["api_key"])
-        )
+        resp = await client.get("/api/restore/plan/pdf", headers=auth_headers(data["api_key"]))
         assert resp.status_code == 500
     except (AttributeError, Exception):
         # Expected: restore_plan is None, so .generate() raises AttributeError
@@ -76,6 +74,7 @@ async def test_restore_missing_target_field(client):
 # ---------------------------------------------------------------------------
 # POST /api/restore/test — integrity verification tests
 # ---------------------------------------------------------------------------
+
 
 async def _create_target(client, api_key, tmp_path):
     """Helper: create a local storage target and return its ID."""

@@ -6,10 +6,12 @@ Tests:
 - `next_backup` is None when no scheduler or no jobs
 - `next_backup` returns an ISO string when scheduler has jobs
 """
+
 from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
+
 from tests.conftest import do_setup
 
 pytestmark = pytest.mark.asyncio
@@ -125,8 +127,18 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
                 include_databases, include_flash, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "flash-job", "Flash Backup", "flash", "0 0 * * *", 1, "[]", "[]", "[]",
-                0, 1, "2026-03-08T00:00:00Z", "2026-03-08T00:00:00Z",
+                "flash-job",
+                "Flash Backup",
+                "flash",
+                "0 0 * * *",
+                1,
+                "[]",
+                "[]",
+                "[]",
+                0,
+                1,
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:00:00Z",
             ),
         )
         await db.execute(
@@ -134,8 +146,14 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
                (id, job_id, status, trigger, started_at, completed_at, flash_backed_up, flash_size_bytes)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "flash-run", "flash-job", "success", "manual",
-                "2026-03-08T00:00:00Z", "2026-03-08T00:02:00Z", 1, 1234,
+                "flash-run",
+                "flash-job",
+                "success",
+                "manual",
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:02:00Z",
+                1,
+                1234,
             ),
         )
         await db.execute(
@@ -144,8 +162,18 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
                 include_databases, include_flash, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "dir-job", "Cloud Sync", "full", "0 1 * * *", 1, "[]", "[]", "[]",
-                0, 0, "2026-03-08T00:00:00Z", "2026-03-08T00:00:00Z",
+                "dir-job",
+                "Cloud Sync",
+                "full",
+                "0 1 * * *",
+                1,
+                "[]",
+                "[]",
+                "[]",
+                0,
+                0,
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:00:00Z",
             ),
         )
         await db.execute(
@@ -153,8 +181,13 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
                (id, job_id, status, trigger, started_at, completed_at, total_size_bytes)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
-                "dir-run", "dir-job", "success", "manual",
-                "2026-03-12T00:00:00Z", "2026-03-12T00:03:00Z", 1024,
+                "dir-run",
+                "dir-job",
+                "success",
+                "manual",
+                "2026-03-12T00:00:00Z",
+                "2026-03-12T00:03:00Z",
+                1024,
             ),
         )
         await db.commit()

@@ -3,10 +3,11 @@ API integration tests for settings endpoints.
 
 Tests: get, bulk update, single key update, forbidden key, reset, export, import, cron preview.
 """
+
 import pytest
 import yaml
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -112,9 +113,7 @@ async def test_reset_without_confirm(client):
 async def test_export_config(client):
     """GET /api/settings/export should return YAML content."""
     api_key = await setup_auth(client)
-    resp = await client.get(
-        "/api/settings/export", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/settings/export", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert "yaml" in resp.headers.get("content-type", "").lower()
     # Validate the body is parseable YAML
@@ -125,18 +124,20 @@ async def test_export_config(client):
 async def test_import_config(client):
     """POST /api/settings/import with YAML body should import settings."""
     api_key = await setup_auth(client)
-    yaml_body = yaml.dump({
-        "arkive_config": {
-            "version": 1,
-            "settings": [
-                {"key": "theme", "value": "dark", "encrypted": False},
-            ],
-            "storage_targets": [],
-            "backup_jobs": [],
-            "watched_directories": [],
-            "notification_channels": [],
+    yaml_body = yaml.dump(
+        {
+            "arkive_config": {
+                "version": 1,
+                "settings": [
+                    {"key": "theme", "value": "dark", "encrypted": False},
+                ],
+                "storage_targets": [],
+                "backup_jobs": [],
+                "watched_directories": [],
+                "notification_channels": [],
+            }
         }
-    })
+    )
     resp = await client.post(
         "/api/settings/import",
         content=yaml_body.encode("utf-8"),

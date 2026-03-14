@@ -1,13 +1,11 @@
 """Unit tests for app.services.flash_backup — FlashBackup."""
 
-import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
-from pathlib import Path
 
-from app.services.flash_backup import FlashBackup, FlashBackupResult
 from app.core.platform import Platform
+from app.services.flash_backup import FlashBackup
 
 
 @pytest.fixture

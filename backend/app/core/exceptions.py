@@ -7,7 +7,6 @@ from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-
 # Map HTTP status codes to error code strings
 _STATUS_CODES = {
     400: "bad_request",
@@ -25,6 +24,7 @@ _STATUS_CODES = {
 
 class ArkiveError(Exception):
     """Base exception for Arkive."""
+
     status_code: int = 500
 
     def __init__(self, message: str = "Internal server error"):
@@ -34,6 +34,7 @@ class ArkiveError(Exception):
 
 class NotFoundError(ArkiveError):
     """404 Not Found."""
+
     status_code = 404
 
     def __init__(self, message: str = "Resource not found"):
@@ -42,6 +43,7 @@ class NotFoundError(ArkiveError):
 
 class AuthError(ArkiveError):
     """401 Unauthorized."""
+
     status_code = 401
 
     def __init__(self, message: str = "Authentication required"):
@@ -50,6 +52,7 @@ class AuthError(ArkiveError):
 
 class ValidationError(ArkiveError):
     """422 Unprocessable Entity."""
+
     status_code = 422
 
     def __init__(self, message: str = "Validation error"):
@@ -58,6 +61,7 @@ class ValidationError(ArkiveError):
 
 class RateLimitError(ArkiveError):
     """429 Too Many Requests."""
+
     status_code = 429
 
     def __init__(self, message: str = "Too many failed attempts. Try again later.", retry_after: int = 60):
@@ -67,6 +71,7 @@ class RateLimitError(ArkiveError):
 
 class TargetError(ArkiveError):
     """Target connection/upload error."""
+
     status_code = 502
 
     def __init__(self, message: str = "Storage target error"):
@@ -75,6 +80,7 @@ class TargetError(ArkiveError):
 
 class BackupError(ArkiveError):
     """Backup pipeline error — 409 when backup already in progress."""
+
     status_code = 409
 
     def __init__(self, message: str = "Backup error", run_id: str | None = None):
@@ -132,4 +138,6 @@ def register_exception_handlers(app) -> None:
 
     @app.exception_handler(json.JSONDecodeError)
     async def json_decode_handler(request, exc):
-        return JSONResponse(status_code=422, content={"error": "validation_error", "message": "Invalid JSON body", "details": {}})
+        return JSONResponse(
+            status_code=422, content={"error": "validation_error", "message": "Invalid JSON body", "details": {}}
+        )

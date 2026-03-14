@@ -3,10 +3,12 @@ Extended API integration tests for job endpoints.
 
 Covers: run nonexistent job, run job with orchestrator mock.
 """
-import pytest
+
 from unittest.mock import AsyncMock, patch
 
-from tests.conftest import do_setup, auth_headers
+import pytest
+
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -30,9 +32,7 @@ def _errmsg(resp) -> str:
 async def test_run_nonexistent_job_returns_404(client):
     """POST /api/jobs/{job_id}/run returns 404 for nonexistent job."""
     api_key = await setup_auth(client)
-    resp = await client.post(
-        "/api/jobs/nonexistent/run", headers=auth_headers(api_key)
-    )
+    resp = await client.post("/api/jobs/nonexistent/run", headers=auth_headers(api_key))
     assert resp.status_code == 404
     assert "not found" in _errmsg(resp)
 
@@ -54,15 +54,11 @@ async def test_run_deleted_job_returns_404(client):
     assert create_resp.status_code == 201
     job_id = create_resp.json()["id"]
 
-    del_resp = await client.delete(
-        f"/api/jobs/{job_id}", headers=auth_headers(api_key)
-    )
+    del_resp = await client.delete(f"/api/jobs/{job_id}", headers=auth_headers(api_key))
     assert del_resp.status_code == 200
 
     # Now try to run the deleted job
-    resp = await client.post(
-        f"/api/jobs/{job_id}/run", headers=auth_headers(api_key)
-    )
+    resp = await client.post(f"/api/jobs/{job_id}/run", headers=auth_headers(api_key))
     assert resp.status_code == 404
 
 
@@ -76,9 +72,7 @@ async def test_run_job_returns_correct_shape(client):
         mock_orch = AsyncMock()
         mock_orch.run_pipeline = AsyncMock()
         mock_get_orch.return_value = mock_orch
-        resp = await client.post(
-            f"/api/jobs/{job_id}/run", headers=auth_headers(api_key)
-        )
+        resp = await client.post(f"/api/jobs/{job_id}/run", headers=auth_headers(api_key))
 
     assert resp.status_code == 202
     body = resp.json()
@@ -103,16 +97,12 @@ async def test_run_job_creates_run_record(client):
         mock_orch = AsyncMock()
         mock_orch.run_pipeline = AsyncMock()
         mock_get_orch.return_value = mock_orch
-        run_resp = await client.post(
-            f"/api/jobs/{job_id}/run", headers=auth_headers(api_key)
-        )
+        run_resp = await client.post(f"/api/jobs/{job_id}/run", headers=auth_headers(api_key))
 
     run_id = run_resp.json()["run_id"]
 
     # The run should now be retrievable via the run detail endpoint
-    detail_resp = await client.get(
-        f"/api/jobs/runs/{run_id}", headers=auth_headers(api_key)
-    )
+    detail_resp = await client.get(f"/api/jobs/runs/{run_id}", headers=auth_headers(api_key))
     assert detail_resp.status_code == 200
     assert detail_resp.json()["id"] == run_id
     assert detail_resp.json()["job_id"] == job_id

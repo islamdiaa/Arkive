@@ -3,11 +3,12 @@ API integration tests for full CRUD on the /api/directories endpoints.
 
 Tests: POST create, GET list, PUT update, DELETE remove.
 """
+
 import os
 
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -130,9 +131,7 @@ async def test_directories_create_appears_in_list(client, tmp_path):
     assert create_resp.status_code == 201
     created_id = create_resp.json()["id"]
 
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     assert list_resp.status_code == 200
     body = list_resp.json()
     ids = [d["id"] for d in body["directories"]]
@@ -158,9 +157,7 @@ async def test_directories_create_with_exclude_patterns(client, tmp_path):
     assert resp.status_code == 201
 
     # Verify exclude patterns are saved
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     dirs = list_resp.json()["directories"]
     assert len(dirs) == 1
     assert dirs[0]["exclude_patterns"] == ["*.log", "cache/"]
@@ -195,9 +192,7 @@ async def test_directories_update(client, tmp_path):
     assert update_resp.json()["status"] == "updated"
 
     # Verify update applied
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     dirs = list_resp.json()["directories"]
     updated = [d for d in dirs if d["id"] == dir_id][0]
     assert updated["label"] == "Updated Label"
@@ -238,9 +233,7 @@ async def test_directories_update_toggle_enabled(client, tmp_path):
     assert update_resp.status_code == 200
 
     # Verify disabled
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     dirs = list_resp.json()["directories"]
     toggled = [d for d in dirs if d["id"] == dir_id][0]
     assert toggled["enabled"] is False
@@ -321,9 +314,7 @@ async def test_directories_delete(client, tmp_path):
     assert del_resp.json()["status"] == "deleted"
 
     # Verify removed from list
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     ids = [d["id"] for d in list_resp.json()["directories"]]
     assert dir_id not in ids
 
@@ -388,9 +379,7 @@ async def test_directories_full_crud_roundtrip(client, tmp_path):
     dir_id = create_resp.json()["id"]
 
     # READ
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     assert list_resp.status_code == 200
     dirs = list_resp.json()["directories"]
     assert any(d["id"] == dir_id for d in dirs)
@@ -404,9 +393,7 @@ async def test_directories_full_crud_roundtrip(client, tmp_path):
     assert update_resp.status_code == 200
 
     # Verify update
-    list_resp2 = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp2 = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     updated = [d for d in list_resp2.json()["directories"] if d["id"] == dir_id][0]
     assert updated["label"] == "Updated CRUD"
 
@@ -418,7 +405,5 @@ async def test_directories_full_crud_roundtrip(client, tmp_path):
     assert del_resp.status_code == 200
 
     # Verify gone
-    list_resp3 = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp3 = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     assert all(d["id"] != dir_id for d in list_resp3.json()["directories"])

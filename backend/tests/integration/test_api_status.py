@@ -1,4 +1,5 @@
 """Integration tests for the Status API — 3 test cases."""
+
 import pytest
 
 

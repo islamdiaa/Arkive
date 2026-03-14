@@ -28,7 +28,7 @@ async def list_databases(
                 all_dbs.append(d)
 
     total = len(all_dbs)
-    paginated = all_dbs[offset:offset + limit]
+    paginated = all_dbs[offset : offset + limit]
     return {
         "items": paginated,
         "databases": paginated,

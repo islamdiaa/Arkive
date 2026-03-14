@@ -5,12 +5,13 @@ Covers: invalid timezone rejection, unknown key rejection, invalid retention,
 invalid YAML import, missing root key import, READONLY_SETTINGS blocking,
 secrets redacted in export.
 """
+
 import os
 
 import pytest
 import yaml
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -205,19 +206,21 @@ async def test_import_empty_body(client):
 async def test_import_readonly_settings_skipped(client):
     """Import should silently skip READONLY_SETTINGS like api_key_hash."""
     api_key = await setup_auth(client)
-    yaml_body = yaml.dump({
-        "arkive_config": {
-            "version": 1,
-            "settings": [
-                {"key": "api_key_hash", "value": "evil_hash", "encrypted": False},
-                {"key": "theme", "value": "light", "encrypted": False},
-            ],
-            "storage_targets": [],
-            "backup_jobs": [],
-            "watched_directories": [],
-            "notification_channels": [],
+    yaml_body = yaml.dump(
+        {
+            "arkive_config": {
+                "version": 1,
+                "settings": [
+                    {"key": "api_key_hash", "value": "evil_hash", "encrypted": False},
+                    {"key": "theme", "value": "light", "encrypted": False},
+                ],
+                "storage_targets": [],
+                "backup_jobs": [],
+                "watched_directories": [],
+                "notification_channels": [],
+            }
         }
-    })
+    )
     resp = await client.post(
         "/api/settings/import",
         content=yaml_body.encode("utf-8"),
@@ -240,9 +243,7 @@ async def test_import_readonly_settings_skipped(client):
 async def test_export_redacts_secrets(client):
     """GET /api/settings/export should redact sensitive values."""
     api_key = await setup_auth(client)
-    resp = await client.get(
-        "/api/settings/export", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/settings/export", headers=auth_headers(api_key))
     assert resp.status_code == 200
 
     parsed = yaml.safe_load(resp.text)
@@ -257,9 +258,7 @@ async def test_export_redacts_secrets(client):
 async def test_export_has_yaml_content_type(client):
     """GET /api/settings/export returns application/x-yaml content type."""
     api_key = await setup_auth(client)
-    resp = await client.get(
-        "/api/settings/export", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/settings/export", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert "yaml" in resp.headers.get("content-type", "").lower()
 
@@ -267,9 +266,7 @@ async def test_export_has_yaml_content_type(client):
 async def test_export_includes_all_sections(client):
     """Export YAML should include all config sections."""
     api_key = await setup_auth(client)
-    resp = await client.get(
-        "/api/settings/export", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/settings/export", headers=auth_headers(api_key))
     assert resp.status_code == 200
     parsed = yaml.safe_load(resp.text)
     config = parsed["arkive_config"]
@@ -302,9 +299,7 @@ async def test_export_target_secrets_redacted(client, tmp_path):
     )
     assert resp.status_code == 201
 
-    resp = await client.get(
-        "/api/settings/export", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/settings/export", headers=auth_headers(api_key))
     assert resp.status_code == 200
     parsed = yaml.safe_load(resp.text)
     targets = parsed["arkive_config"]["storage_targets"]

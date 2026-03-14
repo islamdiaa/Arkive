@@ -29,9 +29,7 @@ async def evaluate_backup_coverage(
     latest_directory_change: str | None = None
 
     try:
-        cursor = await db.execute(
-            "SELECT path, created_at FROM watched_directories WHERE enabled = 1 ORDER BY path"
-        )
+        cursor = await db.execute("SELECT path, created_at FROM watched_directories WHERE enabled = 1 ORDER BY path")
         rows = await cursor.fetchall()
         for row in rows:
             path = row["path"] if isinstance(row, aiosqlite.Row) else row[0]
@@ -47,10 +45,7 @@ async def evaluate_backup_coverage(
     protected_set = set(protected_directories)
     appdata_path = _normalize_path(f"{user_shares_path}/appdata")
 
-    appdata_configured = any(
-        path == appdata_path or path.startswith(appdata_path + "/")
-        for path in protected_set
-    )
+    appdata_configured = any(path == appdata_path or path.startswith(appdata_path + "/") for path in protected_set)
     appdata_protected = appdata_configured
 
     latest_successful_backup_started_at: str | None = None
@@ -64,8 +59,7 @@ async def evaluate_backup_coverage(
         )
         row = await cursor.fetchone()
         latest_successful_backup_started_at = (
-            row["started_at"] if row and isinstance(row, aiosqlite.Row)
-            else row[0] if row else None
+            row["started_at"] if row and isinstance(row, aiosqlite.Row) else row[0] if row else None
         )
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         latest_successful_backup_started_at = None
@@ -73,15 +67,10 @@ async def evaluate_backup_coverage(
     directories_backed_up = (
         bool(protected_directories)
         and bool(latest_successful_backup_started_at)
-        and (
-            latest_directory_change is None
-            or latest_successful_backup_started_at >= latest_directory_change
-        )
+        and (latest_directory_change is None or latest_successful_backup_started_at >= latest_directory_change)
     )
     if protected_directories and not directories_backed_up:
-        warnings.append(
-            "Watched directories were added or changed, but no successful backup has captured them yet."
-        )
+        warnings.append("Watched directories were added or changed, but no successful backup has captured them yet.")
     if appdata_configured and not directories_backed_up:
         appdata_protected = False
 
@@ -100,9 +89,7 @@ async def evaluate_backup_coverage(
         flash_protected = False
 
     if not protected_directories:
-        warnings.append(
-            "No watched directories are configured. Only dump artifacts are protected."
-        )
+        warnings.append("No watched directories are configured. Only dump artifacts are protected.")
 
     if platform == "unraid":
         if not appdata_configured:
@@ -111,13 +98,9 @@ async def evaluate_backup_coverage(
             )
             recommended_directories.append(appdata_path)
         elif not appdata_protected:
-            warnings.append(
-                "Unraid appdata is configured, but it has not been captured by a successful backup yet."
-            )
+            warnings.append("Unraid appdata is configured, but it has not been captured by a successful backup yet.")
         if not flash_protected:
-            warnings.append(
-                "Unraid flash backup has not completed successfully yet."
-            )
+            warnings.append("Unraid flash backup has not completed successfully yet.")
 
     readiness = "migration_ready"
     if warnings:

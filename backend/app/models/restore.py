@@ -35,7 +35,7 @@ class RestoreRequest(BaseModel):
     @field_validator("snapshot_id")
     @classmethod
     def validate_snapshot_id(cls, v: str) -> str:
-        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
             raise ValueError("Invalid snapshot ID format: only alphanumeric, hyphens, and underscores allowed")
         return v
 
@@ -49,10 +49,22 @@ class RestoreRequest(BaseModel):
             raise ValueError("restore_to must be an absolute path")
         # Block path traversal
         import os
+
         normalized = os.path.normpath(v)
         # Block writes to sensitive system directories
-        blocked_prefixes = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/boot",
-                           "/proc", "/sys", "/dev", "/var/run", "/root")
+        blocked_prefixes = (
+            "/etc",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/boot",
+            "/proc",
+            "/sys",
+            "/dev",
+            "/var/run",
+            "/root",
+        )
         for prefix in blocked_prefixes:
             if normalized == prefix or normalized.startswith(prefix + "/"):
                 raise ValueError(f"restore_to cannot target system directory: {prefix}")

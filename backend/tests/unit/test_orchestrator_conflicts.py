@@ -1,6 +1,5 @@
 """Unit coverage for lock-conflict startup paths in BackupOrchestrator."""
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -68,7 +67,9 @@ def make_orchestrator(config):
 
 
 @pytest.mark.asyncio
-async def test_run_backup_marks_precreated_run_failed_when_restore_lock_blocks_start(orchestrator_config, db_path, tmp_path):
+async def test_run_backup_marks_precreated_run_failed_when_restore_lock_blocks_start(
+    orchestrator_config, db_path, tmp_path
+):
     """Conflicts during startup must not leave orphaned running rows behind."""
     from app.services import orchestrator as orchestrator_module
 
@@ -78,8 +79,9 @@ async def test_run_backup_marks_precreated_run_failed_when_restore_lock_blocks_s
     restore_lock = tmp_path / "restore.lock"
     restore_lock.write_text('{"pid":123,"proc_start_time":"abc"}')
 
-    with patch.object(orchestrator_module, "RESTORE_LOCK_FILE", restore_lock), patch.object(
-        orchestrator_module, "LOCK_FILE", tmp_path / "backup.lock"
+    with (
+        patch.object(orchestrator_module, "RESTORE_LOCK_FILE", restore_lock),
+        patch.object(orchestrator_module, "LOCK_FILE", tmp_path / "backup.lock"),
     ):
         async with aiosqlite.connect(db_path) as db:
             await db.execute(
@@ -127,8 +129,9 @@ async def test_run_backup_marks_scheduled_conflict_as_skipped(orchestrator_confi
     backup_lock = tmp_path / "backup.lock"
     backup_lock.write_text('{"pid":123,"proc_start_time":"abc"}')
 
-    with patch.object(orchestrator_module, "LOCK_FILE", backup_lock), patch.object(
-        orchestrator_module, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"
+    with (
+        patch.object(orchestrator_module, "LOCK_FILE", backup_lock),
+        patch.object(orchestrator_module, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"),
     ):
         result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="run-sched")
 

@@ -5,6 +5,7 @@ status, activity, storage, directories, discover, schema, notifications, setting
 Adapted from Arkive v2 for v3 flat route layout.
 Tests: status, activity log, storage stats, directory CRUD, discover endpoints.
 """
+
 import json
 import os
 
@@ -13,9 +14,9 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from app.main import SPAStaticFiles
-from tests.conftest import build_test_client, do_setup, auth_headers
 
+from app.main import SPAStaticFiles
+from tests.conftest import auth_headers, build_test_client, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,10 +92,12 @@ async def test_status_reports_database_health_from_latest_dump_run(client):
                 "running",
                 "[]",
                 "[]",
-                json.dumps([
-                    {"container_name": "db-lab", "db_type": "postgres", "db_name": "alpha"},
-                    {"container_name": "db-lab", "db_type": "postgres", "db_name": "beta"},
-                ]),
+                json.dumps(
+                    [
+                        {"container_name": "db-lab", "db_type": "postgres", "db_name": "alpha"},
+                        {"container_name": "db-lab", "db_type": "postgres", "db_name": "beta"},
+                    ]
+                ),
                 "postgres",
                 "high",
                 None,
@@ -107,17 +110,35 @@ async def test_status_reports_database_health_from_latest_dump_run(client):
                 include_databases, include_flash, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "job1", "DB Dumps", "db_dump", "0 0 * * *", 1, "[]", "[]", "[]",
-                1, 0, "2026-03-08T00:00:00Z", "2026-03-08T00:00:00Z",
+                "job1",
+                "DB Dumps",
+                "db_dump",
+                "0 0 * * *",
+                1,
+                "[]",
+                "[]",
+                "[]",
+                1,
+                0,
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:00:00Z",
             ),
         )
         await db.execute(
             """INSERT INTO job_runs
-               (id, job_id, status, trigger, started_at, completed_at, databases_discovered, databases_dumped, databases_failed)
+               (id, job_id, status, trigger, started_at, completed_at,
+               databases_discovered, databases_dumped, databases_failed)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "run1", "job1", "partial", "manual",
-                "2026-03-08T00:00:00Z", "2026-03-08T00:05:00Z", 2, 1, 1,
+                "run1",
+                "job1",
+                "partial",
+                "manual",
+                "2026-03-08T00:00:00Z",
+                "2026-03-08T00:05:00Z",
+                2,
+                1,
+                1,
             ),
         )
         await db.execute(
@@ -272,11 +293,15 @@ async def test_activity_has_entries_after_setup(misc_authed_client):
     client, api_key = misc_authed_client
 
     # Create a job to generate an activity entry
-    await client.post("/api/jobs", json={
-        "name": "Activity Test",
-        "type": "full",
-        "schedule": "0 0 * * *",
-    }, headers=auth_headers(api_key))
+    await client.post(
+        "/api/jobs",
+        json={
+            "name": "Activity Test",
+            "type": "full",
+            "schedule": "0 0 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
 
     resp = await client.get("/api/activity", headers=auth_headers(api_key))
     data = resp.json()
@@ -346,10 +371,14 @@ async def test_directories_crud_lifecycle(misc_authed_client, tmp_path):
     os.makedirs(watch_dir, exist_ok=True)
 
     # Create
-    resp = await client.post("/api/directories", json={
-        "path": watch_dir,
-        "label": "App Data",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": watch_dir,
+            "label": "App Data",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     dir_id = resp.json()["id"]
     assert resp.json()["path"] == watch_dir
@@ -360,10 +389,14 @@ async def test_directories_crud_lifecycle(misc_authed_client, tmp_path):
     assert resp.json()["total"] >= 1
 
     # Update (requires full DirectoryCreate body)
-    resp = await client.put(f"/api/directories/{dir_id}", json={
-        "path": watch_dir,
-        "label": "Updated Label",
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/directories/{dir_id}",
+        json={
+            "path": watch_dir,
+            "label": "Updated Label",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
 
     # Delete
@@ -374,10 +407,14 @@ async def test_directories_crud_lifecycle(misc_authed_client, tmp_path):
 async def test_directories_rejects_nonexistent_path(misc_authed_client):
     """Creating a directory with a non-existent path should fail."""
     client, api_key = misc_authed_client
-    resp = await client.post("/api/directories", json={
-        "path": "/nonexistent/path/12345",
-        "label": "Bad Path",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": "/nonexistent/path/12345",
+            "label": "Bad Path",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 400
 
 
@@ -387,16 +424,26 @@ async def test_directories_rejects_duplicate_path(misc_authed_client, tmp_path):
     watch_dir = str(tmp_path / "appdata")
     os.makedirs(watch_dir, exist_ok=True)
 
-    await client.post("/api/directories", json={
-        "path": watch_dir, "label": "First",
-    }, headers=auth_headers(api_key))
+    await client.post(
+        "/api/directories",
+        json={
+            "path": watch_dir,
+            "label": "First",
+        },
+        headers=auth_headers(api_key),
+    )
 
     # The duplicate insert raises an unhandled IntegrityError in the endpoint.
     # Depending on error handling, it may return 500 or raise.
     try:
-        resp = await client.post("/api/directories", json={
-            "path": watch_dir, "label": "Duplicate",
-        }, headers=auth_headers(api_key))
+        resp = await client.post(
+            "/api/directories",
+            json={
+                "path": watch_dir,
+                "label": "Duplicate",
+            },
+            headers=auth_headers(api_key),
+        )
         assert resp.status_code in (409, 500)
     except Exception:
         # IntegrityError may propagate through the ASGI transport

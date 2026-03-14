@@ -46,7 +46,7 @@ async def get_logs(
             filtered.append({"message": line, "level": "INFO", "timestamp": ""})
 
     total = len(filtered)
-    paginated = filtered[offset:offset + actual_limit]
+    paginated = filtered[offset : offset + actual_limit]
     return {
         "items": paginated,
         "logs": paginated,
@@ -82,7 +82,7 @@ async def stream_logs(
                     if event.get("event") == "log":
                         yield {"event": "log", "data": json.dumps(event.get("data", {}))}
                         emitted = True
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
                 # Tail the structured log file so stream works even without

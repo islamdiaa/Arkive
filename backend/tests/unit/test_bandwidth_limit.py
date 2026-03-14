@@ -1,4 +1,5 @@
 """Tests for bandwidth throttling (#29) — bandwidth_limit setting validation and backup engine wiring."""
+
 import re
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,7 +8,6 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-
 
 # ---------------------------------------------------------------------------
 # Validation regex (mirrors settings.py)
@@ -32,8 +32,10 @@ class TestBandwidthLimitValidation:
 # Settings API: bulk PUT accepts bandwidth_limit
 # ---------------------------------------------------------------------------
 
+
 class TestSettingsAPIBandwidthLimit:
     """Settings API accepts and rejects bandwidth_limit via PUT."""
+
     @pytest_asyncio.fixture
     async def settings_api_harness(self, tmp_path):
         """Reuse one app instance while swapping the backing temp DB per test."""
@@ -61,7 +63,9 @@ class TestSettingsAPIBandwidthLimit:
             db_state["path"] = str(db_path)
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
-                    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, encrypted INTEGER DEFAULT 0, updated_at TEXT)"
+                    "CREATE TABLE settings (key TEXT PRIMARY KEY,"
+                    " value TEXT, encrypted INTEGER DEFAULT 0,"
+                    " updated_at TEXT)"
                 )
                 await db.commit()
 
@@ -85,7 +89,7 @@ class TestSettingsAPIBandwidthLimit:
         assert resp.status_code == 422, resp.text
 
     @pytest.mark.asyncio
-    async def test_put_invalid_bandwidth_limit_K_rejected(self, settings_api_harness):
+    async def test_put_invalid_bandwidth_limit_k_rejected(self, settings_api_harness):
         """PUT /settings with '100K' should return 422 — suffixes not allowed."""
         async with settings_api_harness("invalid-bandwidth-k.db") as (client, _db_path):
             resp = await client.put("/settings", json={"bandwidth_limit": "100K"})
@@ -138,12 +142,15 @@ class TestSettingsAPIBandwidthLimit:
 # BackupEngine: --limit-upload injected when bandwidth_limit is set
 # ---------------------------------------------------------------------------
 
+
 class TestBackupEngineBandwidthLimit:
     """BackupEngine.backup() inserts --limit-upload when bandwidth_limit is configured."""
 
     def _make_engine(self):
         from unittest.mock import MagicMock
+
         from app.services.backup_engine import BackupEngine
+
         config = MagicMock()
         config.db_path = ":memory:"
         config.rclone_config = "/tmp/rclone.conf"
@@ -160,16 +167,22 @@ class TestBackupEngineBandwidthLimit:
             captured_cmd.extend(cmd)
             result = MagicMock()
             result.returncode = 0
-            result.stdout = '{"message_type":"summary","snapshot_id":"abc123","total_bytes_processed":100,"files_new":1,"files_changed":0}'
+            result.stdout = (
+                '{"message_type":"summary","snapshot_id":"abc123",'
+                '"total_bytes_processed":100,"files_new":1,'
+                '"files_changed":0}'
+            )
             result.stderr = ""
             return result
 
         target = {"id": "t1", "name": "local", "type": "local", "config": {"path": "/data"}}
 
-        with patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")), \
-             patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")), \
-             patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="1024")), \
-             patch("app.services.backup_engine.run_command", side_effect=fake_run_command):
+        with (
+            patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")),
+            patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")),
+            patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="1024")),
+            patch("app.services.backup_engine.run_command", side_effect=fake_run_command),
+        ):
             await engine.backup(target, ["/config"])
 
         assert "--host" in captured_cmd
@@ -189,16 +202,22 @@ class TestBackupEngineBandwidthLimit:
             captured_cmd.extend(cmd)
             result = MagicMock()
             result.returncode = 0
-            result.stdout = '{"message_type":"summary","snapshot_id":"abc123","total_bytes_processed":100,"files_new":1,"files_changed":0}'
+            result.stdout = (
+                '{"message_type":"summary","snapshot_id":"abc123",'
+                '"total_bytes_processed":100,"files_new":1,'
+                '"files_changed":0}'
+            )
             result.stderr = ""
             return result
 
         target = {"id": "t1", "name": "local", "type": "local", "config": {"path": "/data"}}
 
-        with patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")), \
-             patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")), \
-             patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="")), \
-             patch("app.services.backup_engine.run_command", side_effect=fake_run_command):
+        with (
+            patch.object(engine, "_get_password", new=AsyncMock(return_value="secret")),
+            patch.object(engine, "_get_server_name", new=AsyncMock(return_value="tower")),
+            patch.object(engine, "_get_bandwidth_limit", new=AsyncMock(return_value="")),
+            patch("app.services.backup_engine.run_command", side_effect=fake_run_command),
+        ):
             await engine.backup(target, ["/config"])
 
         assert "--host" in captured_cmd
@@ -210,6 +229,7 @@ class TestBackupEngineBandwidthLimit:
         """_get_bandwidth_limit() reads an integer KiB/s value from settings."""
         import os
         import tempfile
+
         import aiosqlite
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -218,14 +238,15 @@ class TestBackupEngineBandwidthLimit:
         try:
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
-                    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, encrypted INTEGER DEFAULT 0, updated_at TEXT)"
+                    "CREATE TABLE settings (key TEXT PRIMARY KEY,"
+                    " value TEXT, encrypted INTEGER DEFAULT 0,"
+                    " updated_at TEXT)"
                 )
-                await db.execute(
-                    "INSERT INTO settings (key, value) VALUES ('bandwidth_limit', '51200')"
-                )
+                await db.execute("INSERT INTO settings (key, value) VALUES ('bandwidth_limit', '51200')")
                 await db.commit()
 
             from app.services.backup_engine import BackupEngine
+
             config = MagicMock()
             config.db_path = db_path
             engine = BackupEngine(config)
@@ -240,6 +261,7 @@ class TestBackupEngineBandwidthLimit:
         """_get_bandwidth_limit() returns '' when no row exists."""
         import os
         import tempfile
+
         import aiosqlite
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -248,11 +270,14 @@ class TestBackupEngineBandwidthLimit:
         try:
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
-                    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, encrypted INTEGER DEFAULT 0, updated_at TEXT)"
+                    "CREATE TABLE settings (key TEXT PRIMARY KEY,"
+                    " value TEXT, encrypted INTEGER DEFAULT 0,"
+                    " updated_at TEXT)"
                 )
                 await db.commit()
 
             from app.services.backup_engine import BackupEngine
+
             config = MagicMock()
             config.db_path = db_path
             engine = BackupEngine(config)
@@ -267,6 +292,7 @@ class TestBackupEngineBandwidthLimit:
         """_get_bandwidth_limit() returns '' when settings table does not exist (bootstrap/test)."""
         import os
         import tempfile
+
         import aiosqlite
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -278,6 +304,7 @@ class TestBackupEngineBandwidthLimit:
                 await db.commit()
 
             from app.services.backup_engine import BackupEngine
+
             config = MagicMock()
             config.db_path = db_path
             engine = BackupEngine(config)
@@ -292,6 +319,7 @@ class TestBackupEngineBandwidthLimit:
         """_get_bandwidth_limit() returns '' for a legacy '100K' value stored in DB."""
         import os
         import tempfile
+
         import aiosqlite
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -300,14 +328,15 @@ class TestBackupEngineBandwidthLimit:
         try:
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
-                    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, encrypted INTEGER DEFAULT 0, updated_at TEXT)"
+                    "CREATE TABLE settings (key TEXT PRIMARY KEY,"
+                    " value TEXT, encrypted INTEGER DEFAULT 0,"
+                    " updated_at TEXT)"
                 )
-                await db.execute(
-                    "INSERT INTO settings (key, value) VALUES ('bandwidth_limit', '100K')"
-                )
+                await db.execute("INSERT INTO settings (key, value) VALUES ('bandwidth_limit', '100K')")
                 await db.commit()
 
             from app.services.backup_engine import BackupEngine
+
             config = MagicMock()
             config.db_path = db_path
             engine = BackupEngine(config)

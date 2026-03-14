@@ -12,7 +12,6 @@ Environment:
 Exit code 0 = all pass, 1 = failures.
 """
 
-import asyncio
 import json
 import os
 import shutil
@@ -44,14 +43,17 @@ server_proc: subprocess.Popen | None = None
 
 def test(name: str):
     """Decorator to register a test function."""
+
     def decorator(func):
         func._test_name = name
         return func
+
     return decorator
 
 
 class AssertionCollector:
     """Collect assertion results within a test."""
+
     def __init__(self, name: str):
         self.name = name
         self.failures: list[str] = []
@@ -87,11 +89,16 @@ def start_server() -> subprocess.Popen:
 
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn",
+            sys.executable,
+            "-m",
+            "uvicorn",
             "app.main:app",
-            "--host", "127.0.0.1",
-            "--port", str(PORT),
-            "--log-level", "warning",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(PORT),
+            "--log-level",
+            "warning",
         ],
         cwd=os.path.join(os.path.dirname(__file__), ".."),
         env=env,
@@ -170,6 +177,7 @@ def delete(path: str, auth: bool = True, **kwargs) -> httpx.Response:
 # TEST PHASES
 # ===========================================================================
 
+
 # ---------------------------------------------------------------------------
 # Phase 1: Health & Status (no auth)
 # ---------------------------------------------------------------------------
@@ -181,8 +189,12 @@ def test_health_and_status():
     r = get("/api/status", auth=False)
     d = safe_json(r)
     ok = r.status_code == 200 and d.get("status") == "ok" and d.get("setup_completed") is False
-    record("GET /api/status — 200, status=ok, setup_completed=false", ok,
-           f"status={r.status_code}, body={json.dumps(d)[:200]}")
+    record(
+        "GET /api/status — 200, status=ok, setup_completed=false",
+        ok,
+        f"status={r.status_code}, body={json.dumps(d)[:200]}",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Phase 2: Pre-Setup Auth (setup bypass)
@@ -193,8 +205,7 @@ def test_pre_setup_auth():
     # Before setup, auth should be bypassed
     r = get("/api/jobs", auth=False)
     ok = r.status_code == 200
-    record("GET /api/jobs (no auth, pre-setup) — 200 bypass", ok,
-           f"status={r.status_code}")
+    record("GET /api/jobs (no auth, pre-setup) — 200 bypass", ok, f"status={r.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -205,28 +216,38 @@ def test_setup_flow():
     print("\n📋 Phase 3: Setup Flow")
 
     # Complete setup
-    r = post("/api/auth/setup", {
-        "encryption_password": "test-encryption-key-12345",
-        "db_dump_schedule": "0 6,18 * * *",
-        "cloud_sync_schedule": "0 7 * * *",
-        "flash_schedule": "0 6 * * *",
-        "directories": [],
-        "run_first_backup": False,
-    }, auth=False)
+    r = post(
+        "/api/auth/setup",
+        {
+            "encryption_password": "test-encryption-key-12345",
+            "db_dump_schedule": "0 6,18 * * *",
+            "cloud_sync_schedule": "0 7 * * *",
+            "flash_schedule": "0 6 * * *",
+            "directories": [],
+            "run_first_backup": False,
+        },
+        auth=False,
+    )
     d = safe_json(r)
     ok = r.status_code == 200 and isinstance(d.get("api_key"), str) and d["api_key"].startswith("ark_")
     if ok:
         api_key = d["api_key"]
-    record("POST /api/auth/setup — 200, api_key starts with ark_", ok,
-           f"status={r.status_code}, key_prefix={d.get('api_key', '')[:4]}")
+    record(
+        "POST /api/auth/setup — 200, api_key starts with ark_",
+        ok,
+        f"status={r.status_code}, key_prefix={d.get('api_key', '')[:4]}",
+    )
 
     # Setup already done
-    r = post("/api/auth/setup", {
-        "encryption_password": "x",
-    }, auth=False)
+    r = post(
+        "/api/auth/setup",
+        {
+            "encryption_password": "x",
+        },
+        auth=False,
+    )
     ok = r.status_code == 409
-    record("POST /api/auth/setup (again) — 409 already completed", ok,
-           f"status={r.status_code}")
+    record("POST /api/auth/setup (again) — 409 already completed", ok, f"status={r.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -254,15 +275,13 @@ def test_auth_enforcement():
     r = get("/api/jobs")
     d = safe_json(r)
     ok = r.status_code == 200 and "jobs" in d
-    record("GET /api/jobs (valid key) — 200, has jobs", ok,
-           f"status={r.status_code}")
+    record("GET /api/jobs (valid key) — 200, has jobs", ok, f"status={r.status_code}")
 
     # Status shows setup_completed=true
     r = get("/api/status", auth=False)
     d = safe_json(r)
     ok = r.status_code == 200 and d.get("setup_completed") is True
-    record("GET /api/status — setup_completed=true", ok,
-           f"setup_completed={d.get('setup_completed')}")
+    record("GET /api/status — setup_completed=true", ok, f"setup_completed={d.get('setup_completed')}")
 
 
 # ---------------------------------------------------------------------------
@@ -277,16 +296,14 @@ def test_jobs_crud():
     jobs = d.get("jobs", [])
     job_types = {j["type"] for j in jobs}
     ok = len(jobs) == 3 and "db_dump" in job_types and "full" in job_types and "flash" in job_types
-    record("GET /api/jobs — 3 default jobs (db_dump, full, flash)", ok,
-           f"count={len(jobs)}, types={job_types}")
+    record("GET /api/jobs — 3 default jobs (db_dump, full, flash)", ok, f"count={len(jobs)}, types={job_types}")
 
     # Get single job
     first_job_id = jobs[0]["id"] if jobs else "none"
     r = get(f"/api/jobs/{first_job_id}")
     d = safe_json(r)
     ok = r.status_code == 200 and "name" in d and "type" in d and "schedule" in d
-    record("GET /api/jobs/<id> — has name, type, schedule", ok,
-           f"status={r.status_code}, name={d.get('name')}")
+    record("GET /api/jobs/<id> — has name, type, schedule", ok, f"status={r.status_code}, name={d.get('name')}")
 
     # Get nonexistent
     r = get("/api/jobs/nonexistent-fake-id")
@@ -294,22 +311,27 @@ def test_jobs_crud():
     record("GET /api/jobs/fake — 404", ok, f"status={r.status_code}")
 
     # Create job
-    r = post("/api/jobs", {
-        "name": "QA Test Job",
-        "type": "full",
-        "schedule": "0 3 * * *",
-    })
+    r = post(
+        "/api/jobs",
+        {
+            "name": "QA Test Job",
+            "type": "full",
+            "schedule": "0 3 * * *",
+        },
+    )
     d = safe_json(r)
     ok = r.status_code == 201 and "id" in d
     created_job_id = d.get("id", "")
-    record("POST /api/jobs — 201, has id", ok,
-           f"status={r.status_code}, id={created_job_id}")
+    record("POST /api/jobs — 201, has id", ok, f"status={r.status_code}, id={created_job_id}")
 
     # Update job
-    r = put(f"/api/jobs/{created_job_id}", {
-        "name": "Updated QA Job",
-        "enabled": False,
-    })
+    r = put(
+        f"/api/jobs/{created_job_id}",
+        {
+            "name": "Updated QA Job",
+            "enabled": False,
+        },
+    )
     ok = r.status_code == 200
     record("PUT /api/jobs/<id> — 200 updated", ok, f"status={r.status_code}")
 
@@ -317,8 +339,9 @@ def test_jobs_crud():
     r = get(f"/api/jobs/{first_job_id}/runs")
     d = safe_json(r)
     ok = r.status_code == 200 and "items" in d
-    record("GET /api/jobs/<id>/runs — has runs list", ok,
-           f"status={r.status_code}, runs_count={len(d.get('items', []))}")
+    record(
+        "GET /api/jobs/<id>/runs — has runs list", ok, f"status={r.status_code}, runs_count={len(d.get('items', []))}"
+    )
 
     # Delete job
     r = delete(f"/api/jobs/{created_job_id}")
@@ -348,8 +371,7 @@ def test_trigger_run():
     r = post(f"/api/jobs/{full_job['id']}/run")
     # Without Docker, orchestrator is None → expect 500/503 (not crash)
     ok = r.status_code in (200, 202, 500, 503, 422)
-    record("POST /api/jobs/<id>/run — responds (no crash)", ok,
-           f"status={r.status_code}")
+    record("POST /api/jobs/<id>/run — responds (no crash)", ok, f"status={r.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -365,23 +387,24 @@ def test_targets_crud():
     record("GET /api/targets — empty", ok, f"count={len(d.get('targets', []))}")
 
     # Create local target
-    r = post("/api/targets", {
-        "name": "QA Local Target",
-        "type": "local",
-        "config": {"path": "/tmp/arkive-qa/backups"},
-    })
+    r = post(
+        "/api/targets",
+        {
+            "name": "QA Local Target",
+            "type": "local",
+            "config": {"path": "/tmp/arkive-qa/backups"},
+        },
+    )
     d = safe_json(r)
     ok = r.status_code == 201 and "id" in d
     target_id = d.get("id", "")
-    record("POST /api/targets — 201, has id", ok,
-           f"status={r.status_code}, id={target_id}")
+    record("POST /api/targets — 201, has id", ok, f"status={r.status_code}, id={target_id}")
 
     # Get target
     r = get(f"/api/targets/{target_id}")
     d = safe_json(r)
     ok = r.status_code == 200 and d.get("name") == "QA Local Target"
-    record("GET /api/targets/<id> — has name", ok,
-           f"status={r.status_code}, name={d.get('name')}")
+    record("GET /api/targets/<id> — has name", ok, f"status={r.status_code}, name={d.get('name')}")
 
     # Update target
     r = put(f"/api/targets/{target_id}", {"name": "Renamed Target"})
@@ -415,8 +438,7 @@ def test_settings():
     r = get("/api/settings")
     d = safe_json(r)
     ok = r.status_code == 200 and "server_name" in d
-    record("GET /api/settings — has server_name", ok,
-           f"status={r.status_code}, keys={list(d.keys())[:5]}")
+    record("GET /api/settings — has server_name", ok, f"status={r.status_code}, keys={list(d.keys())[:5]}")
 
     # Update bulk
     r = put("/api/settings", {"server_name": "qa-server", "keep_daily": 14})
@@ -427,8 +449,11 @@ def test_settings():
     r = get("/api/settings")
     d = safe_json(r)
     ok = d.get("server_name") == "qa-server" and d.get("keep_daily") == 14
-    record("GET /api/settings — server_name=qa-server, keep_daily=14", ok,
-           f"server_name={d.get('server_name')}, keep_daily={d.get('keep_daily')}")
+    record(
+        "GET /api/settings — server_name=qa-server, keep_daily=14",
+        ok,
+        f"server_name={d.get('server_name')}, keep_daily={d.get('keep_daily')}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,13 +479,16 @@ def test_directories():
     r = post("/api/directories/scan")
     d = safe_json(r)
     ok = r.status_code == 200 and "directories" in d
-    record("POST /api/directories/scan — 200, has directories", ok,
-           f"status={r.status_code}")
+    record("POST /api/directories/scan — 200, has directories", ok, f"status={r.status_code}")
 
     # Update
-    r = put(f"/api/directories/{dir_id}", {
-        "path": "/tmp", "label": "Updated Temp",
-    })
+    r = put(
+        f"/api/directories/{dir_id}",
+        {
+            "path": "/tmp",
+            "label": "Updated Temp",
+        },
+    )
     ok = r.status_code == 200
     record("PUT /api/directories/<id> — 200", ok, f"status={r.status_code}")
 
@@ -483,12 +511,15 @@ def test_notifications():
     record("GET /api/notifications — empty", ok, f"count={len(d.get('channels', []))}")
 
     # Create webhook
-    r = post("/api/notifications", {
-        "name": "QA Webhook",
-        "type": "webhook",
-        "url": "https://example.com/webhook/test12345678",
-        "events": ["backup.success", "backup.failed"],
-    })
+    r = post(
+        "/api/notifications",
+        {
+            "name": "QA Webhook",
+            "type": "webhook",
+            "url": "https://example.com/webhook/test12345678",
+            "events": ["backup.success", "backup.failed"],
+        },
+    )
     d = safe_json(r)
     ok = r.status_code == 201 and "id" in d
     channel_id = d.get("id", "")
@@ -502,14 +533,16 @@ def test_notifications():
     if channels:
         url = channels[0].get("config", {}).get("url", "")
         ok = ok and "••••••" in url
-    record("GET /api/notifications — URL redacted", ok,
-           f"url_sample={channels[0].get('config', {}).get('url', '')[:30] if channels else 'none'}")
+    record(
+        "GET /api/notifications — URL redacted",
+        ok,
+        f"url_sample={channels[0].get('config', {}).get('url', '')[:30] if channels else 'none'}",
+    )
 
     # Test send (will fail since URL is fake, but should not crash)
     r = post(f"/api/notifications/{channel_id}/test")
     ok = r.status_code in (200, 500, 502)  # May fail gracefully
-    record("POST /api/notifications/<id>/test — responds", ok,
-           f"status={r.status_code}")
+    record("POST /api/notifications/<id>/test — responds", ok, f"status={r.status_code}")
 
     # Delete
     r = delete(f"/api/notifications/{channel_id}")
@@ -527,15 +560,13 @@ def test_activity_and_logs():
     r = get("/api/activity")
     d = safe_json(r)
     ok = r.status_code == 200 and "activities" in d and "total" in d
-    record("GET /api/activity — has activities, total", ok,
-           f"status={r.status_code}, total={d.get('total')}")
+    record("GET /api/activity — has activities, total", ok, f"status={r.status_code}, total={d.get('total')}")
 
     # Logs
     r = get("/api/logs")
     d = safe_json(r)
     ok = r.status_code == 200 and "logs" in d
-    record("GET /api/logs — has logs list", ok,
-           f"status={r.status_code}, log_count={len(d.get('logs', []))}")
+    record("GET /api/logs — has logs list", ok, f"status={r.status_code}, log_count={len(d.get('logs', []))}")
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +577,8 @@ def test_storage_stats():
 
     r = get("/api/storage")
     d = safe_json(r)
-    ok = (r.status_code == 200 and "total_size_bytes" in d
-          and "targets" in d and "target_count" in d)
-    record("GET /api/storage — has stats shape", ok,
-           f"status={r.status_code}, keys={list(d.keys())[:5]}")
+    ok = r.status_code == 200 and "total_size_bytes" in d and "targets" in d and "target_count" in d
+    record("GET /api/storage — has stats shape", ok, f"status={r.status_code}, keys={list(d.keys())[:5]}")
 
 
 # ---------------------------------------------------------------------------
@@ -564,8 +593,7 @@ def test_sse_streams():
             ok = r.status_code == 200
             ct = r.headers.get("content-type", "")
             ok = ok and "text/event-stream" in ct
-            record("GET /api/events/stream — 200, text/event-stream", ok,
-                   f"status={r.status_code}, content-type={ct}")
+            record("GET /api/events/stream — 200, text/event-stream", ok, f"status={r.status_code}, content-type={ct}")
     except httpx.ReadTimeout:
         # Timeout is expected since SSE keeps connection open;
         # if we got here, we likely got the initial response
@@ -579,8 +607,7 @@ def test_sse_streams():
             ok = r.status_code == 200
             ct = r.headers.get("content-type", "")
             ok = ok and "text/event-stream" in ct
-            record("GET /api/logs/stream — 200, text/event-stream", ok,
-                   f"status={r.status_code}, content-type={ct}")
+            record("GET /api/logs/stream — 200, text/event-stream", ok, f"status={r.status_code}, content-type={ct}")
     except httpx.ReadTimeout:
         record("GET /api/logs/stream — connected (timeout expected)", True)
     except Exception as e:
@@ -601,8 +628,7 @@ def test_key_rotation():
     d = safe_json(r)
     ok = r.status_code == 200 and "api_key" in d and d["api_key"] != old_key
     new_key = d.get("api_key", "")
-    record("POST /api/auth/rotate-key — new key != old", ok,
-           f"status={r.status_code}, new_prefix={new_key[:8]}")
+    record("POST /api/auth/rotate-key — new key != old", ok, f"status={r.status_code}, new_prefix={new_key[:8]}")
 
     # Old key fails
     r = httpx.get(f"{BASE_URL}/api/jobs", headers={"X-API-Key": old_key}, timeout=10)
@@ -625,35 +651,36 @@ def test_graceful_degradation():
     # Discovery scan (no docker) — should return error, not crash
     r = post("/api/discover/scan")
     ok = r.status_code in (500, 503, 422, 400)
-    record("POST /api/discover/scan (no docker) — error, no crash", ok,
-           f"status={r.status_code}")
+    record("POST /api/discover/scan (no docker) — error, no crash", ok, f"status={r.status_code}")
 
     # Snapshots (no restic) — should return empty
     r = get("/api/snapshots")
     d = safe_json(r)
     ok = r.status_code == 200 and "snapshots" in d
-    record("GET /api/snapshots — 200, has snapshots list", ok,
-           f"status={r.status_code}, count={len(d.get('snapshots', []))}")
+    record(
+        "GET /api/snapshots — 200, has snapshots list",
+        ok,
+        f"status={r.status_code}, count={len(d.get('snapshots', []))}",
+    )
 
     # Databases (no docker, empty discovered) — should return empty
     r = get("/api/databases")
     d = safe_json(r)
     ok = r.status_code == 200 and "databases" in d
-    record("GET /api/databases — 200, empty databases", ok,
-           f"status={r.status_code}, count={len(d.get('databases', []))}")
+    record(
+        "GET /api/databases — 200, empty databases", ok, f"status={r.status_code}, count={len(d.get('databases', []))}"
+    )
 
     # Restore plan preview
     r = get("/api/restore/plan/preview")
     ok = r.status_code in (200, 500)
-    record("GET /api/restore/plan/preview — responds", ok,
-           f"status={r.status_code}")
+    record("GET /api/restore/plan/preview — responds", ok, f"status={r.status_code}")
 
     # Discovered containers (from DB)
     r = get("/api/discover/containers")
     d = safe_json(r)
     ok = r.status_code == 200 and "containers" in d
-    record("GET /api/discover/containers — 200", ok,
-           f"status={r.status_code}")
+    record("GET /api/discover/containers — 200", ok, f"status={r.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -666,15 +693,13 @@ def test_error_response_shape():
     r = httpx.get(f"{BASE_URL}/api/jobs", timeout=10)
     d = safe_json(r)
     ok = r.status_code == 401 and "error" in d and "message" in d
-    record("401 error — has {error, message}", ok,
-           f"keys={list(d.keys())}")
+    record("401 error — has {error, message}", ok, f"keys={list(d.keys())}")
 
     # 404 error
     r = get("/api/jobs/nonexistent-id")
     d = safe_json(r)
     has_error_shape = "detail" in d or ("error" in d and "message" in d)
-    record("404 error — has error shape", has_error_shape,
-           f"keys={list(d.keys())}")
+    record("404 error — has error shape", has_error_shape, f"keys={list(d.keys())}")
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +720,11 @@ def test_rate_limiting():
     d = safe_json(r)
     rate_limited = "too many" in d.get("message", "").lower()
     has_retry = "retry_after" in d.get("details", {})
-    record("Rate limiting — 429 after many bad keys", ok and rate_limited and has_retry,
-           f"status={r.status_code}, retry_after={d.get('details', {}).get('retry_after')}")
+    record(
+        "Rate limiting — 429 after many bad keys",
+        ok and rate_limited and has_retry,
+        f"status={r.status_code}, retry_after={d.get('details', {}).get('retry_after')}",
+    )
 
     # Good key from same IP should also be locked out (IP-based rate limiting)
     r = get("/api/status", auth=False)  # Status is unauthenticated, should still work
@@ -761,11 +789,14 @@ def main():
             try:
                 phase_fn()
             except Exception as e:
-                record(f"{phase_fn.__name__} — EXCEPTION", False,
-                       f"{type(e).__name__}: {e}\n{traceback.format_exc()[-300:]}")
+                record(
+                    f"{phase_fn.__name__} — EXCEPTION",
+                    False,
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()[-300:]}",
+                )
 
     finally:
-        print(f"\n🛑 Stopping server...")
+        print("\n🛑 Stopping server...")
         stop_server(server_proc)
 
     # Summary
@@ -783,7 +814,7 @@ def main():
                 if detail:
                     print(f"    {detail[:200]}")
     else:
-        print(f" — \033[32mALL PASS\033[0m")
+        print(" — \033[32mALL PASS\033[0m")
     print("=" * 60)
     sys.exit(0 if failed == 0 else 1)
 

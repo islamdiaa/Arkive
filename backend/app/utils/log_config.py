@@ -8,17 +8,16 @@ from pathlib import Path
 
 import structlog
 
-
 # Patterns that indicate sensitive values in log messages.
 # Matches compound names like secret_key=..., RESTIC_PASSWORD=..., api-key: ...
 _SENSITIVE_PATTERNS = re.compile(
-    r'(\w*(?:password|secret|token|api[_-]?key|authorization|credential)\w*)'
-    r'\s*[=:]\s*(\S+)',
+    r"(\w*(?:password|secret|token|api[_-]?key|authorization|credential)\w*)"
+    r"\s*[=:]\s*(\S+)",
     re.IGNORECASE,
 )
 
 # Replacement for sensitive values
-_REDACTION = r'\1=***REDACTED***'
+_REDACTION = r"\1=***REDACTED***"
 
 
 class _SensitiveFilter(logging.Filter):
@@ -29,7 +28,7 @@ class _SensitiveFilter(logging.Filter):
             record.msg = _SENSITIVE_PATTERNS.sub(_REDACTION, record.msg)
         if record.args:
             new_args = []
-            for arg in (record.args if isinstance(record.args, tuple) else (record.args,)):
+            for arg in record.args if isinstance(record.args, tuple) else (record.args,):
                 if isinstance(arg, str):
                     new_args.append(_SENSITIVE_PATTERNS.sub(_REDACTION, arg))
                 else:
@@ -72,9 +71,7 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     root.addHandler(console)
 
     # File handler with rotation (50 MB, 30 backups = max 1.5 GB log storage)
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=50 * 1024 * 1024, backupCount=30
-    )
+    file_handler = logging.handlers.RotatingFileHandler(log_file, maxBytes=50 * 1024 * 1024, backupCount=30)
     file_handler.setLevel(log_level)
     file_handler.setFormatter(fmt)
     file_handler.addFilter(sensitive_filter)

@@ -6,12 +6,11 @@ Tests simulate complete user journeys across multiple endpoints.
 
 import json
 import os
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from tests.conftest import build_test_client, do_setup, auth_headers
 
+from tests.conftest import auth_headers, build_test_client, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,11 +28,15 @@ async def _setup_with_target(client, tmp_path):
     target_path = str(tmp_path / "backups")
     os.makedirs(target_path, exist_ok=True)
 
-    resp = await client.post("/api/targets", json={
-        "name": "Local",
-        "type": "local",
-        "config": {"path": target_path},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Local",
+            "type": "local",
+            "config": {"path": target_path},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     target_id = resp.json()["id"]
 
@@ -74,6 +77,7 @@ async def journey_target_client(tmp_path_factory):
 async def _seed_snapshot(client, api_key):
     """Insert a test snapshot row via API-accessible DB."""
     import aiosqlite
+
     from app.core.dependencies import get_config
 
     config = get_config()
@@ -81,8 +85,17 @@ async def _seed_snapshot(client, api_key):
         await db.execute(
             """INSERT INTO snapshots (id, target_id, full_id, time, hostname, paths, tags, size_bytes, cached_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("snap1234", "tgt1", "snap1234fullid", "2024-06-15T10:00:00Z",
-             "testhost", '[]', '[]', 5000, "2024-06-15T10:00:00Z"),
+            (
+                "snap1234",
+                "tgt1",
+                "snap1234fullid",
+                "2024-06-15T10:00:00Z",
+                "testhost",
+                "[]",
+                "[]",
+                5000,
+                "2024-06-15T10:00:00Z",
+            ),
         )
         await db.commit()
 
@@ -97,12 +110,16 @@ async def test_journey_setup_to_run_history(journey_target_client):
     client, api_key, target_id = journey_target_client
 
     # Create a custom job linked to the target
-    resp = await client.post("/api/jobs", json={
-        "name": "Journey Job",
-        "type": "full",
-        "schedule": "0 4 * * *",
-        "targets": [target_id],
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Journey Job",
+            "type": "full",
+            "schedule": "0 4 * * *",
+            "targets": [target_id],
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     job_id = resp.json()["id"]
 
@@ -149,14 +166,18 @@ async def test_journey_notification_create_and_test(journey_target_client):
     client, api_key, _target_id = journey_target_client
 
     # Create notification channel
-    resp = await client.post("/api/notifications", json={
-        "type": "webhook",
-        "name": "Test Webhook",
-        "url": "https://example.com/webhook/test",
-        "events": ["backup.completed"],
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/notifications",
+        json={
+            "type": "webhook",
+            "name": "Test Webhook",
+            "url": "https://example.com/webhook/test",
+            "events": ["backup.completed"],
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
-    channel_id = resp.json()["id"]
+    resp.json()["id"]
 
     # Verify it appears in list with redacted URL
     resp = await client.get("/api/notifications", headers=auth_headers(api_key))
@@ -176,9 +197,13 @@ async def test_journey_settings_export_import(journey_target_client):
     client, api_key, _target_id = journey_target_client
 
     # Update settings
-    resp = await client.put("/api/settings", json={
-        "settings": {"theme": "light", "keep_daily": "30"},
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        "/api/settings",
+        json={
+            "settings": {"theme": "light", "keep_daily": "30"},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
 
     # Export config
@@ -212,18 +237,23 @@ async def test_journey_concurrent_backup_conflict(journey_target_client):
 
     # Create a lock file to simulate an in-progress backup
     from app.core.dependencies import get_config
+
     config = get_config()
     lock_file = os.path.join(str(config.config_dir), "backup.lock")
     pid = os.getpid()
     proc_start_time = _get_proc_start_time(pid)
     assert proc_start_time is not None
     with open(lock_file, "w") as f:
-        f.write(json.dumps({
-            "pid": pid,
-            "proc_start_time": proc_start_time,
-            "run_id": "fake-run",
-            "started_at": "now",
-        }))
+        f.write(
+            json.dumps(
+                {
+                    "pid": pid,
+                    "proc_start_time": proc_start_time,
+                    "run_id": "fake-run",
+                    "started_at": "now",
+                }
+            )
+        )
 
     try:
         # Should get 409 because lock file exists

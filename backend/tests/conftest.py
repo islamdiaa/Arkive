@@ -9,16 +9,16 @@ Provides:
 - Mock config fixture
 - Daemon thread cleanup to prevent aiosqlite hangs
 """
-from contextlib import asynccontextmanager
+
 import os
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-
 
 SLOW_DIR_MARKERS = {
     "tests/cloud_providers/": ("provider", "slow"),
@@ -84,11 +84,13 @@ async def build_test_client(config_dir: Path):
     deps_mod._config = test_config
 
     # Patch scheduler functions to no-ops for tests
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig):
-
-        from app.main import create_app
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+    ):
         from app.api.auth import _reset_setup_rate_limit
+        from app.main import create_app
+
         _reset_setup_rate_limit()
 
         test_app = create_app()
@@ -121,10 +123,12 @@ async def build_test_client(config_dir: Path):
 
     # Reset setup endpoint rate-limit state between tests
     import app.api.auth as auth_mod
+
     auth_mod._setup_attempts.clear()
 
     # Reset security module cache
     from app.core.security import _reset_fernet
+
     _reset_fernet()
 
     if previous_config_dir is None:
@@ -220,10 +224,7 @@ def pytest_sessionfinish(session, exitstatus):
     SimpleQueue.get(). When connections are GC'd without explicit close(),
     the thread never receives the stop sentinel and blocks process exit.
     """
-    alive = [
-        t for t in threading.enumerate()
-        if t.is_alive() and t != threading.main_thread() and t.daemon
-    ]
+    alive = [t for t in threading.enumerate() if t.is_alive() and t != threading.main_thread() and t.daemon]
     if alive:
         os._exit(exitstatus)
 

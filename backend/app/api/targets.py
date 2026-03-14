@@ -10,11 +10,12 @@ import os
 import re
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.core.config import ArkiveConfig
 from app.core.dependencies import (
@@ -39,13 +40,12 @@ _OAUTH_STATE_TTL = 600  # 10 minutes TTL for pending states
 def _cleanup_expired_oauth_states() -> None:
     """Remove expired OAuth states to prevent unbounded memory growth."""
     import time
+
     now = time.time()
-    expired = [
-        state for state, data in _oauth_pending.items()
-        if now - data.get("_created_ts", 0) > _OAUTH_STATE_TTL
-    ]
+    expired = [state for state, data in _oauth_pending.items() if now - data.get("_created_ts", 0) > _OAUTH_STATE_TTL]
     for state in expired:
         del _oauth_pending[state]
+
 
 OAUTH_PROVIDERS = {
     "dropbox": {
@@ -70,7 +70,7 @@ VALID_TYPES = {"b2", "dropbox", "gdrive", "s3", "local", "sftp", "wasabi"}
 
 def _validate_target_id(target_id: str) -> None:
     """Validate target ID to prevent path traversal and injection attacks."""
-    if not target_id or not re.match(r'^[a-zA-Z0-9_-]{1,64}$', target_id):
+    if not target_id or not re.match(r"^[a-zA-Z0-9_-]{1,64}$", target_id):
         raise HTTPException(status_code=400, detail="Invalid target ID format")
 
 
@@ -103,15 +103,12 @@ def _validate_local_path(config: dict) -> list[str]:
         return errors
     resolved = os.path.realpath(normalized)
     # Block sensitive system directories
-    blocked_prefixes = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/boot",
-                       "/proc", "/sys", "/dev", "/var/run", "/root")
+    blocked_prefixes = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys", "/dev", "/var/run", "/root")
     for prefix in blocked_prefixes:
         if normalized == prefix or normalized.startswith(prefix + "/"):
             errors.append(f"Cannot use system directory as backup target: {prefix}")
         elif resolved == prefix or resolved.startswith(prefix + "/"):
-            errors.append(
-                f"Cannot use path resolving to system directory as backup target: {prefix}"
-            )
+            errors.append(f"Cannot use path resolving to system directory as backup target: {prefix}")
     config["path"] = normalized
     return errors
 
@@ -195,9 +192,7 @@ async def list_targets(
     targets = []
     for row in rows:
         target = dict(row)
-        target["config"] = _redact_config(
-            decrypt_config(target.get("config", "{}"), str(config.config_dir))
-        )
+        target["config"] = _redact_config(decrypt_config(target.get("config", "{}"), str(config.config_dir)))
         targets.append(target)
 
     return {
@@ -241,7 +236,7 @@ async def create_target(
         )
 
     target_id = str(uuid.uuid4())[:8]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     encrypted = encrypt_config(body.config, str(config.config_dir))
 
     await db.execute(
@@ -254,9 +249,14 @@ async def create_target(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("target", "created", f"Storage target '{body.name}' created",
-         json.dumps({"target_id": target_id, "target_name": body.name, "target_type": body.type}),
-         "info", now),
+        (
+            "target",
+            "created",
+            f"Storage target '{body.name}' created",
+            json.dumps({"target_id": target_id, "target_name": body.name, "target_type": body.type}),
+            "info",
+            now,
+        ),
     )
     await db.commit()
 
@@ -291,9 +291,7 @@ async def get_target(
         raise HTTPException(status_code=404, detail="Target not found")
 
     target = dict(row)
-    target["config"] = _redact_config(
-        decrypt_config(target.get("config", "{}"), str(config.config_dir))
-    )
+    target["config"] = _redact_config(decrypt_config(target.get("config", "{}"), str(config.config_dir)))
     return target
 
 
@@ -315,7 +313,7 @@ async def update_target(
     if not row:
         raise HTTPException(status_code=404, detail="Target not found")
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     updates: list[str] = []
     params: list = []
     errors: list[str] = []
@@ -352,25 +350,33 @@ async def update_target(
         new_config = body.config
 
     await db.execute(
-        f"UPDATE storage_targets SET {', '.join(updates)} WHERE id = ?", params  # nosec B608
+        f"UPDATE storage_targets SET {', '.join(updates)} WHERE id = ?",
+        params,  # nosec B608
     )
 
     changed = [u.split(" = ")[0] for u in updates if u != "updated_at = ?"]
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("target", "updated", f"Storage target '{row['name']}' updated",
-         json.dumps({"target_id": target_id, "changed_fields": changed}),
-         "info", now),
+        (
+            "target",
+            "updated",
+            f"Storage target '{row['name']}' updated",
+            json.dumps({"target_id": target_id, "changed_fields": changed}),
+            "info",
+            now,
+        ),
     )
     await db.commit()
 
     if new_config is not None and row["type"] != "local" and cloud_manager is not None:
-        await cloud_manager.write_target_config({
-            "id": target_id,
-            "type": row["type"],
-            "config": new_config,
-        })
+        await cloud_manager.write_target_config(
+            {
+                "id": target_id,
+                "type": row["type"],
+                "config": new_config,
+            }
+        )
 
     if event_bus is not None:
         await event_bus.publish("target.updated", {"target_id": target_id, "changed_fields": changed})
@@ -399,7 +405,9 @@ async def delete_target(
     cursor = await db.execute("SELECT id, targets FROM backup_jobs")
     for job_row in await cursor.fetchall():
         try:
-            job_targets = json.loads(job_row["targets"]) if isinstance(job_row["targets"], str) else (job_row["targets"] or [])
+            job_targets = (
+                json.loads(job_row["targets"]) if isinstance(job_row["targets"], str) else (job_row["targets"] or [])
+            )
         except (json.JSONDecodeError, TypeError):
             job_targets = []
         if target_id in job_targets:
@@ -413,13 +421,18 @@ async def delete_target(
     await db.execute("DELETE FROM snapshots WHERE target_id = ?", (target_id,))
     await db.execute("DELETE FROM size_history WHERE target_id = ?", (target_id,))
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("target", "deleted", f"Storage target '{target_name}' deleted",
-         json.dumps({"target_id": target_id, "target_name": target_name, "target_type": row["type"]}),
-         "warning", now),
+        (
+            "target",
+            "deleted",
+            f"Storage target '{target_name}' deleted",
+            json.dumps({"target_id": target_id, "target_name": target_name, "target_type": row["type"]}),
+            "warning",
+            now,
+        ),
     )
     await db.commit()
 
@@ -433,8 +446,6 @@ async def delete_target(
 # ---------------------------------------------------------------------------
 # Test Connection
 # ---------------------------------------------------------------------------
-
-from pydantic import BaseModel
 
 
 class TestConnectionRequest(BaseModel):
@@ -457,6 +468,7 @@ async def test_connection_inline(
 
     if body.type == "local":
         import os
+
         path = body.config.get("path", "")
         if os.path.isdir(path):
             return {"success": True, "message": f"Local path '{path}' is accessible"}
@@ -509,6 +521,7 @@ async def test_target(
     try:
         if target_type == "local":
             import os
+
             path = target_config.get("path", "")
             if not path:
                 message = "No path configured for local target"
@@ -545,7 +558,7 @@ async def test_target(
         message = f"Connection test failed: {exc}"
         logger.error("Target test error for %s: %s", target_id, exc)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_status = "ok" if success else "error"
     await db.execute(
         "UPDATE storage_targets SET last_tested = ?, status = ?, updated_at = ? WHERE id = ?",
@@ -553,7 +566,9 @@ async def test_target(
     )
     await db.commit()
 
-    logger.info("Target test for '%s' (%s): %s - %s", target_name, target_type, "success" if success else "failed", message)
+    logger.info(
+        "Target test for '%s' (%s): %s - %s", target_name, target_type, "success" if success else "failed", message
+    )
 
     return {"success": success, "message": message, "tested_at": now}
 
@@ -583,10 +598,17 @@ async def get_target_usage(
 
     if target_type == "local":
         import shutil
+
         path = target_config.get("path", "/backups")
         try:
             usage = shutil.disk_usage(path)
-            return {"target_id": target_id, "type": target_type, "total": usage.total, "used": usage.used, "free": usage.free}
+            return {
+                "target_id": target_id,
+                "type": target_type,
+                "total": usage.total,
+                "used": usage.used,
+                "free": usage.free,
+            }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to get disk usage: {exc}")
 
@@ -603,9 +625,11 @@ async def get_target_usage(
     env = os.environ.copy()
     env["RCLONE_CONFIG"] = str(cloud_manager.rclone_config)
     from app.utils.subprocess_runner import run_command
+
     about_result = await run_command(
         ["rclone", "about", f"{target_id}:", "--json"],
-        env=env, timeout=30,
+        env=env,
+        timeout=30,
     )
     if about_result.returncode != 0:
         usage_data = {"error": about_result.stderr[:200]}
@@ -668,9 +692,7 @@ async def oauth_start(
 
     client_id = body.client_id
     if not client_id:
-        cursor = await db.execute(
-            "SELECT value FROM settings WHERE key = ?", (f"oauth_{provider}_client_id",)
-        )
+        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (f"oauth_{provider}_client_id",))
         row = await cursor.fetchone()
         if row:
             client_id = row[0]
@@ -693,12 +715,13 @@ async def oauth_start(
         )
 
     import time as _time
+
     _oauth_pending[state] = {
         "provider": provider,
         "client_id": client_id,
         "client_secret": body.client_secret,
         "redirect_uri": redirect_uri,
-        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "_created_ts": _time.time(),
     }
 
@@ -738,7 +761,7 @@ async def oauth_complete(
     """Complete an OAuth flow by exchanging authorization code for tokens."""
     provider = body.provider.lower()
     if provider not in OAUTH_PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unsupported OAuth provider.")
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider.")
 
     pending = _oauth_pending.get(body.state)
     if not pending:
@@ -758,6 +781,7 @@ async def oauth_complete(
     provider_config = OAUTH_PROVIDERS[provider]
 
     import httpx
+
     token_data = {
         "grant_type": "authorization_code",
         "code": body.code,
@@ -799,7 +823,7 @@ async def oauth_complete(
             target_config_dict["client_secret"] = client_secret
 
     target_id = str(uuid.uuid4())[:8]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     target_name = body.name or f"{provider.capitalize()} ({target_id})"
     encrypted = encrypt_config(target_config_dict, str(config.config_dir))
 
@@ -814,9 +838,14 @@ async def oauth_complete(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("target", "created", f"Storage target '{target_name}' created via OAuth",
-         json.dumps({"target_id": target_id, "target_type": provider, "method": "oauth"}),
-         "info", now),
+        (
+            "target",
+            "created",
+            f"Storage target '{target_name}' created via OAuth",
+            json.dumps({"target_id": target_id, "target_type": provider, "method": "oauth"}),
+            "info",
+            now,
+        ),
     )
     await db.commit()
 

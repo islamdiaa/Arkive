@@ -4,7 +4,7 @@ import glob
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.config import ArkiveConfig
 from app.core.platform import Platform
@@ -42,12 +42,10 @@ class FlashBackup:
             )
 
         self.dump_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         output_path = str(self.dump_dir / f"flash_{timestamp}.tar.gz")
 
-        result = await run_command([
-            "tar", "-czf", output_path, "-C", str(boot_config), "."
-        ])
+        result = await run_command(["tar", "-czf", output_path, "-C", str(boot_config), "."])
 
         if result.returncode != 0:
             return FlashBackupResult(status="failed", error=result.stderr)
@@ -68,7 +66,7 @@ class FlashBackup:
         """Remove old flash backups beyond retention limit."""
         pattern = str(self.dump_dir / "flash_*.tar.gz")
         files = sorted(glob.glob(pattern), reverse=True)
-        for old_file in files[self.config.flash_retention:]:
+        for old_file in files[self.config.flash_retention :]:
             try:
                 os.remove(old_file)
                 logger.info("Removed old flash backup: %s", old_file)

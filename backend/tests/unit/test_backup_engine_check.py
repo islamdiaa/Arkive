@@ -1,6 +1,8 @@
 """Tests for BackupEngine.check() method."""
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -16,6 +18,7 @@ def mock_config(tmp_path):
 def engine(mock_config):
     """Create a BackupEngine with mock config."""
     from app.services.backup_engine import BackupEngine
+
     return BackupEngine(mock_config)
 
 
@@ -27,9 +30,10 @@ async def test_check_success(engine):
     fake_result.stdout = '{"message_type":"summary","errors_found":false}'
     fake_result.stderr = ""
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         result = await engine.check(local_target)
 
@@ -46,9 +50,10 @@ async def test_check_failure(engine):
     fake_result.stdout = ""
     fake_result.stderr = "Fatal: unable to open repository"
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         result = await engine.check(local_target)
 
@@ -83,9 +88,10 @@ async def test_check_non_local_sets_rclone_config(engine, mock_config):
             captured_env.update(env)
         return fake_result
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", side_effect=capture_run_command):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", side_effect=capture_run_command),
+    ):
         remote_target = {"id": "t-b2", "type": "b2"}
         result = await engine.check(remote_target)
 
@@ -109,9 +115,10 @@ async def test_check_local_target_no_rclone_config(engine):
             captured_env.update(env)
         return fake_result
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", side_effect=capture_run_command):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", side_effect=capture_run_command),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         result = await engine.check(local_target)
 
@@ -127,9 +134,10 @@ async def test_check_output_truncated_to_1000_chars(engine):
     fake_result.stdout = "x" * 2000  # 2000-char stdout
     fake_result.stderr = ""
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         result = await engine.check(local_target)
 
@@ -144,9 +152,10 @@ async def test_check_error_truncated_to_500_chars(engine):
     fake_result.stdout = ""
     fake_result.stderr = "e" * 1000  # 1000-char stderr
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", AsyncMock(return_value=fake_result)),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         result = await engine.check(local_target)
 
@@ -168,9 +177,10 @@ async def test_check_uses_correct_restic_command(engine):
         captured_cmd.extend(cmd)
         return fake_result
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", side_effect=capture_run_command):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", side_effect=capture_run_command),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         await engine.check(local_target)
 
@@ -194,9 +204,10 @@ async def test_check_timeout_is_600_seconds(engine):
         captured_kwargs["timeout"] = timeout
         return fake_result
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", side_effect=capture_run_command):
-
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", side_effect=capture_run_command),
+    ):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         await engine.check(local_target)
 
@@ -208,8 +219,10 @@ async def test_restore_requires_explicit_destination(engine):
     """restore() refuses to fall back to restoring into / when no destination is supplied."""
     local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
 
-    with patch.object(engine, "_get_password", AsyncMock(return_value="secret")), \
-         patch("app.services.backup_engine.run_command", AsyncMock()) as run_command_mock:
+    with (
+        patch.object(engine, "_get_password", AsyncMock(return_value="secret")),
+        patch("app.services.backup_engine.run_command", AsyncMock()) as run_command_mock,
+    ):
         result = await engine.restore(local_target, "snap123", paths=["/data"], restore_to=None)
 
     assert result["status"] == "failed"

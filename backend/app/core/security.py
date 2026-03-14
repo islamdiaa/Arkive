@@ -113,7 +113,7 @@ def decrypt_value(ciphertext: str) -> str:
     if not is_encrypted(ciphertext):
         return ciphertext
     f = _get_fernet()
-    token = ciphertext[len("enc:v1:"):]
+    token = ciphertext[len("enc:v1:") :]
     return f.decrypt(token.encode()).decode()
 
 
@@ -129,6 +129,7 @@ def generate_password(length: int = 24) -> str:
 
 
 # --- Config dict encryption (from v2) ---
+
 
 def encrypt_config(config_dict: dict, config_dir: str | None = None) -> str:
     """
@@ -165,7 +166,7 @@ def decrypt_config(encrypted_str: str, config_dir: str | None = None) -> dict:
             fernet = _load_fernet_from_dir(config_dir)
         else:
             fernet = _get_fernet()
-        token = encrypted_str[len("enc:v1:"):].encode("utf-8")
+        token = encrypted_str[len("enc:v1:") :].encode("utf-8")
         decrypted = fernet.decrypt(token)
         return json.loads(decrypted.decode("utf-8"))
     else:

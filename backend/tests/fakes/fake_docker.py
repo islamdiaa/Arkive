@@ -8,18 +8,18 @@ Simulates the docker-py API surface used by Arkive's DiscoveryEngine and DBDumpe
 """
 
 import os
-import struct
-from typing import Any, Iterator
-
+from collections.abc import Iterator
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Fake streaming helpers
 # ---------------------------------------------------------------------------
 
+
 def _stream_chunks(data: bytes, chunk_size: int = 512) -> Iterator[tuple[bytes, None]]:
     """Yield (stdout_chunk, None) tuples mimicking demux=True streaming."""
     for i in range(0, len(data), chunk_size):
-        yield (data[i:i + chunk_size], None)
+        yield (data[i : i + chunk_size], None)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +69,7 @@ MONGODB_ARCHIVE = b"\x00\x01\x02\x03" + b"mongodump-archive-v1" + os.urandom(256
 # FakeImage
 # ---------------------------------------------------------------------------
 
+
 class FakeImage:
     """Simulates docker.models.images.Image."""
 
@@ -83,6 +84,7 @@ class FakeImage:
 # ---------------------------------------------------------------------------
 # FakeContainer
 # ---------------------------------------------------------------------------
+
 
 class FakeContainer:
     """Simulates docker.models.containers.Container."""
@@ -139,6 +141,7 @@ class FakeContainer:
 # FakeContainerCollection
 # ---------------------------------------------------------------------------
 
+
 class FakeContainerCollection:
     """Simulates docker.models.containers.ContainerCollection."""
 
@@ -160,6 +163,7 @@ class FakeContainerCollection:
 # FakeDockerClient
 # ---------------------------------------------------------------------------
 
+
 class FakeDockerClient:
     """Drop-in replacement for docker.DockerClient."""
 
@@ -173,6 +177,7 @@ class FakeDockerClient:
 # ---------------------------------------------------------------------------
 # Preconfigured containers factory
 # ---------------------------------------------------------------------------
+
 
 def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[FakeContainer]:
     """Create the 6 preconfigured fake containers covering all DB types.
@@ -205,12 +210,14 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
     _redis_container = FakeContainer(
         name="fake-redis",
         image_tags=["redis:7"],
-        mounts=[{
-            "Type": "bind",
-            "Source": redis_mount_source,
-            "Destination": "/data",
-            "RW": True,
-        }],
+        mounts=[
+            {
+                "Type": "bind",
+                "Source": redis_mount_source,
+                "Destination": "/data",
+                "RW": True,
+            }
+        ],
     )
     _redis_container.exec_run = _redis_exec_run
 
@@ -228,7 +235,6 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "pg_dump": (0, POSTGRES_DUMP),
             },
         ),
-
         # MariaDB
         FakeContainer(
             name="fake-mariadb",
@@ -241,7 +247,6 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "mariadb-dump": (0, MARIADB_DUMP),
             },
         ),
-
         # MongoDB
         FakeContainer(
             name="fake-mongo",
@@ -253,31 +258,32 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "mongodump": (0, MONGODB_ARCHIVE),
             },
         ),
-
         _redis_container,
-
         # Vaultwarden (SQLite via bind mount)
         FakeContainer(
             name="fake-vaultwarden",
             image_tags=["vaultwarden/server:latest"],
-            mounts=[{
-                "Type": "bind",
-                "Source": "/mnt/user/appdata/vaultwarden",
-                "Destination": "/data",
-                "RW": True,
-            }],
+            mounts=[
+                {
+                    "Type": "bind",
+                    "Source": "/mnt/user/appdata/vaultwarden",
+                    "Destination": "/data",
+                    "RW": True,
+                }
+            ],
         ),
-
         # AdGuard Home (profile match, no DB)
         FakeContainer(
             name="fake-adguard",
             image_tags=["adguard/adguardhome"],
-            mounts=[{
-                "Type": "bind",
-                "Source": "/mnt/user/appdata/adguard",
-                "Destination": "/opt/adguardhome/conf",
-                "RW": True,
-            }],
+            mounts=[
+                {
+                    "Type": "bind",
+                    "Source": "/mnt/user/appdata/adguard",
+                    "Destination": "/opt/adguardhome/conf",
+                    "RW": True,
+                }
+            ],
         ),
     ]
 

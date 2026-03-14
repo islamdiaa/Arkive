@@ -7,7 +7,6 @@ import pytest
 
 from app.services.notifier import THROTTLE_COOLDOWN, Notifier
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -107,18 +106,18 @@ class TestThrottle24HrWindow:
     """Verify same event within 24hr window is suppressed."""
 
     @pytest.mark.asyncio
-    async def test_same_event_within_24hr_suppressed(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_same_event_within_24hr_suppressed(self, mock_config, mock_event_bus, mock_apprise):
         """Same event on same channel within 24hr window must be throttled."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
             mock_aiosqlite.connect.return_value = FakeDB(channels)
@@ -137,18 +136,18 @@ class TestThrottle24HrWindow:
             assert apprise_instance.async_notify.call_count == 1  # not sent again
 
     @pytest.mark.asyncio
-    async def test_same_event_at_23hr_still_suppressed(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_same_event_at_23hr_still_suppressed(self, mock_config, mock_event_bus, mock_apprise):
         """Same event at 23 hours 59 minutes (just before window expires) must be throttled."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 0.0
             mock_aiosqlite.connect.return_value = FakeDB(channels)
@@ -172,18 +171,18 @@ class TestThrottle24HrExpiry:
     """Verify same event after 24hr window is allowed through."""
 
     @pytest.mark.asyncio
-    async def test_same_event_after_24hr_allowed(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_same_event_after_24hr_allowed(self, mock_config, mock_event_bus, mock_apprise):
         """Same event after 24hr window must be sent (not throttled)."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 0.0
             mock_aiosqlite.connect.return_value = FakeDB(channels)
@@ -203,18 +202,18 @@ class TestThrottle24HrExpiry:
             assert apprise_instance.async_notify.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_send_after_24hr_resets_cooldown(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_send_after_24hr_resets_cooldown(self, mock_config, mock_event_bus, mock_apprise):
         """After a successful send post-cooldown, the window resets for another 24 hours."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             t0 = 0.0
             mock_time.time.return_value = t0

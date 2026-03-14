@@ -3,7 +3,7 @@
 Each test exercises the real API endpoints with a mocked subprocess layer,
 verifying the full lifecycle of every supported storage provider.
 """
-import json
+
 import os
 
 import pytest
@@ -17,6 +17,7 @@ pytestmark = pytest.mark.asyncio
 # Helper
 # ---------------------------------------------------------------------------
 
+
 async def _create_target(client, provider_key, tmp_path):
     """Create a target for the given provider, return target dict."""
     spec = ALL_PROVIDERS[provider_key].copy()
@@ -28,17 +29,21 @@ async def _create_target(client, provider_key, tmp_path):
         os.makedirs(target_path, exist_ok=True)
         config["path"] = target_path
 
-    resp = await client.post("/api/targets", json={
-        "name": spec["name"],
-        "type": spec["type"],
-        "config": config,
-    })
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": spec["name"],
+            "type": spec["type"],
+            "config": config,
+        },
+    )
     return resp
 
 
 # ---------------------------------------------------------------------------
 # CREATE — every provider
 # ---------------------------------------------------------------------------
+
 
 class TestCreateTargets:
     """POST /api/targets for every provider type."""
@@ -72,35 +77,50 @@ class TestCreateTargets:
 # VALIDATION — empty config rejected for providers with required fields
 # ---------------------------------------------------------------------------
 
+
 class TestValidation:
     """Empty configs should be rejected for providers that require credentials."""
 
-    @pytest.mark.parametrize("provider,expected_errors", [
-        ("b2", ["Application Key ID is required", "Application Key is required", "Bucket name is required"]),
-        ("s3", ["Endpoint URL is required", "Access Key is required", "Secret Key is required", "Bucket name is required"]),
-        ("wasabi", ["Access Key is required", "Secret Key is required", "Bucket name is required"]),
-        ("sftp", ["Host is required", "Username is required"]),
-        ("local", ["Path is required"]),
-        ("dropbox", ["Access token is required"]),
-        ("gdrive", ["Client ID is required"]),
-    ])
+    @pytest.mark.parametrize(
+        "provider,expected_errors",
+        [
+            ("b2", ["Application Key ID is required", "Application Key is required", "Bucket name is required"]),
+            (
+                "s3",
+                [
+                    "Endpoint URL is required",
+                    "Access Key is required",
+                    "Secret Key is required",
+                    "Bucket name is required",
+                ],
+            ),
+            ("wasabi", ["Access Key is required", "Secret Key is required", "Bucket name is required"]),
+            ("sftp", ["Host is required", "Username is required"]),
+            ("local", ["Path is required"]),
+            ("dropbox", ["Access token is required"]),
+            ("gdrive", ["Client ID is required"]),
+        ],
+    )
     async def test_empty_config_rejected(self, provider_client, provider, expected_errors):
-        resp = await provider_client.post("/api/targets", json={
-            "name": f"Bad {provider}",
-            "type": provider,
-            "config": {},
-        })
+        resp = await provider_client.post(
+            "/api/targets",
+            json={
+                "name": f"Bad {provider}",
+                "type": provider,
+                "config": {},
+            },
+        )
         assert resp.status_code == 422, f"{provider}: expected 422, got {resp.status_code}"
         # The global exception handler wraps detail dict into message string
         message = resp.json().get("message", "")
         for err in expected_errors:
-            assert err in message, \
-                f"{provider}: expected '{err}' in message, got: {message}"
+            assert err in message, f"{provider}: expected '{err}' in message, got: {message}"
 
 
 # ---------------------------------------------------------------------------
 # TEST CONNECTION — every cloud provider
 # ---------------------------------------------------------------------------
+
 
 class TestConnection:
     """POST /api/targets/{id}/test for every provider."""
@@ -124,16 +144,17 @@ class TestConnection:
         assert get_resp.status_code == 200
         assert get_resp.json()["status"] == "ok"
 
-    @pytest.mark.parametrize("provider", [
-        p for p in ALL_PROVIDERS if p != "local"
-    ])
+    @pytest.mark.parametrize("provider", [p for p in ALL_PROVIDERS if p != "local"])
     async def test_inline_connection(self, provider_client, provider):
         """POST /api/targets/test-connection (without saving to DB)."""
         spec = ALL_PROVIDERS[provider]
-        resp = await provider_client.post("/api/targets/test-connection", json={
-            "type": spec["type"],
-            "config": spec["config"],
-        })
+        resp = await provider_client.post(
+            "/api/targets/test-connection",
+            json={
+                "type": spec["type"],
+                "config": spec["config"],
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True, f"{provider}: {data}"
@@ -142,6 +163,7 @@ class TestConnection:
 # ---------------------------------------------------------------------------
 # USAGE — cloud providers
 # ---------------------------------------------------------------------------
+
 
 class TestUsage:
     """GET /api/targets/{id}/usage for every provider."""
@@ -161,9 +183,11 @@ class TestUsage:
         assert "used" in data
         assert "free" in data
 
+
 # ---------------------------------------------------------------------------
 # FULL LIFECYCLE — create → test → backup → snapshots → usage → delete
 # ---------------------------------------------------------------------------
+
 
 class TestFullLifecycle:
     """Complete CRUD + operations lifecycle for each provider."""
@@ -184,9 +208,12 @@ class TestFullLifecycle:
         assert get_resp.json()["name"] == ALL_PROVIDERS[provider]["name"]
 
         # 3. UPDATE name
-        update_resp = await client.put(f"/api/targets/{target_id}", json={
-            "name": f"Updated {provider}",
-        })
+        update_resp = await client.put(
+            f"/api/targets/{target_id}",
+            json={
+                "name": f"Updated {provider}",
+            },
+        )
         assert update_resp.status_code == 200
         assert update_resp.json()["name"] == f"Updated {provider}"
 
@@ -226,12 +253,11 @@ class TestFullLifecycle:
 # RCLONE CONFIG — verify correct config written per provider
 # ---------------------------------------------------------------------------
 
+
 class TestRcloneConfig:
     """Verify the rclone config file is correctly written for cloud providers."""
 
-    @pytest.mark.parametrize("provider", [
-        p for p in ALL_PROVIDERS if p != "local"
-    ])
+    @pytest.mark.parametrize("provider", [p for p in ALL_PROVIDERS if p != "local"])
     async def test_rclone_config_written_after_test(self, provider_client, provider):
         """After test-connection, rclone config should have correct section."""
         create_resp = await _create_target(provider_client, provider, provider_client._tmp_path)
@@ -256,13 +282,13 @@ class TestRcloneConfig:
             "dropbox": "type = dropbox",
             "gdrive": "type = drive",
         }
-        assert expected[provider] in content, \
-            f"{provider}: expected '{expected[provider]}' in config"
+        assert expected[provider] in content, f"{provider}: expected '{expected[provider]}' in config"
 
 
 # ---------------------------------------------------------------------------
 # BACKUP ENGINE — verify backup works with each provider's repo path
 # ---------------------------------------------------------------------------
+
 
 class TestBackupEngine:
     """BackupEngine.backup() with mocked restic for each provider."""
@@ -288,8 +314,7 @@ class TestBackupEngine:
 
         # Init repo
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("app.services.backup_engine.run_command",
-                       provider_client._mock_run)
+            mp.setattr("app.services.backup_engine.run_command", provider_client._mock_run)
             init_ok = await backup_engine.init_repo(target_dict)
             assert init_ok, f"{provider}: repo init failed"
 
@@ -308,9 +333,7 @@ class TestBackupEngine:
             assert result["snapshot_id"] == "abc12345"
             assert result["files_new"] == 5
 
-    @pytest.mark.parametrize("provider", [
-        p for p in ALL_PROVIDERS if p != "local"
-    ])
+    @pytest.mark.parametrize("provider", [p for p in ALL_PROVIDERS if p != "local"])
     async def test_repo_path_uses_rclone(self, provider_client, provider):
         """Cloud providers should use rclone:{id}:arkive-backups repo path."""
         from app.services.backup_engine import BackupEngine

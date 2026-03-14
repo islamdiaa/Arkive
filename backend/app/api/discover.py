@@ -1,7 +1,7 @@
 """Container discovery API routes."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,6 +21,7 @@ async def run_scan(
     if discovery is None:
         raise HTTPException(503, "Discovery unavailable — Docker is required for container scanning")
     import time
+
     start = time.monotonic()
     containers = await discovery.scan()
     duration = round(time.monotonic() - start, 2)
@@ -47,7 +48,7 @@ async def run_scan(
         "flash_config_found": False,
         "shares": [],
         "scan_duration_seconds": duration,
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -102,7 +103,7 @@ async def list_discovered_databases(
             all_databases.append(entry)
 
     total = len(all_databases)
-    paginated = all_databases[offset:offset + limit]
+    paginated = all_databases[offset : offset + limit]
     return {
         "items": paginated,
         "databases": paginated,

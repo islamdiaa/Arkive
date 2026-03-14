@@ -87,9 +87,16 @@ async def refresh_snapshots(
             await db.execute(
                 """INSERT OR REPLACE INTO snapshots (id, target_id, full_id, time, hostname, paths, tags, size_bytes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (short_id, target["id"], snap.get("id", ""), snap.get("time", ""),
-                 snap.get("hostname", ""), json.dumps(snap.get("paths", [])),
-                 json.dumps(snap.get("tags", [])), snapshot_size),
+                (
+                    short_id,
+                    target["id"],
+                    snap.get("id", ""),
+                    snap.get("time", ""),
+                    snap.get("hostname", ""),
+                    json.dumps(snap.get("paths", [])),
+                    json.dumps(snap.get("tags", [])),
+                    snapshot_size,
+                ),
             )
             total_size += snapshot_size
         total += len(snapshots)

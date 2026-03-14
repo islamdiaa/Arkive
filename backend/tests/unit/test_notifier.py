@@ -1,6 +1,4 @@
 """Tests for the notifier service — 6 test cases."""
-import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 
 class TestNotifier:

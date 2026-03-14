@@ -2,10 +2,8 @@
 
 import json
 import logging
-import os
-import posixpath
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -46,12 +44,15 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
 <strong>Platform:</strong> {{ platform }}</p>
 
 <div class="critical">
-<strong>⚠️ CRITICAL:</strong> Store this document securely. It contains the information needed to restore your entire server from scratch.
+<strong>⚠️ CRITICAL:</strong> Store this document securely. It contains the information needed
+to restore your entire server from scratch.
 </div>
 
 <h2>1. Restic Repository Access</h2>
 <div class="warning">
-<strong>Encryption Password:</strong> Your restic repository is encrypted. You MUST have the encryption password to restore any data. If you lose this password, your backups are permanently inaccessible.
+<strong>Encryption Password:</strong> Your restic repository is encrypted. You MUST have the
+encryption password to restore any data. If you lose this password, your backups are
+permanently inaccessible.
 </div>
 
 <h2>2. Storage Targets</h2>
@@ -93,10 +94,13 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
 <p>Add the same storage target(s) used for backups via the Arkive UI.</p>
 
 <h3>Step 3: List available snapshots</h3>
-<pre>docker exec arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} snapshots</pre>
+<pre>docker exec arkive restic -r \
+{{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} snapshots</pre>
 
 <h3>Step 4: Restore database dumps</h3>
-<pre>docker exec arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} restore SNAPSHOT_ID --target /config/restore/</pre>
+<pre>docker exec arkive restic -r \
+{{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} \
+restore SNAPSHOT_ID --target /config/restore/</pre>
 
 <h3>Step 5: Restore each database</h3>
 {% for db in databases %}
@@ -179,26 +183,30 @@ class RestorePlanGenerator:
         # Build database restore commands
         databases = []
         for c in containers:
-            dbs = json.loads(c.get("databases", "[]")) if isinstance(c.get("databases"), str) else c.get("databases", [])
+            dbs = (
+                json.loads(c.get("databases", "[]")) if isinstance(c.get("databases"), str) else c.get("databases", [])
+            )
             for d in dbs:
                 if isinstance(d, dict):
                     db_type = d.get("db_type", "")
                     db_name = d.get("db_name", "")
                     container_name = d.get("container_name", c.get("name", ""))
                     restore_cmd, full_cmd = self._get_restore_commands(db_type, db_name, container_name)
-                    databases.append({
-                        "container_name": container_name,
-                        "db_type": db_type,
-                        "db_name": db_name,
-                        "restore_cmd": restore_cmd,
-                        "full_restore_cmd": full_cmd,
-                    })
+                    databases.append(
+                        {
+                            "container_name": container_name,
+                            "db_type": db_type,
+                            "db_name": db_name,
+                            "restore_cmd": restore_cmd,
+                            "full_restore_cmd": full_cmd,
+                        }
+                    )
 
         env = Environment(autoescape=select_autoescape(["html"]))
         template = env.from_string(RESTORE_PLAN_TEMPLATE)
         html = template.render(
             hostname=socket.gethostname(),
-            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             platform=platform,
             version=__version__,
             targets=targets,
@@ -216,6 +224,7 @@ class RestorePlanGenerator:
         pdf_path = str(self.config.config_dir / "restore-plan.pdf")
         try:
             from weasyprint import HTML
+
             HTML(string=html).write_pdf(pdf_path)
         except Exception as e:
             logger.warning("PDF generation failed (WeasyPrint): %s — falling back to HTML", e)
@@ -242,7 +251,7 @@ class RestorePlanGenerator:
             full = f"gunzip -c {container}_{db_name}_*.sql.gz | docker exec -i {container} mysql -u root"
             return short, full
         elif db_type == "mongodb":
-            short = f"mongorestore --archive < dump.archive"
+            short = "mongorestore --archive < dump.archive"
             full = f"gunzip -c {container}_{db_name}_*.archive.gz | docker exec -i {container} mongorestore --archive"
             return short, full
         elif db_type == "redis":

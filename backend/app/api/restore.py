@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from app.core.dependencies import get_backup_engine, get_config, get_db, get_restore_plan, require_auth
 from app.core.security import decrypt_config
 from app.models.restore import RestoreRequest
-from app.services.orchestrator import LOCK_FILE, RESTORE_LOCK_FILE, _get_proc_start_time
+from app.services.orchestrator import _get_proc_start_time
 from app.services.repo_paths import build_repo_path
 
 logger = logging.getLogger("arkive.restore")
@@ -39,7 +39,7 @@ def _repo_path_for_target(target: dict) -> str:
 
 
 def _validate_snapshot_id(snapshot_id: str) -> str:
-    if not re.match(r'^[a-zA-Z0-9_-]+$', snapshot_id):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", snapshot_id):
         raise HTTPException(400, "Invalid snapshot ID format")
     return snapshot_id
 
@@ -56,6 +56,7 @@ def _acquire_restore_lock() -> None:
     """
     # Resolve paths dynamically so tests can override ARKIVE_CONFIG_DIR
     from pathlib import Path
+
     config_dir = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config"))
     lock_file = config_dir / "backup.lock"
     restore_lock_file = config_dir / "restore.lock"
@@ -96,7 +97,9 @@ def _acquire_restore_lock() -> None:
                     # PID recycled — stale lock
                     logger.warning(
                         "Restore lock PID %s recycled (start %s→%s), removing stale lock",
-                        pid, stored_start, current_start,
+                        pid,
+                        stored_start,
+                        current_start,
                     )
                 else:
                     # Lock without proc_start_time — treat as live
@@ -121,11 +124,16 @@ def _acquire_restore_lock() -> None:
         restore_lock_file.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(restore_lock_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
-            os.write(fd, json.dumps({
-                "pid": os.getpid(),
-                "proc_start_time": _get_proc_start_time(os.getpid()) or "",
-                "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }).encode())
+            os.write(
+                fd,
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "proc_start_time": _get_proc_start_time(os.getpid()) or "",
+                        "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                ).encode(),
+            )
         finally:
             os.close(fd)
     except FileExistsError:
@@ -140,11 +148,12 @@ def _acquire_restore_lock() -> None:
 def _release_restore_lock() -> None:
     """Release restore lock."""
     from pathlib import Path
+
     restore_lock_file = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "restore.lock"
     try:
         restore_lock_file.unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.warning("Failed to release restore lock file", exc_info=True)
 
 
 def cleanup_stale_restore_lock(config_dir: Path | None = None) -> bool:
@@ -168,6 +177,7 @@ def cleanup_stale_restore_lock(config_dir: Path | None = None) -> bool:
         restore_lock_file.unlink(missing_ok=True)
         return True
     except Exception:
+        logger.warning("Corrupt restore lock file detected, removing", exc_info=True)
         restore_lock_file.unlink(missing_ok=True)
         return True
 
@@ -229,14 +239,15 @@ async def restore_files(
     target["config"] = decrypt_config(target.get("config", "{}"), str(config.config_dir))
 
     restore_id = str(uuid.uuid4())[:8]
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
     started_monotonic = time.monotonic()
 
     if body.dry_run:
         # Dry run: list files that would be restored without writing
         try:
             entries = await backup_engine.ls(
-                target, body.snapshot_id,
+                target,
+                body.snapshot_id,
                 body.paths[0] if body.paths else "/",
             )
             return {
@@ -303,7 +314,7 @@ async def restore_files(
                SET status = 'failed', completed_at = ?, duration_seconds = ?, error_message = ?
                WHERE id = ?""",
             (
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 max(duration, 0),
                 message,
                 restore_id,
@@ -333,7 +344,7 @@ async def restore_files(
            WHERE id = ?""",
         (
             result_status,
-            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             max(duration, 0),
             error_message,
             restore_id,
@@ -483,7 +494,7 @@ async def get_restore_plan_markdown(
 ):
     """Return the restore plan as a Markdown document."""
     import socket
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     tc = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
     targets = [dict(t) for t in await tc.fetchall()]
@@ -497,7 +508,7 @@ async def get_restore_plan_markdown(
     directories = [dict(d) for d in await dc.fetchall()]
 
     hostname = socket.gethostname()
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = [
         "# Arkive Disaster Recovery Plan",
@@ -515,9 +526,7 @@ async def get_restore_plan_markdown(
         lines.append("| Name | Type | Enabled | Repo |")
         lines.append("|------|------|---------|------|")
         for t in targets:
-            lines.append(
-                f"| {t.get('name', '')} | {t.get('type', '')} | yes | `{t.get('repo_path', '')}` |"
-            )
+            lines.append(f"| {t.get('name', '')} | {t.get('type', '')} | yes | `{t.get('repo_path', '')}` |")
     else:
         lines.append("_No storage targets configured._")
 
@@ -527,8 +536,7 @@ async def get_restore_plan_markdown(
         lines.append("|------|-------|--------|---------|")
         for c in containers:
             lines.append(
-                f"| {c.get('name', '')} | {c.get('image', '')} "
-                f"| {c.get('status', '')} | {c.get('profile', '')} |"
+                f"| {c.get('name', '')} | {c.get('image', '')} | {c.get('status', '')} | {c.get('profile', '')} |"
             )
     else:
         lines.append("_No containers discovered._")
@@ -566,7 +574,8 @@ async def get_restore_plan_markdown(
     else:
         lines += [
             "3. Run `restic snapshots` against the target repo listed above to list available restore points.",
-            "4. Run `restic restore <snapshot-id> --target /restore-staging` against that same repo to restore files into a staging directory.",
+            "4. Run `restic restore <snapshot-id> --target /restore-staging`"
+            " against that same repo to restore files into a staging directory.",
             "5. Restart containers in dependency order.",
         ]
     lines += ["", "---", f"_Generated by Arkive on {generated_at}_"]
@@ -591,7 +600,7 @@ async def preview_restore_plan(
 ):
     """Preview restore plan data without generating PDF."""
     import socket
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     tc = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
     targets = [dict(t) for t in await tc.fetchall()]
@@ -600,7 +609,7 @@ async def preview_restore_plan(
 
     return {
         "hostname": socket.gethostname(),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "targets": len(targets),
         "containers": len(containers),
     }

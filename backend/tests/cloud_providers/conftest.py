@@ -3,28 +3,25 @@
 Provides a test client with a real CloudManager (backed by a temp rclone config)
 and a mock `run_command` that simulates rclone/restic subprocess calls.
 """
+
 import json
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import ArkiveConfig
 from app.services.cloud_manager import CloudManager
 from app.utils.subprocess_runner import CommandResult
-
 
 # ---------------------------------------------------------------------------
 # Mock subprocess responses for rclone / restic
 # ---------------------------------------------------------------------------
 
+
 def make_result(rc=0, stdout="", stderr="", cmd="mock"):
-    return CommandResult(returncode=rc, stdout=stdout, stderr=stderr,
-                         duration_seconds=0.1, command=cmd)
+    return CommandResult(returncode=rc, stdout=stdout, stderr=stderr, duration_seconds=0.1, command=cmd)
 
 
 def mock_run_command_factory():
@@ -47,11 +44,17 @@ def mock_run_command_factory():
 
         # rclone about → usage stats
         if "rclone" in cmd and "about" in cmd:
-            return make_result(0, json.dumps({
-                "total": 1099511627776,  # 1 TB
-                "used": 107374182400,    # 100 GB
-                "free": 992137445376,    # ~924 GB
-            }), cmd=cmd_str)
+            return make_result(
+                0,
+                json.dumps(
+                    {
+                        "total": 1099511627776,  # 1 TB
+                        "used": 107374182400,  # 100 GB
+                        "free": 992137445376,  # ~924 GB
+                    }
+                ),
+                cmd=cmd_str,
+            )
 
         # rclone obscure → SFTP password obfuscation
         if "rclone" in cmd and "obscure" in cmd:
@@ -204,15 +207,17 @@ async def provider_client(tmp_path):
 
     mock_run = mock_run_command_factory()
 
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig), \
-         patch("app.services.cloud_manager.run_command", mock_run), \
-         patch("app.utils.subprocess_runner.run_command", mock_run), \
-         patch("app.services.backup_engine.run_command", mock_run), \
-         patch("app.api.targets.run_command", mock_run, create=True):
-
-        from app.main import create_app
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+        patch("app.services.cloud_manager.run_command", mock_run),
+        patch("app.utils.subprocess_runner.run_command", mock_run),
+        patch("app.services.backup_engine.run_command", mock_run),
+        patch("app.api.targets.run_command", mock_run, create=True),
+    ):
         from app.api.auth import _reset_setup_rate_limit
+        from app.main import create_app
+
         _reset_setup_rate_limit()
 
         test_app = create_app()
@@ -220,6 +225,7 @@ async def provider_client(tmp_path):
 
         cloud_manager = CloudManager(test_config)
         from app.services.backup_engine import BackupEngine
+
         backup_engine = BackupEngine(test_config)
 
         test_app.state.config = test_config
@@ -239,10 +245,13 @@ async def provider_client(tmp_path):
         transport = ASGITransport(app=test_app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             # Run setup to get API key
-            setup_resp = await ac.post("/api/auth/setup", json={
-                "run_first_backup": False,
-                "encryption_password": "test-restic-password",
-            })
+            setup_resp = await ac.post(
+                "/api/auth/setup",
+                json={
+                    "run_first_backup": False,
+                    "encryption_password": "test-restic-password",
+                },
+            )
             assert setup_resp.status_code in (200, 201), setup_resp.text
             api_key = setup_resp.json()["api_key"]
             ac.headers["X-API-Key"] = api_key

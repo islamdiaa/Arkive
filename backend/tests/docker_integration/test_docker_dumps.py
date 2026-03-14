@@ -2,19 +2,14 @@
 
 import gzip
 import os
-import shutil
 
 import pytest
 
-from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
 from app.services.db_dumper import DBDumper
 from tests.fakes.fake_docker import (
     FakeContainer,
     FakeDockerClient,
-    POSTGRES_DUMP,
-    MARIADB_DUMP,
-    MONGODB_ARCHIVE,
 )
 
 

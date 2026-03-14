@@ -19,7 +19,9 @@ import httpx
 try:
     from app import __version__
 except ImportError:
-    import os, importlib.util
+    import importlib.util
+    import os
+
     _init = os.path.join(os.path.dirname(__file__), "__init__.py")
     _spec = importlib.util.spec_from_file_location("app", _init)
     _mod = importlib.util.module_from_spec(_spec)
@@ -115,6 +117,7 @@ def cli(ctx, json_mode, verbose, quiet, api_key, url):
 
 # ---------- version ----------
 
+
 @cli.command()
 @click.pass_context
 def version(ctx):
@@ -124,6 +127,7 @@ def version(ctx):
 
 
 # ---------- status ----------
+
 
 @cli.command()
 @click.pass_context
@@ -155,6 +159,7 @@ def status(ctx):
 
 # ---------- backup ----------
 
+
 @cli.group(invoke_without_command=True)
 @click.option("--now", is_flag=True, help="Run backup immediately")
 @click.option("--job-id", help="Specific job ID to run")
@@ -184,9 +189,7 @@ def backup_list(ctx):
                 click.echo("No backup jobs configured.")
                 return
             for job in jobs:
-                click.echo(
-                    f"  {job['id']}  {job['name']}  schedule={job['schedule']}  enabled={job['enabled']}"
-                )
+                click.echo(f"  {job['id']}  {job['name']}  schedule={job['schedule']}  enabled={job['enabled']}")
 
         _output(ctx, data, _human)
     except Exception as e:
@@ -237,6 +240,7 @@ def _backup_run(ctx, job_id):
 
 # ---------- job ----------
 
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def job(ctx):
@@ -264,9 +268,7 @@ def job_list(ctx):
             click.echo(f"  {'─' * 12} {'─' * 25} {'─' * 18} {'─' * 8}")
             for j in jobs:
                 enabled = click.style("yes", fg="green") if j.get("enabled") else click.style("no", fg="red")
-                click.echo(
-                    f"  {j['id'][:11]:<12} {j.get('name', '?')[:24]:<25} {j.get('schedule', '?'):<18} {enabled}"
-                )
+                click.echo(f"  {j['id'][:11]:<12} {j.get('name', '?')[:24]:<25} {j.get('schedule', '?'):<18} {enabled}")
             click.echo(f"\n  Total: {len(jobs)} job(s)")
 
         _output(ctx, data, _human)
@@ -275,6 +277,7 @@ def job_list(ctx):
 
 
 # ---------- targets ----------
+
 
 @cli.group(invoke_without_command=True)
 @click.pass_context
@@ -308,6 +311,7 @@ def targets_list(ctx):
 
 
 # ---------- snapshots ----------
+
 
 @cli.group(invoke_without_command=True)
 @click.pass_context
@@ -344,6 +348,7 @@ def snapshots_list(ctx):
 
 # ---------- discover ----------
 
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def discover(ctx):
@@ -365,10 +370,7 @@ def discover_scan(ctx):
         data = r.json()
 
         def _human(d):
-            click.echo(
-                f"Found {d.get('total_containers', 0)} containers, "
-                f"{len(d.get('databases', []))} databases"
-            )
+            click.echo(f"Found {d.get('total_containers', 0)} containers, {len(d.get('databases', []))} databases")
             click.echo(f"Scan took {d.get('scan_duration_seconds', 0)}s")
 
         _output(ctx, data, _human)
@@ -377,6 +379,7 @@ def discover_scan(ctx):
 
 
 # ---------- databases ----------
+
 
 @cli.command()
 @click.pass_context
@@ -410,6 +413,7 @@ def databases(ctx):
 
 
 # ---------- health ----------
+
 
 @cli.command()
 @click.pass_context
@@ -450,13 +454,15 @@ def health(ctx):
             else:
                 failed += 1
 
-            results.append({
-                "id": target_id,
-                "name": target_name,
-                "type": t.get("type", "unknown"),
-                "success": success,
-                "message": result.get("message", ""),
-            })
+            results.append(
+                {
+                    "id": target_id,
+                    "name": target_name,
+                    "type": t.get("type", "unknown"),
+                    "success": success,
+                    "message": result.get("message", ""),
+                }
+            )
 
         data = {"targets": results, "total": len(results), "passed": passed, "failed": failed}
 
@@ -481,6 +487,7 @@ def health(ctx):
 
 
 # ---------- logs ----------
+
 
 @cli.command()
 @click.option("--lines", "-n", default=50, type=int, help="Number of log lines to show")
@@ -531,6 +538,7 @@ def logs(ctx, lines, level):
 
 # ---------- notify ----------
 
+
 @cli.command()
 @click.option("--channel-id", required=True, help="Notification channel ID to test")
 @click.pass_context
@@ -564,6 +572,7 @@ def notify(ctx, channel_id):
 
 # ---------- key ----------
 
+
 @cli.group()
 @click.pass_context
 def key(ctx):
@@ -596,6 +605,7 @@ def key_show_hash(ctx):
 
 # ---------- restore ----------
 
+
 @cli.group(invoke_without_command=True)
 @click.pass_context
 def restore(ctx):
@@ -621,7 +631,9 @@ def restore_list(ctx):
                 return
             for s in snaps:
                 click.echo(
-                    f"  {s['id']}  {s.get('time', 'N/A')}  target={s.get('target_id', 'N/A')}  size={s.get('size_bytes', 0)}"
+                    f"  {s['id']}  {s.get('time', 'N/A')}"
+                    f"  target={s.get('target_id', 'N/A')}"
+                    f"  size={s.get('size_bytes', 0)}"
                 )
 
         _output(ctx, data, _human)
@@ -664,6 +676,7 @@ def restore_run(ctx, snapshot_id, target, paths, restore_to):
 
 
 # ---------- config ----------
+
 
 @cli.group(invoke_without_command=True)
 @click.pass_context

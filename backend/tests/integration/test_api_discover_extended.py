@@ -4,9 +4,10 @@ API integration tests for the discover endpoints.
 Tests: POST /api/discover/scan, GET /api/discover/containers,
        GET /api/discover/databases.
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,9 +46,7 @@ async def test_discover_databases_requires_auth(client):
 async def test_discover_scan_no_docker(client):
     """POST /api/discover/scan returns 503 when Docker is unavailable."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/discover/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/discover/scan", headers=auth_headers(data["api_key"]))
     # Discovery is None in test fixtures so should get 503
     assert resp.status_code == 503
     body = resp.json()
@@ -65,9 +64,7 @@ async def test_discover_scan_no_docker(client):
 async def test_discover_containers_empty(client):
     """GET /api/discover/containers returns empty paginated list when none discovered."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/containers", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/containers", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -80,9 +77,7 @@ async def test_discover_containers_empty(client):
 async def test_discover_containers_has_legacy_key(client):
     """GET /api/discover/containers response includes 'containers' legacy alias."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/containers", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/containers", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -93,9 +88,7 @@ async def test_discover_containers_has_legacy_key(client):
 async def test_discover_containers_has_pagination(client):
     """GET /api/discover/containers response uses standard pagination."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/containers", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/containers", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -113,9 +106,7 @@ async def test_discover_containers_has_pagination(client):
 async def test_discover_databases_empty(client):
     """GET /api/discover/databases returns empty paginated list when none discovered."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/databases", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/databases", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -128,9 +119,7 @@ async def test_discover_databases_empty(client):
 async def test_discover_databases_has_legacy_key(client):
     """GET /api/discover/databases response includes 'databases' legacy alias."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/databases", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/databases", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -141,9 +130,7 @@ async def test_discover_databases_has_legacy_key(client):
 async def test_discover_databases_has_items_key(client):
     """GET /api/discover/databases response includes standard 'items' key."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/databases", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/databases", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -153,9 +140,7 @@ async def test_discover_databases_has_items_key(client):
 async def test_discover_databases_response_structure(client):
     """GET /api/discover/databases returns standard paginated response keys."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/discover/databases", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/discover/databases", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     required_keys = {"items", "total", "limit", "offset", "has_more"}

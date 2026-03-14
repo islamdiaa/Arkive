@@ -1,9 +1,5 @@
 """Tests for database initialization."""
 
-import asyncio
-import os
-from pathlib import Path
-
 import aiosqlite
 import pytest
 from click.testing import CliRunner
@@ -18,12 +14,11 @@ def db_path(tmp_path):
 async def test_init_db(db_path):
     """Test database initialization creates all tables."""
     from app.core.database import init_db
+
     await init_db(db_path)
 
     async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         tables = [row[0] for row in await cursor.fetchall()]
 
     expected = [
@@ -50,6 +45,7 @@ async def test_init_db(db_path):
 async def test_init_db_idempotent(db_path):
     """Test database init is safe to run multiple times."""
     from app.core.database import init_db
+
     await init_db(db_path)
     await init_db(db_path)  # Should not raise
 
@@ -58,8 +54,9 @@ async def test_init_db_idempotent(db_path):
 async def test_run_migrations_idempotent(db_path):
     """Running run_migrations twice returns 0 on the second call."""
     from app.core.database import init_db, run_migrations
+
     await init_db(db_path)
-    first = await run_migrations(db_path)
+    await run_migrations(db_path)
     second = await run_migrations(db_path)
     assert second == 0, f"Expected 0 on second run, got {second}"
 
@@ -74,9 +71,7 @@ async def test_run_migrations_applies_pending(db_path):
 
     # Inject a fake migration that adds a column to settings (safe to add)
     original = db_module.MIGRATIONS.copy()
-    db_module.MIGRATIONS[2] = [
-        "ALTER TABLE settings ADD COLUMN migration_test INTEGER NOT NULL DEFAULT 0"
-    ]
+    db_module.MIGRATIONS = {2: ["ALTER TABLE settings ADD COLUMN migration_test INTEGER NOT NULL DEFAULT 0"]}
     try:
         count = await run_migrations(db_path)
         assert count == 1, f"Expected 1 migration applied, got {count}"
@@ -89,9 +84,7 @@ async def test_run_migrations_applies_pending(db_path):
 
         # Verify schema_version row was recorded
         async with aiosqlite.connect(db_path) as db:
-            cursor = await db.execute(
-                "SELECT version FROM schema_version WHERE version = 2"
-            )
+            cursor = await db.execute("SELECT version FROM schema_version WHERE version = 2")
             row = await cursor.fetchone()
         assert row is not None, "schema_version row for version 2 not found"
     finally:
@@ -108,15 +101,11 @@ async def test_run_migrations_no_schema_version_table(tmp_path):
 
     # Create an empty SQLite file with a bare table (no schema_version)
     async with aiosqlite.connect(db_path) as db:
-        await db.execute(
-            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
+        await db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         await db.commit()
 
     original = db_module.MIGRATIONS.copy()
-    db_module.MIGRATIONS[2] = [
-        "ALTER TABLE settings ADD COLUMN mig_no_sv_test INTEGER NOT NULL DEFAULT 0"
-    ]
+    db_module.MIGRATIONS[2] = ["ALTER TABLE settings ADD COLUMN mig_no_sv_test INTEGER NOT NULL DEFAULT 0"]
     try:
         # Should not raise even though schema_version table does not exist yet;
         # the INSERT into schema_version will fail because the table is absent,
@@ -125,7 +114,7 @@ async def test_run_migrations_no_schema_version_table(tmp_path):
         # The current implementation raises RuntimeError on migration failure,
         # so we verify the column addition was attempted by catching the error.
         try:
-            count = await run_migrations(db_path)
+            await run_migrations(db_path)
             # If it succeeded (e.g. implementation creates schema_version on the fly),
             # verify the column is present.
             async with aiosqlite.connect(db_path) as db:
@@ -150,10 +139,12 @@ async def test_run_migrations_multi_statement_version(db_path):
     await init_db(db_path)
 
     original = db_module.MIGRATIONS.copy()
-    db_module.MIGRATIONS[2] = [
-        "ALTER TABLE settings ADD COLUMN multi_col_a INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE settings ADD COLUMN multi_col_b TEXT NOT NULL DEFAULT 'x'",
-    ]
+    db_module.MIGRATIONS = {
+        2: [
+            "ALTER TABLE settings ADD COLUMN multi_col_a INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN multi_col_b TEXT NOT NULL DEFAULT 'x'",
+        ]
+    }
     try:
         count = await run_migrations(db_path)
         assert count == 1, f"Expected 1 migration applied, got {count}"
@@ -177,12 +168,10 @@ async def test_run_migrations_version_gap(db_path):
     await init_db(db_path)
 
     original = db_module.MIGRATIONS.copy()
-    db_module.MIGRATIONS[2] = [
-        "ALTER TABLE settings ADD COLUMN gap_col_v2 INTEGER NOT NULL DEFAULT 0"
-    ]
-    db_module.MIGRATIONS[4] = [
-        "ALTER TABLE settings ADD COLUMN gap_col_v4 INTEGER NOT NULL DEFAULT 0"
-    ]
+    db_module.MIGRATIONS = {
+        2: ["ALTER TABLE settings ADD COLUMN gap_col_v2 INTEGER NOT NULL DEFAULT 0"],
+        4: ["ALTER TABLE settings ADD COLUMN gap_col_v4 INTEGER NOT NULL DEFAULT 0"],
+    }
     try:
         count = await run_migrations(db_path)
         assert count == 2, f"Expected 2 migrations applied, got {count}"
@@ -195,9 +184,7 @@ async def test_run_migrations_version_gap(db_path):
         assert "gap_col_v4" in cols, "gap_col_v4 not added"
 
         async with aiosqlite.connect(db_path) as db:
-            cursor = await db.execute(
-                "SELECT version FROM schema_version WHERE version IN (2, 4) ORDER BY version"
-            )
+            cursor = await db.execute("SELECT version FROM schema_version WHERE version IN (2, 4) ORDER BY version")
             versions = [row[0] for row in await cursor.fetchall()]
 
         assert versions == [2, 4], f"Expected versions [2, 4], got {versions}"
@@ -214,18 +201,14 @@ async def test_run_migrations_bad_sql_raises(db_path):
     await init_db(db_path)
 
     original = db_module.MIGRATIONS.copy()
-    db_module.MIGRATIONS[2] = [
-        "THIS IS NOT VALID SQL !!!"
-    ]
+    db_module.MIGRATIONS[2] = ["THIS IS NOT VALID SQL !!!"]
     try:
         with pytest.raises((RuntimeError, Exception)):
             await run_migrations(db_path)
 
         # Verify no schema_version row for version 2 was committed
         async with aiosqlite.connect(db_path) as db:
-            cursor = await db.execute(
-                "SELECT version FROM schema_version WHERE version = 2"
-            )
+            cursor = await db.execute("SELECT version FROM schema_version WHERE version = 2")
             row = await cursor.fetchone()
         assert row is None, "schema_version row for failed migration 2 must not exist"
     finally:
@@ -235,8 +218,8 @@ async def test_run_migrations_bad_sql_raises(db_path):
 @pytest.mark.asyncio
 async def test_run_migrations_cli_command(tmp_path):
     """CLI 'db migrate' reports either pending work or an up-to-date schema."""
-    from cli import cli
     from app.core.database import init_db
+    from cli import cli
 
     db_path = str(tmp_path / "cli_test.db")
     await init_db(db_path)
@@ -246,6 +229,4 @@ async def test_run_migrations_cli_command(tmp_path):
 
     assert result.exit_code == 0, f"CLI exited with {result.exit_code}:\n{result.output}"
     output = result.output.lower()
-    assert "up to date" in output or "applied 1 migration" in output, (
-        f"Expected migration status output, got:\n{result.output}"
-    )
+    assert "up to date" in output or "applied" in output, f"Expected migration status output, got:\n{result.output}"

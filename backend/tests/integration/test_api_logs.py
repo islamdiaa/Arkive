@@ -5,9 +5,10 @@ Tests: list logs, clear logs.
 Note: /api/logs/sources and /api/logs/levels endpoints do not exist.
 Note: SSE stream testing requires special event loop handling.
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,9 +46,7 @@ async def test_clear_logs(client):
 async def test_logs_filter_by_level(client):
     """GET /api/logs?level=INFO should accept level filter."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/logs?level=INFO", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/logs?level=INFO", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
