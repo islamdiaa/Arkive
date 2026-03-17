@@ -11,7 +11,7 @@ aiosqlite==0.22.1
 docker==7.1.0
 
 # Scheduler
-apscheduler==3.10.4
+apscheduler==3.11.2
 croniter==3.0.3
 
 # Notifications (90+ services)
