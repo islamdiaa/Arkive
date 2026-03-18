@@ -129,6 +129,7 @@ export async function connect(customUrl?: string) {
 
   eventSource.onerror = () => {
     connected.set(false);
+    events.set({});
     eventSource?.close();
     eventSource = null;
     const attempts = get(reconnectAttempts);
@@ -147,6 +148,7 @@ export function disconnect() {
   eventSource?.close();
   eventSource = null;
   connected.set(false);
+  events.set({});
 }
 
 export const sse = {

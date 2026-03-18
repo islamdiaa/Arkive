@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.dependencies import get_config, get_db, get_event_bus, get_orchestrator, get_scheduler, require_auth
 from app.services.orchestrator import cleanup_stale_backup_lock
+from app.utils.cron_validation import validate_cron_expression
 
 from app.models.jobs import BackupJobCreate, BackupJobUpdate
 
@@ -313,16 +314,7 @@ async def create_job(
             raise HTTPException(422, f"Invalid path: paths cannot start with '-'")
 
     # Validate cron expression
-    cron_parts = body.schedule.strip().split()
-    if len(cron_parts) != 5:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid cron expression: expected 5 fields, got {len(cron_parts)}",
-        )
-    try:
-        croniter(body.schedule)
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid cron expression: {exc}")
+    validate_cron_expression(body.schedule)
 
     job_id = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -420,6 +412,7 @@ async def update_job(
         updates.append("name = ?")
         params.append(body.name)
     if body.schedule is not None:
+        validate_cron_expression(body.schedule)
         updates.append("schedule = ?")
         params.append(body.schedule)
     if body.enabled is not None:

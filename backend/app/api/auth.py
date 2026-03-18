@@ -22,6 +22,7 @@ from app.core.dependencies import (
     get_scheduler,
     require_auth,
 )
+from app.utils.cron_validation import validate_cron_expression
 from app.core.security import (
     BROWSER_SESSION_COOKIE,
     BROWSER_SESSION_TTL,
@@ -230,10 +231,17 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
             )
             directory_ids.append(dir_id)
 
+    # Validate cron expressions before creating any jobs
+    db_dump_sched = schedules.get("db_dump", body.db_dump_schedule)
+    cloud_sync_sched = schedules.get("cloud_sync", body.cloud_sync_schedule)
+    flash_sched = schedules.get("flash", body.flash_schedule)
+    for sched in (db_dump_sched, cloud_sync_sched, flash_sched):
+        validate_cron_expression(sched)
+
     jobs = [
-        (str(uuid.uuid4())[:8], "DB Dumps", "db_dump", schedules.get("db_dump", body.db_dump_schedule)),
-        (str(uuid.uuid4())[:8], "Cloud Sync", "full", schedules.get("cloud_sync", body.cloud_sync_schedule)),
-        (str(uuid.uuid4())[:8], "Flash Backup", "flash", schedules.get("flash", body.flash_schedule)),
+        (str(uuid.uuid4())[:8], "DB Dumps", "db_dump", db_dump_sched),
+        (str(uuid.uuid4())[:8], "Cloud Sync", "full", cloud_sync_sched),
+        (str(uuid.uuid4())[:8], "Flash Backup", "flash", flash_sched),
     ]
     jobs_created = []
     for job_id, name, job_type, schedule in jobs:

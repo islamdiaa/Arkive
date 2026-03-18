@@ -100,6 +100,39 @@ jobs:
       - name: Audit Python dependencies
         run: pip install pip-audit && pip-audit 2>&1 || true
 
+  test-critical:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/pyproject.toml
+
+      - name: Install dependencies
+        run: cd backend && pip install -r requirements.txt && pip install -e ".[dev]"
+
+      - name: Run critical tests
+        timeout-minutes: 5
+        run: >
+          cd backend && python -m pytest tests/critical/ -v
+          -m "not slow and not live"
+          --tb=short --strict-markers
+          --junitxml=test-results/critical-tests.xml
+
+      - name: Upload critical test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: critical-test-results
+          path: backend/test-results/
+
   test-backend-heavy:
     runs-on: ubuntu-latest
     steps:
@@ -211,7 +244,7 @@ jobs:
         run: cd frontend && npx playwright test
 
   build:
-    needs: [test-backend-core, test-backend-heavy, test-frontend, test-components, test-e2e, sast]
+    needs: [test-backend-core, test-backend-heavy, test-critical, test-frontend, test-components, test-e2e, sast]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -36,7 +36,6 @@ async def run_scan(
 
         all_databases.extend(c.databases)
     await persist_discovery_results(db, containers)
-    await db.commit()
 
     return {
         "total_containers": len(containers),

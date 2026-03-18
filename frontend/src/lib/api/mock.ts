@@ -9,16 +9,40 @@ const DEMO_STATUS = {
   setup_completed: true,
   platform: 'unraid',
   hostname: 'tower',
-  backup_running: false,
-  last_backup: new Date(Date.now() - 720000).toISOString(),
-  last_backup_status: 'success',
-  next_backup: new Date(Date.now() + 7200000).toISOString(),
+  status: 'ok',
+  health: 'healthy',
   containers_discovered: 14,
   databases_found: 6,
   targets_configured: 2,
   total_snapshots: 47,
   storage_used_bytes: 12884901888,
-  storage_total_bytes: 107374182400,
+  targets: { total: 2, healthy: 2 },
+  databases: { total: 6, healthy: 6 },
+  storage: { total_bytes: 12884901888 },
+  last_backup: {
+    status: 'success',
+    started_at: new Date(Date.now() - 720000).toISOString(),
+    completed_at: new Date(Date.now() - 378000).toISOString(),
+    duration_seconds: 342,
+  },
+  last_backup_status: 'success',
+  next_backup: new Date(Date.now() + 7200000).toISOString(),
+  checks: {
+    database: { ok: true, message: 'connected' },
+    scheduler: { ok: true, message: 'running' },
+    disk: { ok: true, free_bytes: 53687091200, total_bytes: 107374182400, used_percent: 50.0, message: '50.0% used, 51200 MB free' },
+    binaries: { ok: true, message: 'restic and rclone available' },
+  },
+  coverage: {
+    readiness: 'migration_ready',
+    migration_ready: true,
+    appdata_protected: true,
+    flash_protected: true,
+    watched_directories: 2,
+    protected_directories: ['/mnt/user/appdata', '/mnt/user/domains'],
+    recommended_directories: [],
+    warnings: [],
+  },
 };
 
 const DEMO_JOBS = {
@@ -26,32 +50,34 @@ const DEMO_JOBS = {
     {
       id: 'job-daily-full',
       name: 'Daily Full Backup',
+      type: 'full',
       schedule: '0 3 * * *',
       enabled: true,
-      target_ids: ['target-b2-main'],
+      targets: ['target-b2-main'],
+      directories: ['/mnt/user/appdata', '/mnt/user/domains'],
+      exclude_patterns: [],
       include_databases: true,
-      include_directories: true,
       include_flash: true,
-      retention: { keep_daily: 7, keep_weekly: 4, keep_monthly: 6 },
-      last_run: new Date(Date.now() - 720000).toISOString(),
-      last_status: 'success',
+      last_run: { started_at: new Date(Date.now() - 720000).toISOString(), status: 'success' },
       next_run: new Date(Date.now() + 7200000).toISOString(),
       created_at: '2026-01-15T10:00:00Z',
+      updated_at: '2026-02-20T08:00:00Z',
     },
     {
       id: 'job-hourly-db',
       name: 'Hourly DB Snapshots',
+      type: 'db_dump',
       schedule: '0 * * * *',
       enabled: true,
-      target_ids: ['target-b2-main'],
+      targets: ['target-b2-main'],
+      directories: [],
+      exclude_patterns: [],
       include_databases: true,
-      include_directories: false,
       include_flash: false,
-      retention: { keep_daily: 3, keep_weekly: 2, keep_monthly: 1 },
-      last_run: new Date(Date.now() - 3600000).toISOString(),
-      last_status: 'success',
+      last_run: { started_at: new Date(Date.now() - 3600000).toISOString(), status: 'success' },
       next_run: new Date(Date.now() + 600000).toISOString(),
       created_at: '2026-01-15T10:00:00Z',
+      updated_at: '2026-02-20T08:00:00Z',
     },
   ],
 };
@@ -96,15 +122,16 @@ const DEMO_DATABASES = {
 
 const DEMO_ACTIVITY = {
   activities: [
-    { id: '1', type: 'backup_complete', message: 'Daily Full Backup completed successfully', timestamp: new Date(Date.now() - 720000).toISOString(), level: 'success', details: { duration_seconds: 342, databases: 6, size_bytes: 12884901888 } },
-    { id: '2', type: 'snapshot_created', message: 'Snapshot created on Backblaze B2', timestamp: new Date(Date.now() - 740000).toISOString(), level: 'info', details: { target: 'Backblaze B2 — Primary', snapshot_id: 'abc123' } },
-    { id: '3', type: 'db_dump', message: 'Dumped 6 databases (11.2 GB total)', timestamp: new Date(Date.now() - 760000).toISOString(), level: 'info', details: { count: 6 } },
-    { id: '4', type: 'discovery', message: 'Discovered 14 containers, 6 databases', timestamp: new Date(Date.now() - 780000).toISOString(), level: 'info', details: { containers: 14, databases: 6 } },
-    { id: '5', type: 'retention', message: 'Pruned 3 old snapshots per retention policy', timestamp: new Date(Date.now() - 86400000).toISOString(), level: 'info', details: { pruned: 3 } },
-    { id: '6', type: 'backup_complete', message: 'Hourly DB Snapshots completed', timestamp: new Date(Date.now() - 3600000).toISOString(), level: 'success', details: { duration_seconds: 45 } },
-    { id: '7', type: 'target_check', message: 'All storage targets healthy', timestamp: new Date(Date.now() - 7200000).toISOString(), level: 'info', details: {} },
-    { id: '8', type: 'notification', message: 'Backup summary sent to Discord', timestamp: new Date(Date.now() - 720000).toISOString(), level: 'info', details: { channel: 'Discord' } },
+    { id: '1', type: 'backup_complete', action: 'backup_completed', message: 'Daily Full Backup completed successfully', timestamp: new Date(Date.now() - 720000).toISOString(), severity: 'success', details: { duration_seconds: 342, databases: 6, size_bytes: 12884901888 } },
+    { id: '2', type: 'snapshot_created', action: 'snapshot_created', message: 'Snapshot created on Backblaze B2', timestamp: new Date(Date.now() - 740000).toISOString(), severity: 'info', details: { target: 'Backblaze B2 — Primary', snapshot_id: 'abc123' } },
+    { id: '3', type: 'db_dump', action: 'db_dumped', message: 'Dumped 6 databases (11.2 GB total)', timestamp: new Date(Date.now() - 760000).toISOString(), severity: 'info', details: { count: 6 } },
+    { id: '4', type: 'discovery', action: 'discovery_completed', message: 'Discovered 14 containers, 6 databases', timestamp: new Date(Date.now() - 780000).toISOString(), severity: 'info', details: { containers: 14, databases: 6 } },
+    { id: '5', type: 'retention', action: 'retention_pruned', message: 'Pruned 3 old snapshots per retention policy', timestamp: new Date(Date.now() - 86400000).toISOString(), severity: 'info', details: { pruned: 3 } },
+    { id: '6', type: 'backup_complete', action: 'backup_completed', message: 'Hourly DB Snapshots completed', timestamp: new Date(Date.now() - 3600000).toISOString(), severity: 'success', details: { duration_seconds: 45 } },
+    { id: '7', type: 'target_check', action: 'target_checked', message: 'All storage targets healthy', timestamp: new Date(Date.now() - 7200000).toISOString(), severity: 'info', details: {} },
+    { id: '8', type: 'notification', action: 'notification_sent', message: 'Backup summary sent to Discord', timestamp: new Date(Date.now() - 720000).toISOString(), severity: 'info', details: { channel: 'Discord' } },
   ],
+  total: 8,
 };
 
 const DEMO_STORAGE = {
@@ -165,6 +192,13 @@ const DEMO_DIRECTORIES = {
     { id: 'dir-domains', path: '/mnt/user/domains', enabled: true, size_bytes: 10737418240, last_scan: new Date(Date.now() - 3600000).toISOString() },
   ],
 };
+
+const DEMO_DIR_SUGGESTIONS = [
+  { path: '/mnt/user/system', priority: 'critical', size_bytes: 1073741824, file_count: 342, reason: 'System configuration' },
+  { path: '/mnt/user/docker', priority: 'recommended', size_bytes: 5368709120, file_count: 1204, reason: 'Docker persistent data' },
+  { path: '/mnt/user/domains', priority: 'recommended', size_bytes: 10737418240, file_count: 87, reason: 'Virtual machine configs' },
+  { path: '/mnt/user/photos', priority: 'optional', size_bytes: 107374182400, file_count: 24000, reason: 'Personal photos (irreplaceable)' },
+];
 
 const DEMO_LOGS = {
   logs: [
@@ -241,7 +275,7 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean.endsWith('/test')) return { success: true };
   if (clean === '/restore') return { success: true, restore_id: `restore-${Date.now()}` };
   if (clean === '/discover/scan') return DEMO_CONTAINERS;
-  if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: [], platform: 'unraid' };
+  if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: DEMO_DIR_SUGGESTIONS, platform: 'unraid' };
   if (clean === '/directories') return { ...data, id: `dir-new-${Date.now()}` };
 
   return { success: true };
@@ -301,7 +335,7 @@ export const mockApi = {
   deleteChannel: async (_id: string) => { await delay(); return { success: true }; },
   testChannel: async (_id: string) => { await delay(1000); return { success: true }; },
 
-  listActivity: async (_limit?: number) => { await delay(); return DEMO_ACTIVITY; },
+  listActivity: async (_limit?: number, _offset?: number) => { await delay(); return DEMO_ACTIVITY; },
 
   getStorageStats: async () => { await delay(); return DEMO_STORAGE; },
 
@@ -315,7 +349,7 @@ export const mockApi = {
   addDirectory: async (data: any) => { await delay(500); return { ...data, id: 'dir-new-' + Date.now() }; },
   updateDirectory: async (_id: string, data: any) => { await delay(); return data; },
   deleteDirectory: async (_id: string) => { await delay(); return { success: true }; },
-  scanDirectories: async () => { await delay(1000); return { ...DEMO_DIRECTORIES, suggestions: [], platform: 'unraid' }; },
+  scanDirectories: async () => { await delay(1000); return { ...DEMO_DIRECTORIES, suggestions: DEMO_DIR_SUGGESTIONS, platform: 'unraid' }; },
 
   getLogs: async () => { await delay(); return DEMO_LOGS; },
   clearLogs: async () => { await delay(); return { success: true }; },

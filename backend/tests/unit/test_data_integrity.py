@@ -123,10 +123,11 @@ class TestLockFileAtomicity:
 
     def test_acquire_lock_creates_file_atomically(self, tmp_path):
         """Lock file should be created with O_EXCL to prevent races."""
-        from app.services.orchestrator import BackupOrchestrator, LOCK_FILE
+        from app.services.orchestrator import BackupOrchestrator
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -135,14 +136,13 @@ class TestLockFileAtomicity:
         )
 
         lock_file = tmp_path / "backup.lock"
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-            result = orch._acquire_lock(run_id="test-run")
-            assert result is True
-            assert lock_file.exists()
+        result = orch._acquire_lock(run_id="test-run")
+        assert result is True
+        assert lock_file.exists()
 
-            data = json.loads(lock_file.read_text())
-            assert data["run_id"] == "test-run"
-            assert data["pid"] == os.getpid()
+        data = json.loads(lock_file.read_text())
+        assert data["run_id"] == "test-run"
+        assert data["pid"] == os.getpid()
 
     def test_acquire_lock_fails_when_already_locked(self, tmp_path):
         """Second lock acquisition should fail if lock already exists."""
@@ -150,6 +150,7 @@ class TestLockFileAtomicity:
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -161,10 +162,11 @@ class TestLockFileAtomicity:
         # Pre-create lock with our own PID (alive)
         lock_file.write_text(json.dumps({
             "pid": os.getpid(),
+            "proc_start_time": "12345",
             "started_at": "2026-01-01T00:00:00Z",
         }))
 
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
+        with patch("app.services.lock_manager._is_process_alive", return_value=True):
             result = orch._acquire_lock(run_id="second-run")
             assert result is False
 
@@ -174,6 +176,7 @@ class TestLockFileAtomicity:
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -185,14 +188,14 @@ class TestLockFileAtomicity:
         # Use a PID that's guaranteed to be dead (PID 99999999)
         lock_file.write_text(json.dumps({
             "pid": 99999999,
+            "proc_start_time": "12345",
             "started_at": "2026-01-01T00:00:00Z",
         }))
 
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-            result = orch._acquire_lock(run_id="new-run")
-            assert result is True
-            data = json.loads(lock_file.read_text())
-            assert data["run_id"] == "new-run"
+        result = orch._acquire_lock(run_id="new-run")
+        assert result is True
+        data = json.loads(lock_file.read_text())
+        assert data["run_id"] == "new-run"
 
 
 # ===========================================================================

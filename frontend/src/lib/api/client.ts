@@ -96,7 +96,13 @@ const realApi = {
 	deleteChannel: (id: string) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),
 	testChannel: (id: string) => request<any>(`/notifications/${id}/test`, { method: 'POST' }),
 
-	listActivity: (limit?: number) => request<any>(`/activity${limit ? `?limit=${limit}` : ''}`),
+	listActivity: (limit?: number, offset?: number) => {
+		const params = new URLSearchParams();
+		if (limit != null) params.set('limit', String(limit));
+		if (offset != null) params.set('offset', String(offset));
+		const qs = params.toString();
+		return request<any>(`/activity${qs ? `?${qs}` : ''}`);
+	},
 	getStorageStats: () => request<any>('/storage'),
 	runScan: () => request<any>('/discover/scan', { method: 'POST' }),
 	listContainers: () => request<any>('/discover/containers'),

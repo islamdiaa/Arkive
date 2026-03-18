@@ -209,6 +209,100 @@ def test_api_key():
 
 
 # ---------------------------------------------------------------------------
+# Enhanced Docker mock with container simulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_docker_client_enhanced():
+    """Docker mock with container exec, env, and mount simulation."""
+    docker_client = MagicMock()
+    docker_client.containers = MagicMock()
+    docker_client.containers.list = MagicMock(return_value=[])
+
+    def make_container(name="test-container", image="postgres:16", status="running",
+                       env=None, mounts=None):
+        container = MagicMock()
+        container.name = name
+        container.status = status
+        container.image.tags = [image]
+        env_list = [f"{k}={v}" for k, v in (env or {}).items()]
+        container.attrs = {
+            "Config": {"Env": env_list},
+            "Mounts": mounts or [],
+        }
+        container.exec_run = MagicMock(return_value=(0, b""))
+        return container
+
+    docker_client._make_container = make_container
+    return docker_client
+
+
+# ---------------------------------------------------------------------------
+# Isolated temp DB with migrations
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def db_for_tests(tmp_path):
+    """Create an isolated temp database with full schema for unit tests."""
+    from app.core.database import init_db
+
+    db_path = tmp_path / "test_arkive.db"
+    await init_db(db_path)
+    return db_path
+
+
+# ---------------------------------------------------------------------------
+# Event bus mock
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def event_bus_mock():
+    """AsyncMock event bus with publish tracking."""
+    bus = AsyncMock()
+    bus.publish = AsyncMock()
+    bus._published = []
+
+    async def _track_publish(event_type, data):
+        bus._published.append({"event": event_type, "data": data})
+
+    bus.publish.side_effect = _track_publish
+    return bus
+
+
+# ---------------------------------------------------------------------------
+# Log capture for assertions
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def logging_context():
+    """Capture log output for assertion in tests."""
+    import logging
+
+    class LogCapture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+        @property
+        def messages(self):
+            return [self.format(r) for r in self.records]
+
+        def has_message_containing(self, text):
+            return any(text in msg for msg in self.messages)
+
+    handler = LogCapture()
+    handler.setLevel(logging.DEBUG)
+    yield handler
+
+
+# ---------------------------------------------------------------------------
 # Daemon thread cleanup — prevents aiosqlite hangs on exit
 # ---------------------------------------------------------------------------
 

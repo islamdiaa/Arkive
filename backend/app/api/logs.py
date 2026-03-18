@@ -64,7 +64,7 @@ async def stream_logs(
     event_bus=Depends(get_event_bus),
 ):
     """Stream logs via SSE."""
-    queue = event_bus.subscribe()
+    handle = event_bus.subscribe()
     log_file = config.log_dir / "arkive.log"
     file_offset = log_file.stat().st_size if log_file.exists() else 0
 
@@ -78,7 +78,7 @@ async def stream_logs(
 
                 # Consume direct log events if any publisher uses the bus.
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=1)
+                    event = await asyncio.wait_for(handle.queue.get(), timeout=1)
                     if event.get("event") == "log":
                         yield {"event": "log", "data": json.dumps(event.get("data", {}))}
                         emitted = True
@@ -116,7 +116,7 @@ async def stream_logs(
                     yield {"event": "ping", "data": "{}"}
                     last_ping = now
         finally:
-            event_bus.unsubscribe(queue)
+            handle.cleanup()
 
     return EventSourceResponse(event_generator())
 

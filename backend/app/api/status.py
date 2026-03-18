@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app import __version__
 from app.core.dependencies import get_db
+from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
 from app.services.host_identity import resolve_hostname
 
@@ -324,20 +325,35 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         user_shares_path=user_shares_path,
     )
 
-    return {
-        "status": overall_status,
-        "health": _health_alias(overall_status),
-        "version": __version__,
-        "hostname": resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
-        "uptime_seconds": int(time.time() - _start_time),
-        "platform": platform,
-        "setup_completed": setup_completed,
-        "checks": checks,
-        "last_backup": last_backup,
-        "next_backup": _get_next_backup(request),
-        "targets": {"total": total_targets, "healthy": healthy_targets},
-        "databases": {"total": total_databases, "healthy": healthy_databases},
-        "storage": {"total_bytes": total_bytes},
-        "total_snapshots": total_snapshots,
-        "coverage": coverage,
-    }
+    # Derive flat convenience fields for the frontend dashboard
+    last_backup_status = last_backup["status"] if last_backup else None
+
+    # Count discovered containers from the discovered_containers table
+    try:
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM discovered_containers")
+        containers_discovered = (await cursor.fetchone())["cnt"]
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        containers_discovered = 0
+
+    return StatusResponse(
+        status=overall_status,
+        health=_health_alias(overall_status),
+        version=__version__,
+        hostname=resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
+        uptime_seconds=int(time.time() - _start_time),
+        platform=platform,
+        setup_completed=setup_completed,
+        checks=checks,
+        last_backup=last_backup,
+        last_backup_status=last_backup_status,
+        next_backup=_get_next_backup(request),
+        targets={"total": total_targets, "healthy": healthy_targets},
+        databases={"total": total_databases, "healthy": healthy_databases},
+        storage={"total_bytes": total_bytes},
+        containers_discovered=containers_discovered,
+        databases_found=total_databases,
+        targets_configured=total_targets,
+        total_snapshots=total_snapshots,
+        storage_used_bytes=total_bytes,
+        coverage=coverage,
+    )

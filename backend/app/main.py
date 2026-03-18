@@ -346,14 +346,10 @@ def create_app() -> FastAPI:
     )
 
     # CORS — single-user appliance; explicit origins required when credentials are involved
+    config = ArkiveConfig()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:8200",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:8200",
-        ],
+        allow_origins=config.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -172,7 +172,6 @@ class ArkiveScheduler:
             # Persist results to discovered_containers table
             async with aiosqlite.connect(self.config.db_path) as db:
                 await persist_discovery_results(db, containers or [])
-                await db.commit()
                 await log_activity(
                     db, "system", "discovery_scan",
                     f"Discovery scan completed: {count} containers found",

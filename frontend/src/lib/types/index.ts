@@ -38,7 +38,7 @@ export interface StorageTarget {
 export interface JobRun {
   id: string;
   job_id: string;
-  status: 'running' | 'success' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+  status: 'running' | 'success' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped';
   trigger: 'scheduled' | 'manual' | 'cli';
   started_at: string;
   completed_at: string | null;
