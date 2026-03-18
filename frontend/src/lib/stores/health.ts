@@ -19,7 +19,7 @@ export async function refreshStatus() {
     const vs: VerificationStatus = {
       trust_score: data.trust_score ?? data.verification_status?.trust_score ?? null,
       last_verified_at: data.last_verified_at ?? data.verification_status?.last_verified_at ?? null,
-      verification_passing: data.verification_status?.verification_passing ?? (data.trust_score > 0),
+      verification_passing: data.verification_status?.verification_passing ?? ((data.trust_score ?? 0) > 0),
     };
     verificationStatus.set(vs);
   } catch (e) {
