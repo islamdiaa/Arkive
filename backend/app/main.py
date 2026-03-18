@@ -207,6 +207,7 @@ async def lifespan(app: FastAPI):
         cloud_manager=cloud_manager,
         notifier=notifier,
         verify_engine=verify_engine,
+        event_bus=event_bus,
     )
 
     # Wire services to app.state

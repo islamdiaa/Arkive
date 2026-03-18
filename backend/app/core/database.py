@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 
 CREATE TABLE IF NOT EXISTS backup_jobs (
     id TEXT PRIMARY KEY,
@@ -180,24 +180,6 @@ CREATE TABLE IF NOT EXISTS watched_directories (
     last_scanned TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-
-CREATE TABLE IF NOT EXISTS verification_runs (
-    id TEXT PRIMARY KEY,
-    target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE,
-    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    completed_at TEXT,
-    status TEXT NOT NULL DEFAULT 'running',
-    trust_score INTEGER DEFAULT 0,
-    files_checked INTEGER DEFAULT 0,
-    files_passed INTEGER DEFAULT 0,
-    databases_checked INTEGER DEFAULT 0,
-    databases_passed INTEGER DEFAULT 0,
-    restic_check_passed INTEGER DEFAULT 0,
-    error_message TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_verification_runs_target_started
-    ON verification_runs(target_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS size_history (
     date TEXT NOT NULL,

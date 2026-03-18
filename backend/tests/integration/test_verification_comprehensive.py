@@ -90,13 +90,18 @@ class TestVerificationNotification:
         config.config_dir = tmp_path
         config.dump_dir = tmp_path / "dumps"
 
-        from app.core.database import SCHEMA_SQL
+        from app.core.database import SCHEMA_SQL, MIGRATIONS
         from app.core.security import _load_fernet_from_dir, _reset_fernet
         _reset_fernet()
         _load_fernet_from_dir(str(tmp_path))
 
         conn = sqlite3.connect(str(db_path))
         conn.executescript(SCHEMA_SQL)
+        for version in sorted(MIGRATIONS):
+            for sql in MIGRATIONS[version]:
+                conn.execute(sql)
+        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                     (max(MIGRATIONS),))
         conn.commit()
         conn.close()
         return config

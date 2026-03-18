@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.status import compute_trust_score
 from app.core.dependencies import get_db, get_event_bus, require_auth
+from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.verification")
 
@@ -29,19 +30,24 @@ async def get_verification_results(db: aiosqlite.Connection = Depends(get_db)):
             """SELECT vr.*
                FROM verification_runs vr
                INNER JOIN (
-                   SELECT target_id, MAX(started_at) AS latest
+                   SELECT target_id, MAX(rowid) AS latest_rowid
                    FROM verification_runs
                    GROUP BY target_id
                ) latest_per_target
                ON vr.target_id = latest_per_target.target_id
-                  AND vr.started_at = latest_per_target.latest
+                  AND vr.rowid = latest_per_target.latest_rowid
                ORDER BY vr.started_at DESC"""
         )
         rows = await cursor.fetchall()
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         return {"trust_score": 0, "results": []}
 
-    results = [dict(row) for row in rows]
+    results = []
+    for row in rows:
+        r = dict(row)
+        if r.get("error_message"):
+            r["error_message"] = redact_credentials(r["error_message"])
+        results.append(r)
     trust_score = await compute_trust_score(db)
 
     return {
@@ -61,6 +67,28 @@ async def trigger_verification(
     The actual verification work is performed by the verification engine
     service, which picks up runs in 'running' status.
     """
+    # Rate limit: reject if a verification ran in the last 10 minutes
+    try:
+        cursor = await db.execute(
+            """SELECT started_at FROM verification_runs
+               ORDER BY started_at DESC LIMIT 1"""
+        )
+        last_run = await cursor.fetchone()
+        if last_run and last_run["started_at"]:
+            last_dt = datetime.fromisoformat(
+                last_run["started_at"].replace("Z", "+00:00")
+            )
+            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            if elapsed < 600:
+                raise HTTPException(
+                    429,
+                    f"Verification ran {int(elapsed)}s ago. Please wait {int(600 - elapsed)}s.",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # If rate-limit check fails, allow the run
+
     try:
         cursor = await db.execute(
             "SELECT id, name FROM storage_targets WHERE enabled = 1"

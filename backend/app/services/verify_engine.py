@@ -204,6 +204,7 @@ class VerifyEngine:
         target_id = target.get("id", "")
         target_name = target.get("name", target_id)
         start_time = time.monotonic()
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         logger.info("Starting verification for target %s (%s)", target_id, target_name)
 
@@ -238,11 +239,15 @@ class VerifyEngine:
 
         duration = round(time.monotonic() - start_time, 1)
 
+        # Determine pass/fail based on whether key checks succeeded
+        all_checks_ok = restic_ok and (restore_ok or restore_test["status"] == "skipped")
+        verification_status = "passed" if all_checks_ok else "failed"
+
         result = {
             "run_id": run_id,
             "target_id": target_id,
             "target_name": target_name,
-            "status": "completed",
+            "status": verification_status,
             "trust_score": trust_score,
             "restic_check": restic_check,
             "restore_test": restore_test,
@@ -254,6 +259,7 @@ class VerifyEngine:
                 "db_integrity": round(db_integrity_score * 100, 1),
             },
             "duration_seconds": duration,
+            "started_at": started_at,
             "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
@@ -318,27 +324,31 @@ class VerifyEngine:
                     "error": result.get("error") or "Restore returned non-success",
                 }
 
-            # Find restored file
+            # Find restored file -- must match the expected filename exactly
+            expected_name = os.path.basename(file_path)
             restored_file = None
             for dirpath, _, filenames in os.walk(tmpdir):
                 for fname in filenames:
-                    candidate = os.path.join(dirpath, fname)
-                    if fname == os.path.basename(file_path):
-                        restored_file = candidate
+                    if fname == expected_name:
+                        restored_file = os.path.join(dirpath, fname)
                         break
                 if restored_file:
                     break
 
             if not restored_file:
+                # Log what was actually found for debugging
+                found_files = []
                 for dirpath, _, filenames in os.walk(tmpdir):
                     for fname in filenames:
-                        restored_file = os.path.join(dirpath, fname)
-                        break
-                    if restored_file:
-                        break
-
-            if not restored_file:
-                return {"status": "failed", "error": "Restored file not found"}
+                        found_files.append(os.path.join(dirpath, fname))
+                logger.warning(
+                    "Expected restored file %r but found: %s",
+                    expected_name, found_files or "(empty)",
+                )
+                return {
+                    "status": "failed",
+                    "error": f"Expected file {expected_name!r} not found after restore",
+                }
 
             # Compute SHA-256
             sha256 = hashlib.sha256()
@@ -583,7 +593,7 @@ class VerifyEngine:
                         (
                             result["run_id"],
                             result["target_id"],
-                            result["verified_at"],
+                            result.get("started_at", result["verified_at"]),
                             result["verified_at"],
                             result["status"],
                             int(result["trust_score"]),

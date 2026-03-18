@@ -30,12 +30,13 @@ class ArkiveScheduler:
 
     def __init__(self, orchestrator, config: ArkiveConfig,
                  discovery=None, backup_engine=None, cloud_manager=None, notifier=None,
-                 verify_engine=None):
+                 verify_engine=None, event_bus=None):
         self.orchestrator = orchestrator
         self.config = config
         self.discovery = discovery
         self.backup_engine = backup_engine
         self.verify_engine = verify_engine
+        self.event_bus = event_bus
         self.cloud_manager = cloud_manager
         self.notifier = notifier
         self.scheduler = AsyncIOScheduler(
@@ -470,6 +471,14 @@ class ArkiveScheduler:
                      "targets": result.get("targets", [])},
                     severity=severity,
                 )
+
+            # Publish SSE event so the frontend updates
+            if self.event_bus:
+                await self.event_bus.publish("verification:completed", {
+                    "status": status,
+                    "trust_score": trust_score,
+                    "target_count": len(result.get("targets", [])),
+                })
 
             # Notify on failure or low trust score
             failed_targets = [

@@ -69,6 +69,7 @@ async def build_test_client(config_dir: Path):
     import app.core.database as db_mod
 
     await db_mod.init_db(db_path)
+    await db_mod.run_migrations(db_path)
 
     # Ensure encryption keyfile exists in the temp config dir and set module cache
     from app.core.security import _load_fernet_from_dir, _reset_fernet
@@ -246,10 +247,11 @@ def mock_docker_client_enhanced():
 @pytest_asyncio.fixture
 async def db_for_tests(tmp_path):
     """Create an isolated temp database with full schema for unit tests."""
-    from app.core.database import init_db
+    from app.core.database import init_db, run_migrations
 
     db_path = tmp_path / "test_arkive.db"
     await init_db(db_path)
+    await run_migrations(db_path)
     return db_path
 
 

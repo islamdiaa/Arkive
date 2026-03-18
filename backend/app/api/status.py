@@ -127,10 +127,10 @@ async def compute_trust_score(db: aiosqlite.Connection) -> int:
             """SELECT trust_score
                FROM verification_runs vr
                INNER JOIN (
-                   SELECT target_id, MAX(started_at) AS latest
+                   SELECT target_id, MAX(rowid) AS latest_rowid
                    FROM verification_runs
                    GROUP BY target_id
-               ) lpt ON vr.target_id = lpt.target_id AND vr.started_at = lpt.latest
+               ) lpt ON vr.target_id = lpt.target_id AND vr.rowid = lpt.latest_rowid
                WHERE vr.status != 'running'"""
         )
         scored_rows = await cursor.fetchall()

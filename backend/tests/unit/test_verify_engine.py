@@ -21,7 +21,7 @@ pytestmark = pytest.mark.forked
 
 import aiosqlite
 
-from app.core.database import SCHEMA_SQL
+from app.core.database import SCHEMA_SQL, MIGRATIONS
 from app.services.verify_engine import (
     VerifyEngine,
     compute_recency_score,
@@ -57,6 +57,11 @@ def mock_config(tmp_path):
 
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA_SQL)
+    for version in sorted(MIGRATIONS):
+        for sql in MIGRATIONS[version]:
+            conn.execute(sql)
+    conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                 (max(MIGRATIONS),))
     conn.commit()
     conn.close()
     return config
@@ -216,7 +221,7 @@ class TestVerifyTarget:
         with patch("app.services.verify_engine.tempfile.mkdtemp", return_value=str(restore_dir)):
             result = await verify_engine.verify_target(target)
 
-        assert result["status"] == "completed"
+        assert result["status"] == "passed"
         assert result["target_id"] == "t1"
         assert "trust_score" in result
         assert result["trust_score"] >= 0.0
@@ -249,7 +254,7 @@ class TestVerifyTarget:
 
         result = await verify_engine.verify_target(target)
 
-        assert result["status"] == "completed"
+        assert result["status"] == "passed"
         assert result["restore_test"]["status"] == "skipped"
 
 
@@ -581,7 +586,7 @@ class TestResultStorage:
         result = {
             "run_id": "test123",
             "target_id": "t1",
-            "status": "completed",
+            "status": "passed",
             "trust_score": 85.0,
             "restic_check": {"status": "success"},
             "restore_test": {"status": "success"},
@@ -598,7 +603,7 @@ class TestResultStorage:
         result = {
             "run_id": "test123",
             "target_id": "t1",
-            "status": "completed",
+            "status": "passed",
             "trust_score": 85.0,
             "restic_check": {"status": "success"},
             "restore_test": {"status": "success"},
@@ -638,7 +643,7 @@ class TestResultStorage:
         result = {
             "run_id": "api-run-1",
             "target_id": "t1",
-            "status": "completed",
+            "status": "passed",
             "trust_score": 92.0,
             "restic_check": {"status": "success"},
             "restore_test": {"status": "success"},
@@ -655,7 +660,7 @@ class TestResultStorage:
             row = await cursor.fetchone()
 
         assert row is not None
-        assert row["status"] == "completed"
+        assert row["status"] == "passed"
         assert row["trust_score"] == 92
         assert row["completed_at"] == "2026-03-18T11:05:00Z"
         assert row["restic_check_passed"] == 1
@@ -681,7 +686,7 @@ class TestResultStorage:
             result = await verify_engine.verify_target(target, run_id="pre-created-id")
 
         assert result["run_id"] == "pre-created-id"
-        assert result["status"] == "completed"
+        assert result["status"] == "passed"
 
         # The existing row should be UPDATED, not a new one INSERTed
         async with aiosqlite.connect(mock_config.db_path) as db:
@@ -689,7 +694,7 @@ class TestResultStorage:
             cursor = await db.execute("SELECT * FROM verification_runs WHERE id = 'pre-created-id'")
             row = await cursor.fetchone()
         assert row is not None
-        assert row["status"] == "completed"
+        assert row["status"] == "passed"
 
     @pytest.mark.asyncio
     async def test_verify_target_generates_full_uuid(self, verify_engine, mock_backup_engine, tmp_path):
