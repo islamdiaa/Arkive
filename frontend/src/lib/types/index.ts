@@ -141,6 +141,12 @@ export interface SystemStatus {
   targets_healthy: number;
   targets_total: number;
   databases_discovered: number;
+  health: string;
+  total_snapshots: number;
+  trust_score: number | null;
+  last_verified_at: string | null;
+  verification_status: VerificationStatus | null;
+  coverage: BackupCoverage | null;
 }
 
 export interface BackupCoverage {
