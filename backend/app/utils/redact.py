@@ -35,9 +35,11 @@ def redact_credentials(text: str) -> str:
     text = re.sub(r'(--password=)([^\s\'\"]+)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
     # --password value command-line arg (space-separated) (must be before -p pattern)
     text = re.sub(r'(--password)\s+([^\-\s][^\s]*)', r'\1 [REDACTED]', text, flags=re.IGNORECASE)
-    # -pVALUE (no space) — match -p followed immediately by a non-flag value.
-    # Word boundary \b after -p prevents matching flags like -print-debug or -parallel.
-    text = re.sub(r'(?<!\-)(-p)\b([^\s\-][^\s]*)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
+    # -pVALUE (no space) — MySQL/MariaDB short password flag.
+    # Case-sensitive: matches -p (password) but NOT -P (port).
+    # (?!-) prevents matching --password (already handled above).
+    # False positives on rare flags like -print are acceptable (overly cautious, not a leak).
+    text = re.sub(r'(?<!\-)(-p)(?!-)([^\s\-][^\s]*)', r'\1[REDACTED]', text)
 
     # MongoDB patterns
     # MONGO_INITDB_ROOT_PASSWORD=... environment variable
