@@ -246,7 +246,10 @@ class BackupOrchestrator:
         if run_id is None:
             run_id = str(uuid.uuid4())[:8]
 
-        # Set correlation ID so every log line in this run is tagged
+        # Set correlation ID so every log line in this run is tagged.
+        # Initialize token to None so the finally block never hits NameError
+        # if an exception occurs before current_run_id.set() completes.
+        _run_id_token = None
         _run_id_token = current_run_id.set(run_id)
 
         if not self._acquire_lock(run_id):
@@ -663,7 +666,8 @@ class BackupOrchestrator:
                     logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
             self._active_runs.pop(run_id, None)
-            current_run_id.reset(_run_id_token)
+            if _run_id_token is not None:
+                current_run_id.reset(_run_id_token)
 
     async def cancel(self) -> None:
         """Request cancellation of the current backup."""

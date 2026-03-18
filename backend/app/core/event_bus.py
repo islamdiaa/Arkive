@@ -42,6 +42,10 @@ class EventBus:
 
     def subscribe(self) -> SubscriberHandle:
         """Create a new subscriber queue wrapped in a SubscriberHandle."""
+        # Increased from 100 to 1000 to handle event bursts during concurrent
+        # backup + discovery + status polling.  A typical backup emits ~50-100
+        # progress events; with multi-target uploads this can spike to ~500.
+        # Slow SSE clients still drop events after 1000 queued.
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
         self._subscribers.append(q)
         return SubscriberHandle(self, q)

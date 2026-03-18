@@ -35,8 +35,9 @@ def redact_credentials(text: str) -> str:
     text = re.sub(r'(--password=)([^\s\'\"]+)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
     # --password value command-line arg (space-separated) (must be before -p pattern)
     text = re.sub(r'(--password)\s+([^\-\s][^\s]*)', r'\1 [REDACTED]', text, flags=re.IGNORECASE)
-    # -pVALUE (no space) - match dash p (but not double dash) followed by non-dash, non-space characters
-    text = re.sub(r'(?<!\-)(-p)(?!-)([^\s\-][^\s]*)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
+    # -pVALUE (no space) — match -p followed immediately by a non-flag value.
+    # Word boundary \b after -p prevents matching flags like -print-debug or -parallel.
+    text = re.sub(r'(?<!\-)(-p)\b([^\s\-][^\s]*)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
 
     # MongoDB patterns
     # MONGO_INITDB_ROOT_PASSWORD=... environment variable

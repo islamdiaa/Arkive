@@ -30,7 +30,12 @@ def _kill_process_group(pid: int) -> None:
     (process already exited).
     """
     try:
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
+        if hasattr(os, 'killpg'):
+            # POSIX: kill entire process group
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        else:
+            # Windows: no process groups, kill single process only
+            os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
     except OSError:
