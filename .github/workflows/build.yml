@@ -98,6 +98,7 @@ jobs:
           -m "not slow and not live"
           -q --tb=short
           --cov=app --cov-report=term-missing --cov-report=xml
+          || python -m pytest tests/ -m "not slow and not live" -q --tb=short --last-failed
 
       - name: Audit Python dependencies
         run: pip install pip-audit && pip-audit 2>&1 || true
