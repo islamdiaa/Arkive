@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
+      - "release/**"
     tags:
       - "v*"
   pull_request:
     branches:
       - main
+      - "release/**"
 
 # Cancel redundant PR builds — only the latest commit matters
 concurrency:
