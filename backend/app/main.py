@@ -34,6 +34,7 @@ from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
 from app.services.restore_plan import RestorePlanGenerator
 from app.services.scheduler import ArkiveScheduler
+from app.services.verify_engine import VerifyEngine
 from app.utils.log_config import setup_logging
 from app.api.restore import cleanup_stale_restore_lock
 
@@ -132,6 +133,17 @@ async def lifespan(app: FastAPI):
             await db.commit()
             logger.warning("Cleaned %d stale job runs from previous shutdown", len(stale_runs))
 
+        cursor = await db.execute("SELECT id FROM verification_runs WHERE status = 'running'")
+        stale_verifications = await cursor.fetchall()
+        if stale_verifications:
+            await db.execute(
+                "UPDATE verification_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
+                "completed_at = ? WHERE status = 'running'",
+                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+            )
+            await db.commit()
+            logger.warning("Cleaned %d stale verification runs from previous shutdown", len(stale_verifications))
+
         cursor = await db.execute("SELECT id FROM restore_runs WHERE status = 'running'")
         stale_restores = await cursor.fetchall()
         if stale_restores:
@@ -186,12 +198,16 @@ async def lifespan(app: FastAPI):
         config=config,
     )
 
+    verify_engine = VerifyEngine(config, backup_engine=backup_engine)
+
     scheduler = ArkiveScheduler(
         orchestrator, config,
         discovery=discovery,
         backup_engine=backup_engine,
         cloud_manager=cloud_manager,
         notifier=notifier,
+        verify_engine=verify_engine,
+        event_bus=event_bus,
     )
 
     # Wire services to app.state
@@ -208,6 +224,7 @@ async def lifespan(app: FastAPI):
     app.state.restore_plan = restore_plan
     app.state.orchestrator = orchestrator
     app.state.scheduler = scheduler
+    app.state.verify_engine = verify_engine
 
     # Step 7b: Auto-unlock stale restic locks (part of self-healing, before scheduler)
     try:
@@ -346,14 +363,10 @@ def create_app() -> FastAPI:
     )
 
     # CORS — single-user appliance; explicit origins required when credentials are involved
+    config = ArkiveConfig()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:8200",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:8200",
-        ],
+        allow_origins=config.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

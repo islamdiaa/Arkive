@@ -210,6 +210,24 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_restore_runs_started_at ON restore_runs(started_at DESC)",
     ],
+    3: [
+        """CREATE TABLE IF NOT EXISTS verification_runs (
+            id TEXT PRIMARY KEY,
+            target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            completed_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            trust_score INTEGER DEFAULT 0,
+            files_checked INTEGER DEFAULT 0,
+            files_passed INTEGER DEFAULT 0,
+            databases_checked INTEGER DEFAULT 0,
+            databases_passed INTEGER DEFAULT 0,
+            restic_check_passed INTEGER DEFAULT 0,
+            error_message TEXT
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_verification_runs_target_started
+            ON verification_runs(target_id, started_at DESC)""",
+    ],
 }
 
 async def run_migrations(db_path: str | Path) -> int:

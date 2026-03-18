@@ -8,6 +8,8 @@ from pathlib import Path
 
 import structlog
 
+from app.core.context import CorrelationFilter
+
 
 # Patterns that indicate sensitive values in log messages.
 # Matches compound names like secret_key=..., RESTIC_PASSWORD=..., api-key: ...
@@ -55,12 +57,13 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     root.handlers.clear()
     root.setLevel(log_level)
 
-    # Sensitive value filter applied to all handlers
+    # Filters applied to all handlers
     sensitive_filter = _SensitiveFilter()
+    correlation_filter = CorrelationFilter()
 
-    # JSON formatter for structured output
+    # JSON formatter for structured output — includes [run_id] prefix
     fmt = logging.Formatter(
-        '{"timestamp":"%(asctime)s","level":"%(levelname)s","component":"%(name)s","message":"%(message)s"}',
+        '{"timestamp":"%(asctime)s","level":"%(levelname)s","run_id":"%(run_id)s","component":"%(name)s","message":"%(message)s"}',
         datefmt="%Y-%m-%dT%H:%M:%SZ",
     )
 
@@ -69,6 +72,7 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     console.setLevel(log_level)
     console.setFormatter(fmt)
     console.addFilter(sensitive_filter)
+    console.addFilter(correlation_filter)
     root.addHandler(console)
 
     # File handler with rotation (50 MB, 30 backups = max 1.5 GB log storage)
@@ -78,6 +82,7 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     file_handler.setLevel(log_level)
     file_handler.setFormatter(fmt)
     file_handler.addFilter(sensitive_filter)
+    file_handler.addFilter(correlation_filter)
     root.addHandler(file_handler)
 
     # Configure structlog to route through stdlib (prevents double-logging)

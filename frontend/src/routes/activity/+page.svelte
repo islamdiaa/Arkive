@@ -15,9 +15,10 @@
 	let loading = true;
 	let loadingMore = false;
 	let total = 0;
+	let offset = 0;
 	let error = '';
 
-	$: hasMore = activities.length < total;
+	$: hasMore = offset < total;
 
 	onMount(() => {
 		(async () => {
@@ -25,6 +26,7 @@
 				const result = await api.listActivity(PAGE_SIZE);
 				activities = result.activities || [];
 				total = result.total || 0;
+				offset = activities.length;
 			} catch (e: any) {
 				console.error(e);
 				error = e.message || 'Failed to load activity';
@@ -36,9 +38,11 @@
 	async function loadMore() {
 		loadingMore = true;
 		try {
-			const result = await api.listActivity(activities.length + PAGE_SIZE);
-			activities = result.activities || [];
+			const result = await api.listActivity(PAGE_SIZE, offset);
+			const newItems = result.activities || [];
+			activities = [...activities, ...newItems];
 			total = result.total || 0;
+			offset += newItems.length;
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Failed to load more activity' });
 		}

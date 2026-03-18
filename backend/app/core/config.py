@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +41,20 @@ class ArkiveConfig(BaseSettings):
     user_shares_path: Path = Path("/mnt/user")
     profiles_dir: Path = Path("/app/profiles")
     flash_retention: int = 7
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:8200",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8200",
+    ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v):
+        if isinstance(v, str):
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
     @property
     def db_path(self) -> Path:
         return self.config_dir / "arkive.db"

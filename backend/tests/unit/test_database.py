@@ -17,8 +17,9 @@ def db_path(tmp_path):
 @pytest.mark.asyncio
 async def test_init_db(db_path):
     """Test database initialization creates all tables."""
-    from app.core.database import init_db
+    from app.core.database import init_db, run_migrations
     await init_db(db_path)
+    await run_migrations(db_path)
 
     async with aiosqlite.connect(db_path) as db:
         cursor = await db.execute(
@@ -40,6 +41,7 @@ async def test_init_db(db_path):
         "size_history",
         "snapshots",
         "storage_targets",
+        "verification_runs",
         "watched_directories",
     ]
     for table in expected:
@@ -79,7 +81,8 @@ async def test_run_migrations_applies_pending(db_path):
     ]
     try:
         count = await run_migrations(db_path)
-        assert count == 1, f"Expected 1 migration applied, got {count}"
+        # v2 (test SQL) and v3 (verification_runs) are both pending from v1 baseline
+        assert count == 2, f"Expected 2 migrations applied, got {count}"
 
         # Verify the column was actually added
         async with aiosqlite.connect(db_path) as db:
@@ -156,7 +159,8 @@ async def test_run_migrations_multi_statement_version(db_path):
     ]
     try:
         count = await run_migrations(db_path)
-        assert count == 1, f"Expected 1 migration applied, got {count}"
+        # v2 (test SQL) and v3 (verification_runs) both applied from v1 baseline
+        assert count == 2, f"Expected 2 migrations applied, got {count}"
 
         async with aiosqlite.connect(db_path) as db:
             cursor = await db.execute("PRAGMA table_info(settings)")
@@ -180,6 +184,8 @@ async def test_run_migrations_version_gap(db_path):
     db_module.MIGRATIONS[2] = [
         "ALTER TABLE settings ADD COLUMN gap_col_v2 INTEGER NOT NULL DEFAULT 0"
     ]
+    # Remove v3 to test gap behavior (2 -> 4 with no 3)
+    db_module.MIGRATIONS.pop(3, None)
     db_module.MIGRATIONS[4] = [
         "ALTER TABLE settings ADD COLUMN gap_col_v4 INTEGER NOT NULL DEFAULT 0"
     ]
@@ -246,6 +252,6 @@ async def test_run_migrations_cli_command(tmp_path):
 
     assert result.exit_code == 0, f"CLI exited with {result.exit_code}:\n{result.output}"
     output = result.output.lower()
-    assert "up to date" in output or "applied 1 migration" in output, (
+    assert "up to date" in output or "applied" in output, (
         f"Expected migration status output, got:\n{result.output}"
     )

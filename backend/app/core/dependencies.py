@@ -3,6 +3,7 @@
 import inspect
 import logging
 import sqlite3
+import threading
 import time
 from collections import defaultdict
 from typing import Any
@@ -20,18 +21,13 @@ logger = logging.getLogger("arkive.auth")
 _config = ArkiveConfig()
 
 # Rate limiting state
+_rate_limit_lock = threading.Lock()
 _failed_attempts: dict[str, list[float]] = defaultdict(list)
 _lockouts: dict[str, float] = {}
 RATE_LIMIT_WINDOW = 300  # 5 minutes
 RATE_LIMIT_MAX = 5
 LOCKOUT_DURATION = 60  # seconds
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_DEV_BROWSER_ORIGINS = {
-    "http://localhost:5173",
-    "http://localhost:8200",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8200",
-}
 
 
 async def get_db():
@@ -48,30 +44,30 @@ def get_config() -> ArkiveConfig:
 
 def _track_failed_attempt(ip: str) -> None:
     """Track failed auth attempt for rate limiting."""
-    now = time.time()
-    _failed_attempts[ip] = [t for t in _failed_attempts[ip] if now - t < RATE_LIMIT_WINDOW]
-    _failed_attempts[ip].append(now)
-    if len(_failed_attempts[ip]) >= RATE_LIMIT_MAX:
-        _lockouts[ip] = now + LOCKOUT_DURATION
-        logger.warning("Rate limiting IP %s after %d failed attempts", ip, RATE_LIMIT_MAX)
+    with _rate_limit_lock:
+        now = time.time()
+        _failed_attempts[ip] = [t for t in _failed_attempts[ip] if now - t < RATE_LIMIT_WINDOW]
+        _failed_attempts[ip].append(now)
+        if len(_failed_attempts[ip]) >= RATE_LIMIT_MAX:
+            _lockouts[ip] = now + LOCKOUT_DURATION
+            logger.warning("Rate limiting IP %s after %d failed attempts", ip, RATE_LIMIT_MAX)
 
 
 def _is_locked_out(ip: str) -> bool:
     """Check if IP is currently locked out."""
-    lockout_until = _lockouts.get(ip, 0)
-    if time.time() < lockout_until:
-        return True
-    try:
-        del _lockouts[ip]
-    except KeyError:
-        pass
-    return False
+    with _rate_limit_lock:
+        lockout_until = _lockouts.get(ip, 0)
+        if time.time() < lockout_until:
+            return True
+        _lockouts.pop(ip, None)
+        return False
 
 
 def clear_rate_limit(ip: str) -> None:
     """Clear rate limit state for an IP (e.g. after successful setup)."""
-    _failed_attempts.pop(ip, None)
-    _lockouts.pop(ip, None)
+    with _rate_limit_lock:
+        _failed_attempts.pop(ip, None)
+        _lockouts.pop(ip, None)
 
 
 def _request_origin(request: Request) -> str | None:
@@ -92,7 +88,7 @@ def _enforce_session_origin(request: Request) -> None:
     if request.method.upper() not in _UNSAFE_METHODS:
         return
 
-    allowed = {str(request.base_url).rstrip("/"), *_DEV_BROWSER_ORIGINS}
+    allowed = {str(request.base_url).rstrip("/"), *_config.cors_origins}
     origin = _request_origin(request)
     if origin not in allowed:
         raise HTTPException(status_code=403, detail="Cross-site cookie-authenticated request blocked")

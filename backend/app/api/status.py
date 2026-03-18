@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app import __version__
 from app.core.dependencies import get_db
+from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
 from app.services.host_identity import resolve_hostname
 
@@ -113,6 +114,31 @@ async def _check_db_health(db: aiosqlite.Connection) -> dict:
         return {"ok": True, "message": "connected"}
     except Exception as e:
         return {"ok": False, "message": f"DB error: {e}"}
+
+
+async def compute_trust_score(db: aiosqlite.Connection) -> int:
+    """Compute overall trust score from latest per-target verification runs.
+
+    Returns the average score of the most recent completed run per target,
+    or 0 when no completed runs exist. Shared by status and verification APIs.
+    """
+    try:
+        cursor = await db.execute(
+            """SELECT trust_score
+               FROM verification_runs vr
+               INNER JOIN (
+                   SELECT target_id, MAX(rowid) AS latest_rowid
+                   FROM verification_runs
+                   GROUP BY target_id
+               ) lpt ON vr.target_id = lpt.target_id AND vr.rowid = lpt.latest_rowid
+               WHERE vr.status != 'running'"""
+        )
+        scored_rows = await cursor.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return 0
+    if not scored_rows:
+        return 0
+    return round(sum(r["trust_score"] for r in scored_rows) / len(scored_rows))
 
 
 async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
@@ -315,6 +341,30 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_snapshots = 0
 
+    # Verification / Trust Score
+    trust_score = 0
+    last_verified_at = None
+    verification_status_obj = None
+    try:
+        cursor = await db.execute(
+            """SELECT status, started_at, completed_at
+               FROM verification_runs
+               ORDER BY started_at DESC
+               LIMIT 1"""
+        )
+        latest_vr = await cursor.fetchone()
+        if latest_vr:
+            vr_status = latest_vr["status"]
+            last_verified_at = latest_vr["completed_at"] or latest_vr["started_at"]
+            trust_score = await compute_trust_score(db)
+            verification_status_obj = {
+                "trust_score": trust_score,
+                "last_verified_at": last_verified_at,
+                "verification_passing": vr_status == "passed",
+            }
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        pass
+
     user_shares_path = str(getattr(
         getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
     ))
@@ -324,20 +374,38 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         user_shares_path=user_shares_path,
     )
 
-    return {
-        "status": overall_status,
-        "health": _health_alias(overall_status),
-        "version": __version__,
-        "hostname": resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
-        "uptime_seconds": int(time.time() - _start_time),
-        "platform": platform,
-        "setup_completed": setup_completed,
-        "checks": checks,
-        "last_backup": last_backup,
-        "next_backup": _get_next_backup(request),
-        "targets": {"total": total_targets, "healthy": healthy_targets},
-        "databases": {"total": total_databases, "healthy": healthy_databases},
-        "storage": {"total_bytes": total_bytes},
-        "total_snapshots": total_snapshots,
-        "coverage": coverage,
-    }
+    # Derive flat convenience fields for the frontend dashboard
+    last_backup_status = last_backup["status"] if last_backup else None
+
+    # Count discovered containers from the discovered_containers table
+    try:
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM discovered_containers")
+        containers_discovered = (await cursor.fetchone())["cnt"]
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        containers_discovered = 0
+
+    return StatusResponse(
+        status=overall_status,
+        health=_health_alias(overall_status),
+        version=__version__,
+        hostname=resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
+        uptime_seconds=int(time.time() - _start_time),
+        platform=platform,
+        setup_completed=setup_completed,
+        checks=checks,
+        last_backup=last_backup,
+        last_backup_status=last_backup_status,
+        next_backup=_get_next_backup(request),
+        targets={"total": total_targets, "healthy": healthy_targets},
+        databases={"total": total_databases, "healthy": healthy_databases},
+        storage={"total_bytes": total_bytes},
+        containers_discovered=containers_discovered,
+        databases_found=total_databases,
+        targets_configured=total_targets,
+        total_snapshots=total_snapshots,
+        storage_used_bytes=total_bytes,
+        trust_score=trust_score,
+        last_verified_at=last_verified_at,
+        verification_status=verification_status_obj,
+        coverage=coverage,
+    )

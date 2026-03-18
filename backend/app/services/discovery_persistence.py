@@ -12,34 +12,46 @@ async def persist_discovery_results(
     db: aiosqlite.Connection,
     containers: list,
 ) -> None:
-    """Persist discovery scan results into discovered_containers."""
+    """Persist discovery scan results into discovered_containers.
+
+    Wraps all writes in an explicit transaction so that the INSERT OR REPLACE
+    and DELETE are atomic.  A crash mid-write rolls back the entire batch,
+    preventing partial state.
+    """
     current_names = {c.name for c in containers}
     scanned_at = datetime.now(timezone.utc).isoformat()
 
-    for c in containers:
-        await db.execute(
-            """INSERT OR REPLACE INTO discovered_containers
-            (name, image, status, ports, mounts, databases, profile, priority, compose_project, last_scanned)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                c.name,
-                c.image,
-                c.status,
-                json.dumps(c.ports),
-                json.dumps(c.mounts),
-                json.dumps([d.model_dump() for d in c.databases]),
-                c.profile,
-                c.priority,
-                c.compose_project,
-                scanned_at,
-            ),
-        )
+    await db.execute("BEGIN")
+    try:
+        for c in containers:
+            await db.execute(
+                """INSERT OR REPLACE INTO discovered_containers
+                (name, image, status, ports, mounts, databases, profile, priority, compose_project, last_scanned)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    c.name,
+                    c.image,
+                    c.status,
+                    json.dumps(c.ports),
+                    json.dumps(c.mounts),
+                    json.dumps([d.model_dump() for d in c.databases]),
+                    c.profile,
+                    c.priority,
+                    c.compose_project,
+                    scanned_at,
+                ),
+            )
 
-    if current_names:
-        placeholders = ",".join("?" for _ in current_names)  # nosec B608
-        await db.execute(
-            f"DELETE FROM discovered_containers WHERE name NOT IN ({placeholders})",  # nosec B608
-            tuple(current_names),
-        )
-    else:
-        await db.execute("DELETE FROM discovered_containers")
+        if current_names:
+            placeholders = ",".join("?" for _ in current_names)  # nosec B608
+            await db.execute(
+                f"DELETE FROM discovered_containers WHERE name NOT IN ({placeholders})",  # nosec B608
+                tuple(current_names),
+            )
+        else:
+            await db.execute("DELETE FROM discovered_containers")
+
+        await db.execute("COMMIT")
+    except BaseException:
+        await db.execute("ROLLBACK")
+        raise

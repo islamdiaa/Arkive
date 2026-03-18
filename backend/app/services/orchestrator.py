@@ -14,6 +14,7 @@ from typing import Any
 import aiosqlite
 
 from app.core.config import ArkiveConfig
+from app.core.context import current_run_id
 from app.core.event_bus import EventBus
 from app.core.security import decrypt_config
 from app.services.backup_engine import BackupEngine
@@ -22,6 +23,8 @@ from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
+from app.services.lock_manager import BackupLockManager
+from app.services.lock_manager import _get_proc_start_time  # re-export for backward compat
 from app.services.notifier import Notifier
 
 logger = logging.getLogger("arkive.orchestrator")
@@ -30,43 +33,10 @@ LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "backup.lock"
 RESTORE_LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "restore.lock"
 
 
-def _get_proc_start_time(pid: int) -> str | None:
-    """Read process start time (field 22) from /proc/{pid}/stat.
-
-    This value (in clock ticks since boot) uniquely identifies a process
-    instance even after PID recycling in Docker containers.
-    Returns None if the process doesn't exist or /proc is unavailable.
-    """
-    try:
-        with open(f"/proc/{pid}/stat", "r") as f:
-            fields = f.read().split(")")[-1].split()
-            # Field 22 in stat is starttime (0-indexed from after the comm field)
-            # After splitting on ")", fields[0] is state, fields[19] is starttime
-            return fields[19] if len(fields) > 19 else None
-    except (OSError, IndexError):
-        return None
-
-
 def cleanup_stale_backup_lock(config_dir: Path | None = None) -> bool:
     """Remove a stale backup.lock proactively on startup or before manual runs."""
-    config_root = config_dir or Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config"))
-    lock_file = config_root / "backup.lock"
-    if not lock_file.exists():
-        return False
-
-    try:
-        lock_data = json.loads(lock_file.read_text())
-        pid = lock_data.get("pid")
-        stored_start = lock_data.get("proc_start_time")
-        if pid and stored_start:
-            current_start = _get_proc_start_time(int(pid))
-            if current_start is not None and current_start == stored_start:
-                return False
-        lock_file.unlink(missing_ok=True)
-        return True
-    except Exception:
-        lock_file.unlink(missing_ok=True)
-        return True
+    mgr = BackupLockManager(config_dir)
+    return mgr.cleanup_stale_backup_lock()
 
 
 DEFAULT_MIN_DISK_BYTES = 1 * 1024 ** 3   # 1 GB
@@ -193,16 +163,13 @@ class BackupOrchestrator:
         self.notifier = notifier
         self.event_bus = event_bus
         self.config = config
+        self.lock_manager = BackupLockManager(config.config_dir)
         self._cancel_requested = False
         self._active_runs: dict[str, bool] = {}
 
     def _lock_conflict_message(self) -> str:
         """Return the best available explanation for a lock acquisition failure."""
-        if RESTORE_LOCK_FILE.exists():
-            return "Restore operation in progress"
-        if LOCK_FILE.exists():
-            return "Another backup is already running"
-        return "Backup could not start because the lock could not be acquired"
+        return self.lock_manager.lock_conflict_message()
 
     async def _mark_run_conflict(self, run_id: str, job_id: str, trigger: str, message: str) -> str:
         """Persist a terminal run when startup is blocked by a lock conflict."""
@@ -238,106 +205,12 @@ class BackupOrchestrator:
         return terminal_status
 
     def _acquire_lock(self, run_id: str | None = None) -> bool:
-        """Acquire backup lock atomically. Returns False if already locked.
-
-        Uses O_CREAT | O_EXCL for atomic creation to prevent TOCTOU race
-        conditions between concurrent backup triggers.
-        """
-        # Check for stale lock first
-        if LOCK_FILE.exists():
-            try:
-                lock_data = json.loads(LOCK_FILE.read_text())
-                pid = lock_data.get("pid")
-                if pid and os.path.exists(f"/proc/{pid}"):
-                    # PID exists — but is it the SAME process that took the lock?
-                    stored_start = lock_data.get("proc_start_time")
-                    if stored_start:
-                        current_start = _get_proc_start_time(pid)
-                        if current_start == stored_start:
-                            return False  # Same process still running
-                        # Different start time → PID was recycled
-                        logger.warning(
-                            "Lock PID %s recycled (start %s→%s), removing stale lock",
-                            pid, stored_start, current_start,
-                        )
-                    else:
-                        # Legacy lock without start time — fall back to PID-only check
-                        return False
-                # Process dead or PID recycled — remove stale lock
-                if pid:
-                    logger.warning("Removing stale lock from PID %s", pid)
-                try:
-                    LOCK_FILE.unlink()
-                except OSError:
-                    pass
-            except Exception:
-                # Corrupt lock file — remove and retry
-                try:
-                    LOCK_FILE.unlink()
-                except OSError:
-                    pass
-
-        # Refuse backup if a restore is in progress
-        if RESTORE_LOCK_FILE.exists():
-            # Check if restore lock is stale
-            try:
-                lock_data = json.loads(RESTORE_LOCK_FILE.read_text())
-                pid = lock_data.get("pid")
-                if pid:
-                    stored_start = lock_data.get("proc_start_time")
-                    if not stored_start:
-                        # Legacy lock without proc_start_time — treat as live (conservative)
-                        logger.warning("Cannot start backup — restore operation in progress")
-                        return False
-                    current_start = _get_proc_start_time(int(pid))
-                    if current_start is not None and current_start == stored_start:
-                        # Process genuinely alive — restore is running
-                        logger.warning("Cannot start backup — restore operation in progress")
-                        return False
-                    # Process dead or PID recycled — stale lock
-                    logger.warning("Removing stale restore lock from PID %s", pid)
-                RESTORE_LOCK_FILE.unlink(missing_ok=True)
-            except (json.JSONDecodeError, OSError, ValueError):
-                RESTORE_LOCK_FILE.unlink(missing_ok=True)
-            # Fall through to acquire backup lock normally
-
-        lock_payload: dict[str, Any] = {
-            "pid": os.getpid(),
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        lock_payload["proc_start_time"] = _get_proc_start_time(os.getpid()) or ""
-        if run_id:
-            lock_payload["run_id"] = run_id
-
-        # Atomic file creation — O_EXCL fails if file already exists,
-        # preventing race between concurrent callers.
-        try:
-            LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(str(LOCK_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                os.write(fd, json.dumps(lock_payload).encode())
-            finally:
-                os.close(fd)
-        except FileExistsError:
-            # Another process beat us to the lock
-            return False
-        except OSError as e:
-            logger.error("Failed to acquire lock: %s", e)
-            return False
-
-        # Double-check: did a restore lock appear between our pre-check and O_EXCL create?
-        if RESTORE_LOCK_FILE.exists():
-            LOCK_FILE.unlink(missing_ok=True)
-            return False
-
-        return True
+        """Acquire backup lock atomically. Returns False if already locked."""
+        return self.lock_manager.acquire_backup_lock(run_id)
 
     def _release_lock(self) -> None:
         """Release backup lock."""
-        try:
-            LOCK_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+        self.lock_manager.release_backup_lock()
 
     def _is_cancelled(self, run_id: str) -> bool:
         return self._cancel_requested or self._active_runs.get(run_id, False)
@@ -372,6 +245,13 @@ class BackupOrchestrator:
         """
         if run_id is None:
             run_id = str(uuid.uuid4())[:8]
+
+        # Set correlation ID so every log line in this run is tagged.
+        # Initialize token to None so the finally block never hits NameError
+        # if an exception occurs before current_run_id.set() completes.
+        _run_id_token = None
+        _run_id_token = current_run_id.set(run_id)
+
         if not self._acquire_lock(run_id):
             message = self._lock_conflict_message()
             logger.warning("Backup run %s could not start: %s", run_id, message)
@@ -385,6 +265,7 @@ class BackupOrchestrator:
                 "error_category": "conflict",
                 "user_action": "Wait for the current backup/restore operation to finish",
             })
+            current_run_id.reset(_run_id_token)
             return {"status": "conflict", "message": message, "run_id": run_id}
 
         self._cancel_requested = False
@@ -427,7 +308,6 @@ class BackupOrchestrator:
                     all_databases.extend(c.databases)
                 async with aiosqlite.connect(self.config.db_path) as db:
                     await persist_discovery_results(db, containers)
-                    await db.commit()
             else:
                 logger.info("Docker not available — skipping container discovery")
 
@@ -501,11 +381,18 @@ class BackupOrchestrator:
             await self._self_backup()
 
             # Step 7: Upload to targets
+            # Open a single DB connection for the entire upload + retention +
+            # snapshot-refresh phase to avoid opening a new connection per target.
             targets_json = json.loads(job.get("targets", "[]"))
-            if not targets_json:
-                # Get all enabled targets
-                async with aiosqlite.connect(self.config.db_path) as db:
-                    db.row_factory = aiosqlite.Row
+            total_bytes = 0
+            target_failures = []
+            resolved_targets: list[dict] = []
+
+            async with aiosqlite.connect(self.config.db_path) as db:
+                db.row_factory = aiosqlite.Row
+
+                if not targets_json:
+                    # Get all enabled targets
                     cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                     targets_rows = await cursor.fetchall()
                     targets_json = []
@@ -514,16 +401,41 @@ class BackupOrchestrator:
                         td["config"] = decrypt_config(td.get("config", "{}"), str(self.config.config_dir))
                         targets_json.append(td)
 
-            total_bytes = 0
-            target_failures = []
-            resolved_targets: list[dict] = []
-            for target in targets_json:
-                if self._is_cancelled(run_id):
-                    return await self._cancel(run_id)
+                # Resolve backup paths once (same for every target)
+                backup_paths = [str(self.config.dump_dir)]
+                dirs_json = json.loads(job.get("directories", "[]"))
+                resolved_job_paths: list[str] = []
+                for entry in dirs_json:
+                    if isinstance(entry, str) and os.path.isabs(entry):
+                        resolved_job_paths.append(entry)
+                        continue
 
-                if isinstance(target, str):
-                    async with aiosqlite.connect(self.config.db_path) as db:
-                        db.row_factory = aiosqlite.Row
+                    cursor = await db.execute(
+                        "SELECT path FROM watched_directories WHERE id = ? AND enabled = 1",
+                        (entry,),
+                    )
+                    row = await cursor.fetchone()
+                    if row and row["path"] not in resolved_job_paths:
+                        resolved_job_paths.append(row["path"])
+
+                backup_paths.extend(resolved_job_paths)
+
+                # Also include enabled watched directories
+                cursor = await db.execute(
+                    "SELECT path FROM watched_directories WHERE enabled = 1"
+                )
+                for row in await cursor.fetchall():
+                    if row["path"] not in backup_paths:
+                        backup_paths.append(row["path"])
+
+                excludes = json.loads(job.get("exclude_patterns", "[]"))
+                tags = [f"job:{job_id}", f"run:{run_id}"]
+
+                for target in targets_json:
+                    if self._is_cancelled(run_id):
+                        return await self._cancel(run_id)
+
+                    if isinstance(target, str):
                         cursor = await db.execute("SELECT * FROM storage_targets WHERE id = ?", (target,))
                         t = await cursor.fetchone()
                         if t:
@@ -532,66 +444,33 @@ class BackupOrchestrator:
                         else:
                             continue
 
-                await self._update_progress(run_id, f"uploading:{target.get('name', target.get('id', ''))}")
+                    await self._update_progress(run_id, f"uploading:{target.get('name', target.get('id', ''))}")
 
-                # Init repo if needed
-                await self.backup_engine.init_repo(target)
+                    # Init repo if needed
+                    await self.backup_engine.init_repo(target)
 
-                # Collect paths to backup
-                backup_paths = [str(self.config.dump_dir)]
-                dirs_json = json.loads(job.get("directories", "[]"))
-                async with aiosqlite.connect(self.config.db_path) as db:
-                    db.row_factory = aiosqlite.Row
-                    resolved_job_paths: list[str] = []
-                    for entry in dirs_json:
-                        if isinstance(entry, str) and os.path.isabs(entry):
-                            resolved_job_paths.append(entry)
-                            continue
-
-                        cursor = await db.execute(
-                            "SELECT path FROM watched_directories WHERE id = ? AND enabled = 1",
-                            (entry,),
-                        )
-                        row = await cursor.fetchone()
-                        if row and row["path"] not in resolved_job_paths:
-                            resolved_job_paths.append(row["path"])
-
-                    backup_paths.extend(resolved_job_paths)
-
-                    # Also include enabled watched directories
-                    cursor = await db.execute(
-                        "SELECT path FROM watched_directories WHERE enabled = 1"
+                    result = await self.backup_engine.backup(
+                        target,
+                        backup_paths,
+                        excludes,
+                        tags,
+                        cancel_check=lambda rid=run_id: self._is_cancelled(rid),
                     )
-                    for row in await cursor.fetchall():
-                        if row["path"] not in backup_paths:
-                            backup_paths.append(row["path"])
 
-                excludes = json.loads(job.get("exclude_patterns", "[]"))
-                tags = [f"job:{job_id}", f"run:{run_id}"]
+                    if result.get("status") == "cancelled":
+                        return await self._cancel(run_id)
 
-                result = await self.backup_engine.backup(
-                    target,
-                    backup_paths,
-                    excludes,
-                    tags,
-                    cancel_check=lambda rid=run_id: self._is_cancelled(rid),
-                )
-
-                if result.get("status") == "cancelled":
-                    return await self._cancel(run_id)
-
-                # Record target result
-                upload_bytes = result.get("total_bytes_processed", 0)
-                total_bytes += upload_bytes
-                target_status = result.get("status", "failed")
-                target_error = result.get("error") or result.get("output") or ""
-                if target_status != "success":
-                    target_name = target.get("name", target.get("id", "unknown"))
-                    if target_error:
-                        target_failures.append(f"{target_name}: {target_error}")
-                    else:
-                        target_failures.append(target_name)
-                async with aiosqlite.connect(self.config.db_path) as db:
+                    # Record target result
+                    upload_bytes = result.get("total_bytes_processed", 0)
+                    total_bytes += upload_bytes
+                    target_status = result.get("status", "failed")
+                    target_error = result.get("error") or result.get("output") or ""
+                    if target_status != "success":
+                        target_name = target.get("name", target.get("id", "unknown"))
+                        if target_error:
+                            target_failures.append(f"{target_name}: {target_error}")
+                        else:
+                            target_failures.append(target_name)
                     await db.execute(
                         """INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id, upload_bytes, error)
                         VALUES (?, ?, ?, ?, ?, ?)""",
@@ -599,16 +478,14 @@ class BackupOrchestrator:
                          result.get("snapshot_id", ""), upload_bytes, target_error or None),
                     )
                     await db.commit()
-                resolved_targets.append(target)
+                    resolved_targets.append(target)
 
-            # Step 8: Retention cleanup
-            await self._update_progress(run_id, "retention_cleanup")
-            # Read retention settings from DB
-            keep_daily = 7
-            keep_weekly = 4
-            keep_monthly = 6
-            async with aiosqlite.connect(self.config.db_path) as db:
-                db.row_factory = aiosqlite.Row
+                # Step 8: Retention cleanup
+                await self._update_progress(run_id, "retention_cleanup")
+                # Read retention settings from DB
+                keep_daily = 7
+                keep_weekly = 4
+                keep_monthly = 6
                 cursor = await db.execute(
                     "SELECT key, value FROM settings WHERE key IN ('keep_daily', 'keep_weekly', 'keep_monthly')"
                 )
@@ -623,6 +500,7 @@ class BackupOrchestrator:
                             keep_monthly = val
                     except (ValueError, TypeError):
                         pass
+
             for target in resolved_targets:
                 await self.backup_engine.forget(
                     target,
@@ -633,11 +511,12 @@ class BackupOrchestrator:
 
             # Step 8b: Refresh snapshot cache
             await self._update_progress(run_id, "refreshing_snapshots")
-            for target in resolved_targets:
-                try:
-                    snapshots = await self.backup_engine.snapshots(target)
-                    target_id = target.get("id", "")
-                    async with aiosqlite.connect(self.config.db_path) as db:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                for target in resolved_targets:
+                    try:
+                        snapshots = await self.backup_engine.snapshots(target)
+                        target_id = target.get("id", "")
                         # Collect current snapshot short IDs from restic
                         current_ids = set()
                         for snap in snapshots:
@@ -679,9 +558,9 @@ class BackupOrchestrator:
                             (date.today().isoformat(), target_id, total_size, len(snapshots)),
                         )
                         await db.commit()
-                except Exception as e:
-                    logger.warning("Failed to refresh snapshots for target %s: %s",
-                                   target.get("name", target.get("id", "")), e)
+                    except Exception as e:
+                        logger.warning("Failed to refresh snapshots for target %s: %s",
+                                       target.get("name", target.get("id", "")), e)
 
             # Step 9: Complete — check if any targets failed
             duration = int(time.monotonic() - start_time)
@@ -787,6 +666,8 @@ class BackupOrchestrator:
                     logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
             self._active_runs.pop(run_id, None)
+            if _run_id_token is not None:
+                current_run_id.reset(_run_id_token)
 
     async def cancel(self) -> None:
         """Request cancellation of the current backup."""
@@ -795,14 +676,17 @@ class BackupOrchestrator:
             self._active_runs[run_id] = True
 
     async def _cancel(self, run_id: str) -> dict:
-        """Handle backup cancellation."""
+        """Handle backup cancellation.
+
+        Lock release and run cleanup are handled by the finally block
+        in run_backup() -- do NOT release the lock here.
+        """
         async with aiosqlite.connect(self.config.db_path) as db:
             await db.execute(
                 "UPDATE job_runs SET status = 'cancelled', completed_at = ? WHERE id = ?",
                 (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), run_id),
             )
             await db.commit()
-        self._release_lock()
         await self.event_bus.publish("backup:cancelled", {"run_id": run_id})
         return {"status": "cancelled", "run_id": run_id}
 
@@ -855,8 +739,8 @@ class BackupOrchestrator:
 
     def is_running(self) -> bool:
         """Check if a backup is currently running."""
-        return LOCK_FILE.exists()
+        return self.lock_manager.is_backup_running()
 
     def is_restore_running(self) -> bool:
         """Check if a restore operation is in progress."""
-        return RESTORE_LOCK_FILE.exists()
+        return self.lock_manager.is_restore_running()

@@ -5,6 +5,7 @@
 <script lang="ts">
 	import Header from '$lib/components/layout/Header.svelte';
 	import BackupProgressPanel from '$lib/components/shared/BackupProgressPanel.svelte';
+	import TrustScoreBadge from '$lib/components/shared/TrustScoreBadge.svelte';
 	import CommandStrip from '$lib/components/dashboard/CommandStrip.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
@@ -19,6 +20,9 @@
 	let data: DashboardData | null = null;
 	let loading = true;
 	let error = '';
+	let verifying = false;
+	let trustScore: number | null = null;
+	let lastVerifiedAt: string | null = null;
 
 	const unsubCompleted = sseSubscribe('backup:completed', () => {
 		backupRunning.set(false);
@@ -29,17 +33,36 @@
 	const unsubCancelled = sseSubscribe('backup:cancelled', () => {
 		backupRunning.set(false);
 	});
+	const unsubVerifyStarted = sseSubscribe('verification:started', () => {
+		verifying = true;
+	});
+	const unsubVerifyCompleted = sseSubscribe('verification:completed', (event) => {
+		verifying = false;
+		if (event.data.trust_score !== undefined) trustScore = event.data.trust_score as number;
+		if (event.data.last_verified_at) lastVerifiedAt = event.data.last_verified_at as string;
+	});
+	const unsubVerifyFailed = sseSubscribe('verification:failed', () => {
+		verifying = false;
+		addToast({ type: 'error', message: 'Backup verification failed' });
+	});
 
 	onDestroy(() => {
 		unsubCompleted();
 		unsubFailed();
 		unsubCancelled();
+		unsubVerifyStarted();
+		unsubVerifyCompleted();
+		unsubVerifyFailed();
 	});
 
 	onMount(() => {
 		loadDashboard().then((d) => {
 			data = d;
-			if (d.status) systemStatus.set(d.status);
+			if (d.status) {
+				systemStatus.set(d.status);
+				trustScore = d.status.trust_score ?? d.status.verification_status?.trust_score ?? null;
+				lastVerifiedAt = d.status.last_verified_at ?? d.status.verification_status?.last_verified_at ?? null;
+			}
 			loading = false;
 		}).catch((e) => {
 			console.error('Dashboard load error:', e);
@@ -92,6 +115,16 @@
 		});
 	}
 
+	function handleVerify() {
+		verifying = true;
+		api.triggerVerification().then(() => {
+			addToast({ type: 'info', message: 'Verification started' });
+		}).catch((e: any) => {
+			addToast({ type: 'error', message: e.message || 'Failed to start verification' });
+			verifying = false;
+		});
+	}
+
 	$: hostname = data?.status?.hostname ?? '';
 	$: resolvedStatus = data?.status?.health ?? 'unknown';
 	$: coverageWarnings = data?.status?.coverage?.warnings ?? [];
@@ -124,14 +157,14 @@
 	{/if}
 
 	{#if loading}
-		<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-			{#each Array(3) as _}
+		<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+			{#each Array(4) as _}
 				<div class="bg-bg-surface border border-border rounded-lg p-5 animate-skeleton h-24"></div>
 			{/each}
 		</div>
 	{:else if data}
 		<!-- Stat Cards -->
-		<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+		<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
 			<StatCard
 				label="System"
 				value={data.status?.health ? data.status.health.charAt(0).toUpperCase() + data.status.health.slice(1) : 'Healthy'}
@@ -163,6 +196,23 @@
 			>
 				<p class="text-xs text-text-secondary mt-1">{data.status?.total_snapshots || 0} snapshots across {getTargetsConfigured(data.status)} targets</p>
 			</StatCard>
+
+			<div class="card relative overflow-hidden">
+				<div class="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r {trustScore !== null && trustScore >= 80 ? 'from-success to-success' : trustScore !== null && trustScore >= 50 ? 'from-warning to-warning' : trustScore !== null ? 'from-danger to-danger' : 'from-border-muted to-border-muted'}"></div>
+				<p class="text-xs uppercase tracking-wider text-text-secondary mb-2">Backup Trust Score</p>
+				<div class="flex items-center gap-3">
+					<TrustScoreBadge score={trustScore} {lastVerifiedAt} {verifying} />
+					<div class="flex flex-col gap-1.5">
+						<button
+							class="px-3 py-1.5 text-xs font-medium rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+							on:click={handleVerify}
+							disabled={verifying || $backupRunning}
+						>
+							{verifying ? 'Verifying...' : 'Verify Now'}
+						</button>
+					</div>
+				</div>
+			</div>
 		</div>
 
 		{#if data.status?.coverage}

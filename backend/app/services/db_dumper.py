@@ -17,6 +17,7 @@ from pathlib import Path
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
 from app.utils.subprocess_runner import run_command
+from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.db_dumper")
 
@@ -54,7 +55,9 @@ class DBDumper:
                 result = await self._dump_one(db)
                 results.append(result)
             except Exception as e:
-                logger.error("Failed to dump %s/%s: %s", db.container_name, db.db_name, e)
+                error_str = str(e)
+                redacted_error = redact_credentials(error_str)
+                logger.error("Failed to dump %s/%s: %s", db.container_name, db.db_name, redacted_error)
                 results.append(DumpResult(
                     container_name=db.container_name,
                     db_type=db.db_type,
@@ -63,7 +66,7 @@ class DBDumper:
                     dump_size_bytes=0,
                     integrity_check="skipped",
                     status="failed",
-                    error=str(e),
+                    error=redacted_error,
                 ))
         return results
 
@@ -201,13 +204,14 @@ class DBDumper:
 
             if exit_code is not None and exit_code != 0:
                 error_msg = stderr_text if stderr_text else f"pg_dump exited with code {exit_code}"
+                redacted_error = redact_credentials(stderr_text[:500])
                 logger.error("pg_dump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, stderr_text[:500])
+                             db.container_name, db.db_name, exit_code, redacted_error)
                 return DumpResult(
                     container_name=db.container_name, db_type="postgres",
                     db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                     integrity_check="skipped", status="failed",
-                    error=f"pg_dump exited with code {exit_code}: {error_msg}",
+                    error=f"pg_dump exited with code {exit_code}: {redact_credentials(error_msg)}",
                 )
 
             if bytes_written == 0:
@@ -224,8 +228,9 @@ class DBDumper:
 
             # Log stderr warnings even on success (pg_dump may emit warnings)
             if stderr_text:
+                redacted_stderr = redact_credentials(stderr_text[:500])
                 logger.warning("pg_dump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, stderr_text[:500])
+                               db.container_name, db.db_name, redacted_stderr)
 
             size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
             return DumpResult(
@@ -370,13 +375,14 @@ class DBDumper:
 
             if exit_code is not None and exit_code != 0:
                 error_msg = stderr_text if stderr_text else f"mysqldump exited with code {exit_code}"
+                redacted_error = redact_credentials(stderr_text[:500])
                 logger.error("mysqldump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, stderr_text[:500])
+                             db.container_name, db.db_name, exit_code, redacted_error)
                 return DumpResult(
                     container_name=db.container_name, db_type="mariadb",
                     db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                     integrity_check="skipped", status="failed",
-                    error=f"mysqldump exited with code {exit_code}: {error_msg}",
+                    error=f"mysqldump exited with code {exit_code}: {redact_credentials(error_msg)}",
                 )
 
             if bytes_written == 0:
@@ -393,8 +399,9 @@ class DBDumper:
 
             # Log stderr warnings even on success (mysqldump may emit warnings)
             if stderr_text:
+                redacted_stderr = redact_credentials(stderr_text[:500])
                 logger.warning("mysqldump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, stderr_text[:500])
+                               db.container_name, db.db_name, redacted_stderr)
 
             size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
             return DumpResult(
@@ -450,13 +457,14 @@ class DBDumper:
 
             if exit_code is not None and exit_code != 0:
                 error_msg = stderr_text if stderr_text else f"mongodump exited with code {exit_code}"
+                redacted_error = redact_credentials(stderr_text[:500])
                 logger.error("mongodump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, stderr_text[:500])
+                             db.container_name, db.db_name, exit_code, redacted_error)
                 return DumpResult(
                     container_name=db.container_name, db_type="mongodb",
                     db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                     integrity_check="skipped", status="failed",
-                    error=f"mongodump exited with code {exit_code}: {error_msg}",
+                    error=f"mongodump exited with code {exit_code}: {redact_credentials(error_msg)}",
                 )
 
             if bytes_written == 0:
@@ -473,8 +481,9 @@ class DBDumper:
 
             # Log stderr warnings even on success (mongodump writes progress to stderr)
             if stderr_text and "error" in stderr_text.lower():
+                redacted_stderr = redact_credentials(stderr_text[:500])
                 logger.warning("mongodump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, stderr_text[:500])
+                               db.container_name, db.db_name, redacted_stderr)
 
             size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
             return DumpResult(

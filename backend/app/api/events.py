@@ -16,13 +16,13 @@ async def event_stream(
     event_bus=Depends(get_event_bus),
 ):
     """Stream real-time events via SSE."""
-    queue = event_bus.subscribe()
+    handle = event_bus.subscribe()
 
     async def event_generator():
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    event = await asyncio.wait_for(handle.queue.get(), timeout=30)
                     yield {
                         "event": event.get("event", "message"),
                         "data": json.dumps(event.get("data", {})),
@@ -30,6 +30,6 @@ async def event_stream(
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": json.dumps({"type": "keepalive"})}
         finally:
-            event_bus.unsubscribe(queue)
+            handle.cleanup()
 
     return EventSourceResponse(event_generator())

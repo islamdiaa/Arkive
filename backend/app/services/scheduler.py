@@ -22,17 +22,21 @@ SYSTEM_JOB_RETENTION = "system_retention_cleanup"
 SYSTEM_JOB_HEALTH = "system_health_check"
 SYSTEM_JOB_LOG_PRUNE = "system_activity_log_prune"
 SYSTEM_JOB_INTEGRITY_CHECK = "system_integrity_check"
+SYSTEM_JOB_INTEGRITY_VERIFY = "system_integrity_verify"
 
 
 class ArkiveScheduler:
     """Manages scheduled backup jobs using APScheduler."""
 
     def __init__(self, orchestrator, config: ArkiveConfig,
-                 discovery=None, backup_engine=None, cloud_manager=None, notifier=None):
+                 discovery=None, backup_engine=None, cloud_manager=None, notifier=None,
+                 verify_engine=None, event_bus=None):
         self.orchestrator = orchestrator
         self.config = config
         self.discovery = discovery
         self.backup_engine = backup_engine
+        self.verify_engine = verify_engine
+        self.event_bus = event_bus
         self.cloud_manager = cloud_manager
         self.notifier = notifier
         self.scheduler = AsyncIOScheduler(
@@ -159,6 +163,17 @@ class ArkiveScheduler:
             )
             logger.info("Registered system job: Integrity Check (weekly Sunday 5 AM)")
 
+        # 6. Integrity Verify — weekly Sunday at 6 AM (after integrity check at 5 AM)
+        if not self.scheduler.get_job(SYSTEM_JOB_INTEGRITY_VERIFY):
+            self.scheduler.add_job(
+                self._run_integrity_verify,
+                trigger=CronTrigger(day_of_week='sun', hour=6, minute=0),
+                id=SYSTEM_JOB_INTEGRITY_VERIFY,
+                replace_existing=True,
+                name="Integrity Verify",
+            )
+            logger.info("Registered system job: Integrity Verify (weekly Sunday 6 AM)")
+
     async def _run_discovery_scan(self) -> None:
         """System job: run container discovery scan."""
         if not self.discovery:
@@ -172,7 +187,6 @@ class ArkiveScheduler:
             # Persist results to discovered_containers table
             async with aiosqlite.connect(self.config.db_path) as db:
                 await persist_discovery_results(db, containers or [])
-                await db.commit()
                 await log_activity(
                     db, "system", "discovery_scan",
                     f"Discovery scan completed: {count} containers found",
@@ -432,6 +446,63 @@ class ArkiveScheduler:
             )
         except Exception as e:
             logger.error("System job: integrity check failed: %s", e)
+
+    async def _run_integrity_verify(self) -> None:
+        """System job: run full verification pipeline (restic check + restore test + DB validation).
+
+        Checks the backup lock before starting to avoid conflicts with active backups.
+        Delegates to VerifyEngine for the actual verification work.
+        """
+        if not self.verify_engine:
+            logger.debug("Verify engine not available, skipping integrity verify")
+            return
+        try:
+            logger.info("System job: starting integrity verify")
+            result = await self.verify_engine.verify_all_targets()
+            status = result.get("status", "unknown")
+            trust_score = result.get("overall_trust_score", 0.0)
+
+            async with aiosqlite.connect(self.config.db_path) as db:
+                severity = "info" if status == "completed" else "warning"
+                await log_activity(
+                    db, "system", "integrity_verify",
+                    f"Integrity verify {status}: trust score {trust_score}",
+                    {"status": status, "trust_score": trust_score,
+                     "targets": result.get("targets", [])},
+                    severity=severity,
+                )
+
+            # Publish SSE event so the frontend updates
+            if self.event_bus:
+                await self.event_bus.publish("verification:completed", {
+                    "status": status,
+                    "trust_score": trust_score,
+                    "target_count": len(result.get("targets", [])),
+                })
+
+            # Notify on failure or low trust score
+            failed_targets = [
+                t for t in result.get("targets", [])
+                if t.get("status") == "failed" or t.get("trust_score", 100) < 50
+            ]
+            if failed_targets and self.notifier:
+                names = ", ".join(t.get("target_name", t.get("target_id", "?")) for t in failed_targets)
+                try:
+                    await self.notifier.send(
+                        "verification.failed",
+                        "Verification Failed",
+                        f"Verification failed for: {names}. Trust score: {trust_score}",
+                        "error",
+                    )
+                except Exception as notify_err:
+                    logger.warning("Failed to send verification failure notification: %s", notify_err)
+
+            logger.info(
+                "System job: integrity verify complete — status=%s trust_score=%.1f",
+                status, trust_score,
+            )
+        except Exception as e:
+            logger.error("System job: integrity verify failed: %s", e)
 
     # ---- User backup job management ----
 

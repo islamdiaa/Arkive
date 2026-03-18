@@ -2,8 +2,13 @@
 
 import asyncio
 import logging
+import os
+import signal
+import sys
 import time
 from dataclasses import dataclass
+
+from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.subprocess")
 
@@ -15,6 +20,30 @@ class CommandResult:
     stderr: str
     duration_seconds: float
     command: str
+
+
+def _kill_process_group(pid: int) -> None:
+    """Kill the entire process group rooted at *pid*.
+
+    Uses SIGKILL via os.killpg so that child processes spawned by the
+    subprocess are also terminated.  Silently ignores ProcessLookupError
+    (process already exited).
+    """
+    try:
+        if hasattr(os, 'killpg'):
+            # POSIX: kill entire process group
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        else:
+            # Windows: no process groups, kill single process only
+            os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        # Fallback: the process may not be a group leader on some platforms
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 async def run_command(
@@ -31,6 +60,10 @@ async def run_command(
     logger.debug("Running: %s", cmd_str)
     start = time.monotonic()
 
+    # On POSIX, start the child in its own process group so that on
+    # timeout/cancel we can kill the whole tree (parent + children).
+    preexec = os.setsid if sys.platform != "win32" else None
+
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -39,6 +72,7 @@ async def run_command(
             stderr=asyncio.subprocess.PIPE,
             env=env,
             cwd=cwd,
+            preexec_fn=preexec,
         )
 
         communicate_task = asyncio.create_task(
@@ -51,7 +85,8 @@ async def run_command(
             if cancel_check and cancel_check():
                 logger.warning("Command cancelled: %s", cmd_str)
                 try:
-                    process.kill()
+                    if process.pid is not None:
+                        _kill_process_group(process.pid)
                     await process.wait()
                 except Exception:
                     pass
@@ -87,7 +122,8 @@ async def run_command(
             command=cmd_str,
         )
         if result.returncode != 0:
-            logger.warning("Command failed (rc=%d): %s\nstderr: %s", result.returncode, cmd_str, result.stderr[:500])
+            redacted_stderr = redact_credentials(result.stderr[:500])
+            logger.warning("Command failed (rc=%d): %s\nstderr: %s", result.returncode, cmd_str, redacted_stderr)
         else:
             logger.debug("Command succeeded in %.2fs: %s", duration, cmd_str)
         return result
@@ -96,7 +132,8 @@ async def run_command(
         duration = time.monotonic() - start
         logger.error("Command timed out after %ds: %s", timeout, cmd_str)
         try:
-            process.kill()
+            if process.pid is not None:
+                _kill_process_group(process.pid)
             await process.wait()
         except Exception:
             pass
