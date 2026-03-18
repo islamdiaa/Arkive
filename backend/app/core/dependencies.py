@@ -208,3 +208,7 @@ def get_notifier(request: Request) -> Any:
 
 def get_restore_plan(request: Request) -> Any:
     return request.app.state.restore_plan
+
+
+def get_verify_engine(request: Request) -> Any:
+    return getattr(request.app.state, "verify_engine", None)

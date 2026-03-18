@@ -1,5 +1,6 @@
 """Verification API routes for trust score and backup integrity checks."""
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -10,7 +11,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.status import compute_trust_score
-from app.core.dependencies import get_db, get_event_bus, require_auth
+from app.core.dependencies import get_db, get_event_bus, get_verify_engine, require_auth
 from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.verification")
@@ -60,12 +61,13 @@ async def get_verification_results(db: aiosqlite.Connection = Depends(get_db)):
 async def trigger_verification(
     db: aiosqlite.Connection = Depends(get_db),
     event_bus=Depends(get_event_bus),
+    verify_engine=Depends(get_verify_engine),
 ):
     """Trigger a manual verification run across all enabled targets.
 
-    Creates a verification_runs row per target and publishes events.
-    The actual verification work is performed by the verification engine
-    service, which picks up runs in 'running' status.
+    Creates verification_runs rows, then launches the verify engine in the
+    background. The engine picks up the 'running' rows and updates them
+    with results when complete.
     """
     # Rate limit: reject if a verification ran in the last 10 minutes
     try:
@@ -102,11 +104,13 @@ async def trigger_verification(
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_ids = []
+    run_id_map: dict[str, str] = {}
 
     for target in targets:
         target_dict = dict(target)
         run_id = str(uuid.uuid4())
         run_ids.append(run_id)
+        run_id_map[target_dict["id"]] = run_id
 
         await db.execute(
             """INSERT INTO verification_runs
@@ -133,9 +137,42 @@ async def trigger_verification(
             "started_at": now,
         })
 
+    # Launch verification in the background so the API returns immediately
+    if verify_engine:
+        asyncio.create_task(_run_verification(verify_engine, run_id_map, event_bus))
+
     return {
         "status": "started",
         "run_ids": run_ids,
         "target_count": len(targets),
         "message": f"Verification started for {len(targets)} target(s)",
     }
+
+
+async def _run_verification(
+    verify_engine, run_id_map: dict[str, str], event_bus
+) -> None:
+    """Background task that runs the verify engine and publishes completion events."""
+    try:
+        result = await verify_engine.verify_all_targets(run_ids=run_id_map)
+        status = result.get("status", "unknown")
+        trust_score = result.get("overall_trust_score", 0.0)
+
+        if event_bus:
+            await event_bus.publish("verification:completed", {
+                "status": status,
+                "trust_score": trust_score,
+                "target_count": len(result.get("targets", [])),
+                "last_verified_at": result.get("verified_at"),
+            })
+
+        logger.info(
+            "Manual verification complete: status=%s trust_score=%.1f",
+            status, trust_score,
+        )
+    except Exception as e:
+        logger.error("Manual verification failed: %s", e)
+        if event_bus:
+            await event_bus.publish("verification:failed", {
+                "error": str(e),
+            })
