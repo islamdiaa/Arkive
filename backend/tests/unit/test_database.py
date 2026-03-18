@@ -40,6 +40,7 @@ async def test_init_db(db_path):
         "size_history",
         "snapshots",
         "storage_targets",
+        "verification_runs",
         "watched_directories",
     ]
     for table in expected:

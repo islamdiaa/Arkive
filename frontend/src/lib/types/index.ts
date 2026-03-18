@@ -170,6 +170,27 @@ export interface LogEntry {
   message: string;
 }
 
+// ── Verification ──
+export interface VerificationRun {
+  id: string;
+  target_id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: 'running' | 'passed' | 'failed' | 'error';
+  files_checked: number;
+  files_passed: number;
+  databases_checked: number;
+  databases_passed: number;
+  trust_score: number;
+  error_message: string | null;
+}
+
+export interface VerificationStatus {
+  last_verified_at: string | null;
+  trust_score: number | null;
+  verification_passing: boolean;
+}
+
 // ── SSE Events ──
 export type SSEEventType =
   | 'backup:started'
@@ -187,6 +208,9 @@ export type SSEEventType =
   | 'restore:progress'
   | 'restore:completed'
   | 'health:changed'
+  | 'verification:started'
+  | 'verification:completed'
+  | 'verification:failed'
   | 'notification'
   | 'log:entry';
 

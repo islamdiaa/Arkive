@@ -116,6 +116,31 @@ async def _check_db_health(db: aiosqlite.Connection) -> dict:
         return {"ok": False, "message": f"DB error: {e}"}
 
 
+async def compute_trust_score(db: aiosqlite.Connection) -> int:
+    """Compute overall trust score from latest per-target verification runs.
+
+    Returns the average score of the most recent completed run per target,
+    or 0 when no completed runs exist. Shared by status and verification APIs.
+    """
+    try:
+        cursor = await db.execute(
+            """SELECT trust_score
+               FROM verification_runs vr
+               INNER JOIN (
+                   SELECT target_id, MAX(started_at) AS latest
+                   FROM verification_runs
+                   GROUP BY target_id
+               ) lpt ON vr.target_id = lpt.target_id AND vr.started_at = lpt.latest
+               WHERE vr.status != 'running'"""
+        )
+        scored_rows = await cursor.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return 0
+    if not scored_rows:
+        return 0
+    return round(sum(r["trust_score"] for r in scored_rows) / len(scored_rows))
+
+
 async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
     """Return discovered database totals and latest dump health.
 
@@ -316,6 +341,30 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_snapshots = 0
 
+    # Verification / Trust Score
+    trust_score = 0
+    last_verified_at = None
+    verification_status_obj = None
+    try:
+        cursor = await db.execute(
+            """SELECT status, started_at, completed_at
+               FROM verification_runs
+               ORDER BY started_at DESC
+               LIMIT 1"""
+        )
+        latest_vr = await cursor.fetchone()
+        if latest_vr:
+            vr_status = latest_vr["status"]
+            last_verified_at = latest_vr["completed_at"] or latest_vr["started_at"]
+            trust_score = await compute_trust_score(db)
+            verification_status_obj = {
+                "trust_score": trust_score,
+                "last_verified_at": last_verified_at,
+                "verification_passing": vr_status == "passed",
+            }
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        pass
+
     user_shares_path = str(getattr(
         getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
     ))
@@ -355,5 +404,8 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         targets_configured=total_targets,
         total_snapshots=total_snapshots,
         storage_used_bytes=total_bytes,
+        trust_score=trust_score,
+        last_verified_at=last_verified_at,
+        verification_status=verification_status_obj,
         coverage=coverage,
     )

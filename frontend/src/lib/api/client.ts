@@ -117,6 +117,9 @@ const realApi = {
 	getLogs: (lines?: number) => request<any>(`/logs${lines ? `?lines=${lines}` : ''}`),
 	clearLogs: () => request<any>('/logs', { method: 'DELETE' }),
 
+	getVerification: () => request<any>('/verification'),
+	triggerVerification: () => request<any>('/verification/run', { method: 'POST' }),
+
 	createEventSource: () => new EventSource(`${BASE_URL}/events/stream`)
 };
 

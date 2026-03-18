@@ -43,6 +43,13 @@ const DEMO_STATUS = {
     recommended_directories: [],
     warnings: [],
   },
+  trust_score: 94,
+  last_verified_at: new Date(Date.now() - 3600000).toISOString(),
+  verification_status: {
+    last_verified_at: new Date(Date.now() - 3600000).toISOString(),
+    trust_score: 94,
+    verification_passing: true,
+  },
 };
 
 const DEMO_JOBS = {
@@ -258,6 +265,23 @@ async function _mockGet(path: string): Promise<any> {
   if (clean === '/discover/containers') return DEMO_CONTAINERS;
   if (clean === '/directories') return DEMO_DIRECTORIES;
   if (clean === '/logs') return DEMO_LOGS;
+  if (clean === '/verification') return {
+    runs: [{
+      id: 'vr-001',
+      target_id: 'target-b2-main',
+      started_at: new Date(Date.now() - 3600000).toISOString(),
+      completed_at: new Date(Date.now() - 3540000).toISOString(),
+      status: 'passed',
+      files_checked: 847,
+      files_passed: 847,
+      databases_checked: 6,
+      databases_passed: 6,
+      trust_score: 94,
+      error_message: null,
+    }],
+    trust_score: 94,
+    last_verified_at: new Date(Date.now() - 3600000).toISOString(),
+  };
 
   return {};
 }
@@ -277,6 +301,7 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean === '/discover/scan') return DEMO_CONTAINERS;
   if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: DEMO_DIR_SUGGESTIONS, platform: 'unraid' };
   if (clean === '/directories') return { ...data, id: `dir-new-${Date.now()}` };
+  if (clean === '/verification/run') return { run_id: `vr-demo-${Date.now()}`, status: 'started' };
 
   return { success: true };
 }
@@ -353,6 +378,9 @@ export const mockApi = {
 
   getLogs: async () => { await delay(); return DEMO_LOGS; },
   clearLogs: async () => { await delay(); return { success: true }; },
+
+  getVerification: async () => { await delay(); return { runs: [{ id: 'vr-001', target_id: 'target-b2-main', started_at: new Date(Date.now() - 3600000).toISOString(), completed_at: new Date(Date.now() - 3540000).toISOString(), status: 'passed', files_checked: 847, files_passed: 847, databases_checked: 6, databases_passed: 6, trust_score: 94, error_message: null }], trust_score: 94, last_verified_at: new Date(Date.now() - 3600000).toISOString() }; },
+  triggerVerification: async () => { await delay(500); return { run_id: 'vr-demo-' + Date.now(), status: 'started' }; },
 
   createEventSource: () => {
     // Return a fake EventSource-like object

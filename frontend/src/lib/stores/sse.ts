@@ -35,6 +35,9 @@ const SSE_EVENT_NAMES: SSEEventType[] = [
   'restore:progress',
   'restore:completed',
   'health:changed',
+  'verification:started',
+  'verification:completed',
+  'verification:failed',
   'notification',
   'log:entry',
 ];
@@ -64,6 +67,9 @@ function dispatchEvent(event: SSEEvent): void {
     if (event.type === 'discovery:progress') next.discoveryProgress = event.data;
     if (event.type === 'discovery:completed') next.discoveryCompleted = event.data;
     if (event.type === 'health:changed') next.healthChanged = event.data;
+    if (event.type === 'verification:started') next.verificationStarted = event.data;
+    if (event.type === 'verification:completed') next.verificationCompleted = event.data;
+    if (event.type === 'verification:failed') next.verificationFailed = event.data;
     return next;
   });
   const typeHandlers = handlers.get(event.type);

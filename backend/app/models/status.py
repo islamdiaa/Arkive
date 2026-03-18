@@ -42,5 +42,10 @@ class StatusResponse(BaseModel):
     # Health checks
     checks: dict = Field(default_factory=dict)
 
+    # Verification / Trust Score
+    trust_score: int = 0
+    last_verified_at: str | None = None
+    verification_status: dict | None = None
+
     # Coverage
     coverage: dict | None = None
