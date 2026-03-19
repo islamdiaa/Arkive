@@ -299,9 +299,19 @@ class VerifyEngine:
             latest = snapshots[-1]
             snapshot_id = latest.get("short_id", latest.get("id", "")[:8])
 
-            # List files in snapshot root
+            # List files in snapshot — try root first, then walk into subdirs
             entries = await self.backup_engine.ls(target, snapshot_id, "/")
             files = [e for e in entries if e.get("type") == "file"]
+            if not files:
+                # Root has only directories — pick a random subdir and list it
+                dirs = [e for e in entries if e.get("type") == "dir"]
+                for d in random.sample(dirs, min(len(dirs), 5)):  # nosec B311
+                    subpath = "/" + d["name"]
+                    sub_entries = await self.backup_engine.ls(target, snapshot_id, subpath)
+                    sub_files = [e for e in sub_entries if e.get("type") == "file"]
+                    if sub_files:
+                        files = sub_files
+                        break
             if not files:
                 return {"status": "skipped", "reason": "no_files_in_snapshot"}
 
