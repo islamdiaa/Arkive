@@ -309,6 +309,7 @@ class VerifyEngine:
 
             entries = await self.backup_engine.ls(target, snapshot_id, "/")
             files = [e for e in entries if _is_file(e)]
+            found_dir = ""  # parent path where files were found
             if not files:
                 # Root has only directories — walk into subdirs to find files
                 dirs = [e for e in entries if _is_dir(e)]
@@ -318,6 +319,7 @@ class VerifyEngine:
                     sub_files = [e for e in sub_entries if _is_file(e)]
                     if sub_files:
                         files = sub_files
+                        found_dir = subpath
                         break
                     # Try one more level deep
                     sub_dirs = [e for e in sub_entries if _is_dir(e)]
@@ -327,6 +329,7 @@ class VerifyEngine:
                         deep_files = [e for e in deep_entries if _is_file(e)]
                         if deep_files:
                             files = deep_files
+                            found_dir = deep_path
                             break
                     if files:
                         break
@@ -335,7 +338,7 @@ class VerifyEngine:
 
             # Non-security sampling for integrity check
             chosen = random.choice(files)  # nosec B311
-            file_path = "/" + chosen["name"]
+            file_path = found_dir + "/" + chosen["name"]
 
             # Restore to temp directory
             tmpdir = tempfile.mkdtemp(prefix="arkive-verify-")
