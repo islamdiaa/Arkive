@@ -207,8 +207,9 @@ async function mockRunDetailRoutes(page: Page, run: MockRun) {
 async function mockRunDetailError(page: Page) {
   await mockSetupComplete(page);
 
-  // Run detail endpoint returns 404
-  await page.route('**/api/jobs/runs/*', (route) => {
+  // Run detail and run logs endpoints return 404. '**' (not '*') so the
+  // /logs sub-path is matched too instead of reaching the real backend.
+  await page.route('**/api/jobs/runs/**', (route) => {
     const url = route.request().url();
     if (url.includes('/logs')) {
       return route.fulfill({

@@ -29,6 +29,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 PYTHON_BIN=""
 for candidate in \
+  "${ARKIVE_E2E_PYTHON:-}" \
   "${BACKEND_DIR}/.venv/bin/python" \
   "${REPO_ROOT}/.venv/bin/python" \
   "$(command -v python3)"; do

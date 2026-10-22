@@ -18,7 +18,10 @@ export default defineConfig({
   // Keep one worker to avoid cross-project lockout races.
   workers: 1,
   fullyParallel: false,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  // Outputs live under .playwright/ (gitignored). CI uploads the HTML report
+  // from .playwright/report on failure.
+  outputDir: '.playwright/test-results',
+  reporter: [['list'], ['html', { open: 'never', outputFolder: '.playwright/report' }]],
 
   use: {
     baseURL: 'http://127.0.0.1:5173',
@@ -108,7 +111,7 @@ export default defineConfig({
     {
       command: './tests/e2e/start-backend.sh',
       port: 8200,
-      reuseExistingServer: true,
+      reuseExistingServer: !process.env.CI,
       timeout: 45_000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -116,7 +119,7 @@ export default defineConfig({
     {
       command: './tests/e2e/start-frontend.sh',
       port: 5173,
-      reuseExistingServer: true,
+      reuseExistingServer: !process.env.CI,
       timeout: 45_000,
       stdout: 'pipe',
       stderr: 'pipe',

@@ -13,6 +13,19 @@ export async function mockSetupComplete(page: Page, apiKey = 'ark_test1234') {
       }),
     })
   );
+  // The layout opens the SSE stream with a short-lived token from
+  // POST /api/auth/sse-token. Answer it consistently with the mocked session:
+  // left to the real backend it returns 401, the app's global 401 handling
+  // sends the browser to /login, and /login bounces straight back because the
+  // mocked session says "authenticated" -- a redirect cycle that races (or
+  // never lets the page reach) the assertions.
+  await page.route('/api/auth/sse-token', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ token: 'e2e-sse-token' }),
+    })
+  );
 }
 
 /** Mock an empty dashboard state. */
@@ -73,5 +86,28 @@ export async function mockJobsList(page: Page) {
         total: 3,
       }),
     })
+  );
+}
+
+/**
+ * Keep demo mode (?demo=true) on the page a spec navigates to.
+ *
+ * Known app bug: in demo mode the API client serves mock data (including an
+ * authenticated session), but the SSE store still asks the real backend for
+ * POST /api/auth/sse-token. Without a backend session that is a 401, which the
+ * global 401 handler treats as an expired session and sends the browser to
+ * /login (dropping ?demo=true). Demo-mode specs stub the token so they test the
+ * page they opened; navigation.spec.ts keeps a test.fail() case reproducing it.
+ */
+export async function stubSseTokenForDemoMode(page: Page) {
+  await page.route('/api/auth/sse-token', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ token: 'e2e-sse-token' }),
+    })
+  );
+  await page.route('**/api/events/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
   );
 }

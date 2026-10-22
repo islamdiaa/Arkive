@@ -86,7 +86,16 @@ async function mockAllRoutes(page: Page) {
     })
   );
 
-  // Databases / containers
+  // Databases page (GET /api/databases)
+  await page.route('**/api/databases*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], databases: [], total: 0 }),
+    })
+  );
+
+  // Containers
   await page.route('**/api/containers*', (route) =>
     route.fulfill({
       status: 200,
