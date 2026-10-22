@@ -256,10 +256,22 @@ test.describe('Provider Forms — Setup Wizard Step 3', () => {
     await expect(page.getByText('rclone authorize')).toBeVisible();
   });
 
-  test('Google Drive Next enabled with token', async ({ page }) => {
+  // Setup mirrors the backend's provider validation (api/targets.py): a
+  // Google Drive target needs a client ID as well as the OAuth token.
+  test('Google Drive Next disabled with token but no client ID', async ({ page }) => {
     await navigateToStep3(page);
     await page.locator('button:has-text("Google Drive")').click();
 
+    await page.locator('#gdrive-token').fill('{"access_token":"ya29.example","token_type":"Bearer"}');
+
+    await expect(nextButton(page)).toBeDisabled();
+  });
+
+  test('Google Drive Next enabled with client ID and token', async ({ page }) => {
+    await navigateToStep3(page);
+    await page.locator('button:has-text("Google Drive")').click();
+
+    await page.locator('#gdrive-client-id').fill('123456789.apps.googleusercontent.com');
     await page.locator('#gdrive-token').fill('{"access_token":"ya29.example","token_type":"Bearer"}');
 
     await expect(nextButton(page)).toBeEnabled();
