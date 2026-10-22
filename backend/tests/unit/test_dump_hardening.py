@@ -1,6 +1,5 @@
 """DB dumper hardening: exit codes, truncation, naming collisions, cleanup."""
 
-import gzip
 import os
 import time
 from unittest.mock import MagicMock, patch
@@ -58,7 +57,9 @@ class TestLowLevelExecExitCode:
 
         assert result.status == "success"
         assert result.integrity_check == "ok"
-        with gzip.open(result.dump_path) as f:
+        # dump_compression defaults to "none": a plain .sql restic can deduplicate.
+        assert result.dump_path.endswith(".sql")
+        with open(result.dump_path, "rb") as f:
             assert f.read() == PG_OK
 
     def test_truncated_dump_with_zero_exit_is_failed(self, tmp_path):

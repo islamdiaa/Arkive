@@ -89,6 +89,7 @@ class TestVerificationNotification:
         config.db_path = str(db_path)
         config.config_dir = tmp_path
         config.dump_dir = tmp_path / "dumps"
+        config.restore_dir = tmp_path / "restores"
 
         from app.core.database import SCHEMA_SQL, MIGRATIONS
         from app.core.security import _load_fernet_from_dir, _reset_fernet

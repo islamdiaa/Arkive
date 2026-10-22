@@ -122,6 +122,14 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
         cache_logger_on_first_use=True,
     )
 
+    # uvicorn installs its own plain-text handlers (or the JSON ones from
+    # logging.json for the lines before startup); route everything through
+    # the root handlers so the console and arkive.log get the same JSON.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
+
     # Suppress noisy loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

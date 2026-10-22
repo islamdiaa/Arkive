@@ -45,6 +45,15 @@ RESTIC_EXIT_INCOMPLETE = 3
 EXCLUDE_MARKER = ".arkive-exclude"
 
 
+# restic host names that are really Docker container IDs (the hostname inside
+# a container), written before host names were resolved properly.
+_CONTAINER_ID_HOST_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+class ResticError(RuntimeError):
+    """A restic command failed (as opposed to returning an empty result)."""
+
+
 def _is_transient_error(stderr: str) -> bool:
     """Check if a restic error is likely transient and retryable."""
     lower = stderr.lower()
@@ -212,12 +221,7 @@ class BackupEngine:
             "restic", "backup", "-r", repo, "--json", "--retry-lock", RETRY_LOCK,
             "--exclude-caches", "--exclude-if-present", EXCLUDE_MARKER,
         ]
-        resolved_host = (hostname or "").strip()
-        if not resolved_host:
-            resolved_host = resolve_hostname(
-                settings={"server_name": await self._get_server_name()},
-                docker_client=self.docker_client,
-            )
+        resolved_host = (hostname or "").strip() or await self.current_hostname()
         if resolved_host:
             cmd.extend(["--host", resolved_host])
         if tags:
@@ -339,11 +343,19 @@ class BackupEngine:
                 "output": result.stdout[:500],
                 "error": result.stderr[:500] if result.returncode != 0 else None}
 
-    async def snapshots(self, target: dict) -> list[dict]:
-        """List snapshots for a target."""
+    async def current_hostname(self) -> str:
+        """Host name recorded in snapshots (stable across container re-creates)."""
+        return resolve_hostname(
+            settings={"server_name": await self._get_server_name()},
+            docker_client=self.docker_client,
+        )
+
+    async def list_snapshots(self, target: dict) -> list[dict]:
+        """List snapshots for a target; raises ResticError when restic fails,
+        so callers can tell an unreachable repository from an empty one."""
         password = await self._get_password()
         if not password:
-            return []
+            raise ResticError("No encryption password configured")
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
 
@@ -355,16 +367,63 @@ class BackupEngine:
             env=env, timeout=120,
         )
         if result.returncode != 0:
-            return []
+            raise ResticError(result.stderr.strip()[:500] or f"restic exited with {result.returncode}")
 
         try:
             snapshots = json.loads(result.stdout) or []
-            for snapshot in snapshots:
-                if isinstance(snapshot, dict):
-                    snapshot["size"] = _snapshot_size_bytes(snapshot)
-            return snapshots
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            raise ResticError(f"Unreadable restic output: {exc}") from exc
+        for snapshot in snapshots:
+            if isinstance(snapshot, dict):
+                snapshot["size"] = _snapshot_size_bytes(snapshot)
+        return snapshots
+
+    async def snapshots(self, target: dict) -> list[dict]:
+        """List snapshots for a target ([] when the listing fails)."""
+        try:
+            return await self.list_snapshots(target)
+        except ResticError:
             return []
+
+    async def normalize_legacy_hostnames(self, target: dict, marker_path: str) -> dict:
+        """Re-label Arkive snapshots recorded under a container ID as this host.
+
+        Older versions recorded the container hostname (its ID, which changes on
+        every re-create), so each re-create started a new restic retention
+        group and old groups were never thinned out. Only snapshots that include
+        ``marker_path`` (Arkive's dump directory) are touched; the data is
+        unchanged, only snapshot metadata is rewritten.
+        """
+        host = (await self.current_hostname()).strip()
+        if not host or _CONTAINER_ID_HOST_RE.match(host):
+            return {"status": "skipped", "rewritten": 0, "reason": "current host name is not stable"}
+        try:
+            snapshots = await self.list_snapshots(target)
+        except ResticError as exc:
+            return {"status": "failed", "rewritten": 0, "error": str(exc)}
+        legacy = [
+            snap["id"] for snap in snapshots
+            if isinstance(snap, dict) and snap.get("id")
+            and _CONTAINER_ID_HOST_RE.match(str(snap.get("hostname") or ""))
+            and snap.get("hostname") != host
+            and marker_path in (snap.get("paths") or [])
+        ]
+        if not legacy:
+            return {"status": "success", "rewritten": 0}
+
+        password = await self._get_password()
+        env = self._get_restic_env(password)
+        if target.get("type") != "local":
+            env["RCLONE_CONFIG"] = str(self.config.rclone_config)
+        result = await run_command(
+            ["restic", "rewrite", "-r", self._repo_path(target), "--retry-lock", RETRY_LOCK,
+             "--new-host", host, "--forget", "--", *legacy],
+            env=env, timeout=3600,
+        )
+        if result.returncode != 0:
+            return {"status": "failed", "rewritten": 0, "error": result.stderr.strip()[:500]}
+        logger.info("Re-labelled %d snapshots from container-ID host names to %s", len(legacy), host)
+        return {"status": "success", "rewritten": len(legacy), "host": host}
 
     async def restore(self, target: dict, snapshot_id: str,
                       paths: list[str] | None = None,

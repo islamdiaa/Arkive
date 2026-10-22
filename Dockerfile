@@ -100,4 +100,4 @@ USER arkive
 
 # Entry point with tini for proper signal handling
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8200", "--workers", "1", "--no-server-header"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8200", "--workers", "1", "--no-server-header", "--log-config", "/app/backend/logging.json"]

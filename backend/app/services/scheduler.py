@@ -13,8 +13,10 @@ from app.core.activity import log_activity
 from app.services.discovery_persistence import persist_discovery_results
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.freshness import describe_stale_job, evaluate_freshness, ping_heartbeat
 from app.services.lock_manager import BackupLockManager
 from app.services.retention import read_retention_settings
+from app.services.settings_store import DEFAULTS, get_bool_setting, get_setting
 
 logger = logging.getLogger("arkive.scheduler")
 
@@ -25,6 +27,11 @@ SYSTEM_JOB_HEALTH = "system_health_check"
 SYSTEM_JOB_LOG_PRUNE = "system_activity_log_prune"
 SYSTEM_JOB_INTEGRITY_CHECK = "system_integrity_check"
 SYSTEM_JOB_INTEGRITY_VERIFY = "system_integrity_verify"
+SYSTEM_JOB_FRESHNESS = "system_backup_freshness"
+SYSTEM_JOB_RESTORE_DRILL = "system_restore_drill"
+
+# Repeat the "backups overdue" alert this often while a job stays stale.
+STALE_REMINDER_SECONDS = 24 * 3600
 
 # Target status values written by the health check and the targets API.
 _HEALTHY_STATES = {"online", "ok", "healthy"}
@@ -35,7 +42,7 @@ class ArkiveScheduler:
 
     def __init__(self, orchestrator, config: ArkiveConfig,
                  discovery=None, backup_engine=None, cloud_manager=None, notifier=None,
-                 verify_engine=None, event_bus=None):
+                 verify_engine=None, event_bus=None, restore_drill=None):
         self.orchestrator = orchestrator
         self.config = config
         self.discovery = discovery
@@ -44,6 +51,7 @@ class ArkiveScheduler:
         self.event_bus = event_bus
         self.cloud_manager = cloud_manager
         self.notifier = notifier
+        self.restore_drill = restore_drill
         self.scheduler = AsyncIOScheduler(
             job_defaults={
                 'misfire_grace_time': 3600,
@@ -54,6 +62,7 @@ class ArkiveScheduler:
         self._job_map: dict[str, str] = {}  # backup_job_id -> apscheduler_job_id
         self._background_tasks: set[asyncio.Task] = set()
         self._target_status: dict[str, str] = {}  # last health-check status per target
+        self._stale_alerted: dict[str, float] = {}  # job_id -> monotonic time of last stale alert
 
     async def start(self) -> None:
         """Load all enabled jobs from DB, register system jobs, and start scheduler."""
@@ -68,6 +77,10 @@ class ArkiveScheduler:
             self._add_job(dict(job))
 
         self._register_system_jobs()
+        try:
+            await self.reload_restore_drill_job()
+        except Exception as e:
+            logger.error("Could not schedule restore drills: %s", e)
 
         # Add error listener so job exceptions are always logged
         # APScheduler uses mask= parameter; EVENT_JOB_ERROR = 8192
@@ -181,6 +194,77 @@ class ArkiveScheduler:
             )
             logger.info("Registered system job: Integrity Verify (weekly Sunday 6 AM)")
 
+        # 7. Backup freshness + heartbeat — every 15 minutes
+        if not self.scheduler.get_job(SYSTEM_JOB_FRESHNESS):
+            self.scheduler.add_job(
+                self._run_freshness_check,
+                trigger=IntervalTrigger(minutes=15),
+                id=SYSTEM_JOB_FRESHNESS,
+                replace_existing=True,
+                name="Backup Freshness",
+            )
+            logger.info("Registered system job: Backup Freshness (every 15m)")
+
+    async def _run_freshness_check(self) -> None:
+        """System job: alert on jobs without a recent good backup; send the heartbeat
+        while everything is healthy.
+
+        The heartbeat is a dead man's switch: an external monitor alerts when the
+        pings stop, which covers Arkive itself being down as well as failing or
+        overdue backups.
+        """
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                freshness = await evaluate_freshness(db)
+                heartbeat_url = (await get_setting(db, "heartbeat_url")).strip()
+        except Exception as e:
+            logger.error("System job: freshness check failed: %s", e)
+            return
+
+        now = time.monotonic()
+        stale_ids = {job["job_id"] for job in freshness["stale_jobs"]}
+        for job in freshness["stale_jobs"]:
+            last_alert = self._stale_alerted.get(job["job_id"])
+            if last_alert is not None and now - last_alert < STALE_REMINDER_SECONDS:
+                continue
+            first_alert = last_alert is None
+            self._stale_alerted[job["job_id"]] = now
+            message = describe_stale_job(job)
+            logger.warning("Backup overdue: %s", message)
+            if first_alert:
+                try:
+                    async with aiosqlite.connect(self.config.db_path) as db:
+                        await log_activity(db, "backup", "stale", message, job, severity="warning")
+                except Exception as e:
+                    logger.warning("Could not record stale backup activity: %s", e)
+            if self.notifier:
+                try:
+                    await self.notifier.send("backup.stale", "Backups Overdue", message,
+                                             severity="error", job_id=job["job_id"])
+                except Exception as e:
+                    logger.warning("Failed to send stale backup notification: %s", e)
+
+        for job_id in list(self._stale_alerted):
+            if job_id in stale_ids:
+                continue
+            del self._stale_alerted[job_id]
+            name = next((j["job_name"] for j in freshness["jobs"] if j["job_id"] == job_id), job_id)
+            try:
+                async with aiosqlite.connect(self.config.db_path) as db:
+                    await log_activity(db, "backup", "fresh",
+                                       f"{name} is producing good backups again", {"job_id": job_id})
+            except Exception as e:
+                logger.warning("Could not record backup recovery activity: %s", e)
+
+        if heartbeat_url and freshness["healthy"]:
+            result = await ping_heartbeat(heartbeat_url)
+            if result["ok"]:
+                logger.debug("Heartbeat sent")
+            else:
+                logger.warning("Heartbeat ping failed: %s", result["error"])
+        elif heartbeat_url:
+            logger.info("Heartbeat withheld: backups need attention")
+
     async def _run_discovery_scan(self) -> None:
         """System job: run container discovery scan."""
         if not self.discovery:
@@ -247,6 +331,16 @@ class ArkiveScheduler:
                         target.get("config", "{}"),
                         str(self.config.config_dir),
                     )
+                    # Merge snapshot groups split by old container-ID host names
+                    # first, or retention never thins them out.
+                    try:
+                        relabel = await self.backup_engine.normalize_legacy_hostnames(
+                            target, str(self.config.dump_dir))
+                        if relabel.get("status") == "failed":
+                            logger.warning("Could not re-label legacy snapshots on target %s: %s",
+                                           target["id"], relabel.get("error"))
+                    except Exception as e:
+                        logger.warning("Legacy snapshot re-label skipped for target %s: %s", target["id"], e)
                     result = await self.backup_engine.forget(
                         target,
                         keep_daily=keep_daily,
@@ -368,7 +462,7 @@ class ArkiveScheduler:
                     )
                 if went_bad and self.notifier:
                     try:
-                        await self.notifier.send("target.unreachable", "Storage Target Unreachable",
+                        await self.notifier.send("target.error", "Storage Target Unreachable",
                                                  message, severity="error")
                     except Exception as notify_err:
                         logger.warning("Failed to send target health notification: %s", notify_err)
@@ -450,7 +544,7 @@ class ArkiveScheduler:
                     if self.notifier:
                         try:
                             await self.notifier.send(
-                                "integrity.failed",
+                                "verification.failed",
                                 "Integrity Check Failed",
                                 f"Repository {target_name} failed integrity check: {error_msg}",
                                 "error",
@@ -531,6 +625,55 @@ class ArkiveScheduler:
             )
         except Exception as e:
             logger.error("System job: integrity verify failed: %s", e)
+
+    # ---- Restore drills ----
+
+    async def reload_restore_drill_job(self) -> None:
+        """(Re-)register the restore drill system job from the current settings.
+
+        Called at start and by the settings API when restore_drill_enabled or
+        restore_drill_schedule change: adds, replaces or removes the job.
+        """
+        async with aiosqlite.connect(self.config.db_path) as db:
+            enabled = await get_bool_setting(db, "restore_drill_enabled")
+            schedule = (await get_setting(db, "restore_drill_schedule")).strip()
+
+        if not enabled or self.restore_drill is None:
+            if self.scheduler.get_job(SYSTEM_JOB_RESTORE_DRILL):
+                self.scheduler.remove_job(SYSTEM_JOB_RESTORE_DRILL)
+                logger.info("Removed system job: Restore Drill")
+            return
+        try:
+            trigger = CronTrigger.from_crontab(schedule)
+        except ValueError:
+            logger.error("Invalid restore_drill_schedule %r; using default %r",
+                         schedule, DEFAULTS["restore_drill_schedule"])
+            schedule = DEFAULTS["restore_drill_schedule"]
+            trigger = CronTrigger.from_crontab(schedule)
+        # Remove first: before start() replace_existing doesn't dedupe the pending queue.
+        if self.scheduler.get_job(SYSTEM_JOB_RESTORE_DRILL):
+            self.scheduler.remove_job(SYSTEM_JOB_RESTORE_DRILL)
+        self.scheduler.add_job(
+            self._run_restore_drill,
+            trigger=trigger,
+            id=SYSTEM_JOB_RESTORE_DRILL,
+            replace_existing=True,
+            name="Restore Drill",
+        )
+        logger.info("Registered system job: Restore Drill (%s)", schedule)
+
+    async def _run_restore_drill(self) -> None:
+        """System job: restore database dumps from a snapshot and load them.
+
+        The engine waits for running backups/restores itself and never raises
+        into the scheduler.
+        """
+        if not self.restore_drill:
+            return
+        try:
+            await self.restore_drill.run_drill(trigger="scheduled")
+        except Exception as e:
+            logger.error("System job: restore drill failed: %s", e)
 
     # ---- Backup lock coordination for system jobs ----
 

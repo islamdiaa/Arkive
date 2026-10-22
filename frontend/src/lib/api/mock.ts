@@ -2,6 +2,17 @@
  * Mock API client for demo/preview mode.
  * Returns realistic demo data so the UI can render without the FastAPI backend.
  */
+import { fallbackEventCatalog } from '$lib/utils/notification-events';
+
+const DEMO_LAST_DRILL = {
+  id: 'drill-demo-1',
+  status: 'passed',
+  started_at: new Date(Date.now() - 2 * 86400000).toISOString(),
+  completed_at: new Date(Date.now() - 2 * 86400000 + 184000).toISOString(),
+  databases_tested: 3,
+  databases_passed: 3,
+  databases_failed: 0,
+};
 
 const DEMO_STATUS = {
   version: '0.1.0',
@@ -50,6 +61,13 @@ const DEMO_STATUS = {
     trust_score: 94,
     verification_passing: true,
   },
+  backup_freshness: {
+    stale: false,
+    checked_at: new Date(Date.now() - 300000).toISOString(),
+    stale_jobs: [] as Array<{ job_id: string; job_name: string; last_good_at: string | null; threshold_hours: number | null; overdue_hours: number | null }>,
+  },
+  recovery_kit_confirmed: false,
+  last_drill: DEMO_LAST_DRILL as typeof DEMO_LAST_DRILL | null,
 };
 
 const DEMO_JOBS = {
@@ -232,6 +250,22 @@ const DEMO_CONTAINERS = {
 
 const DEMO_SETTINGS = {
   encryption_password_set: true,
+  api_key_set: true,
+  server_name: 'tower',
+  timezone: 'UTC',
+  retention_days: 30,
+  keep_daily: 7,
+  keep_weekly: 4,
+  keep_monthly: 6,
+  log_level: 'INFO',
+  heartbeat_url: '',
+  stale_backup_hours: 0,
+  dump_compression: 'none',
+  restore_drill_enabled: true,
+  restore_drill_schedule: '0 7 * * 0',
+  restore_drill_max_databases: 3,
+  restore_drill_max_dump_mb: 2048,
+  recovery_kit_confirmed_at: null as string | null,
   schedule: '0 3 * * *',
   retention: { keep_daily: 7, keep_weekly: 4, keep_monthly: 6 },
   notifications_enabled: true,
@@ -242,9 +276,102 @@ const DEMO_SETTINGS = {
 
 const DEMO_CHANNELS = {
   channels: [
-    { id: 'ch-discord', type: 'discord', name: 'Homelab Alerts', enabled: true, webhook_url: 'https://discord.com/api/webhooks/...', last_sent: new Date(Date.now() - 720000).toISOString() },
+    { id: 'ch-discord', type: 'discord', name: 'Homelab Alerts', enabled: true, events: ['backup.failed', 'backup.partial', 'backup.stale', 'drill.failed', 'target.error'], webhook_url: 'https://discord.com/api/webhooks/...', last_sent: new Date(Date.now() - 720000).toISOString() },
   ],
 };
+
+const DEMO_DRILLS = {
+  items: [
+    {
+      ...DEMO_LAST_DRILL,
+      trigger: 'scheduled',
+      target_id: 'target-b2-main',
+      target_name: 'Backblaze B2 — Primary',
+      snapshot_id: 'abc12345',
+      duration_seconds: 184,
+      error_message: null as string | null,
+    },
+    {
+      id: 'drill-demo-0',
+      trigger: 'manual',
+      status: 'failed',
+      target_id: 'target-b2-main',
+      target_name: 'Backblaze B2 — Primary',
+      snapshot_id: 'def67890',
+      started_at: new Date(Date.now() - 9 * 86400000).toISOString(),
+      completed_at: new Date(Date.now() - 9 * 86400000 + 212000).toISOString(),
+      duration_seconds: 212,
+      databases_tested: 3,
+      databases_passed: 2,
+      databases_failed: 1,
+      error_message: '1 of 3 databases failed to restore' as string | null,
+    },
+  ],
+  total: 2,
+};
+
+const DEMO_DRILL_RESULTS: Record<string, any[]> = {
+  'drill-demo-1': [
+    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', dump_file: 'immich-postgres_immich_20261020.sql', dump_size_bytes: 214748364, status: 'passed', detail: 'Restored into postgres:14 — 42 tables', duration_seconds: 96.4 },
+    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', dump_file: 'vaultwarden-db_vaultwarden_20261020.sql', dump_size_bytes: 5242880, status: 'passed', detail: 'Restored into postgres:16-alpine — 31 tables', duration_seconds: 12.1 },
+    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', dump_file: 'nextcloud-mariadb_nextcloud_20261020.sql', dump_size_bytes: 104857600, status: 'passed', detail: 'Restored into mariadb:11 — 108 tables', duration_seconds: 63.0 },
+  ],
+  'drill-demo-0': [
+    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', dump_file: 'immich-postgres_immich_20261013.sql', dump_size_bytes: 209715200, status: 'passed', detail: 'Restored into postgres:14 — 42 tables', duration_seconds: 94.2 },
+    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', dump_file: 'paperless-db_paperless_20261013.sql', dump_size_bytes: 1048576, status: 'failed', detail: 'psql: ERROR: relation "documents_document" does not exist', duration_seconds: 8.7 },
+    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', dump_file: 'vaultwarden-db_vaultwarden_20261013.sql', dump_size_bytes: 5242880, status: 'passed', detail: 'Restored into postgres:16-alpine — 31 tables', duration_seconds: 11.8 },
+  ],
+};
+
+function _mockDrillDetail(id: string): any {
+  const drill = DEMO_DRILLS.items.find(d => d.id === id) || DEMO_DRILLS.items[0];
+  return { ...drill, results: DEMO_DRILL_RESULTS[drill.id] ?? [] };
+}
+
+function _mockRecoveryKit(): any {
+  const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const targets = [
+    { id: 'target-b2-main', name: 'Backblaze B2 — Primary', type: 'b2', repository: 'b2:arkive-tower-backups:arkive', host_path: null, details: { bucket: 'arkive-tower-backups' } },
+    { id: 'target-local-usb', name: 'Local — USB disk', type: 'local', repository: '/backups/arkive', host_path: '/mnt/disks/usb-backup/arkive', details: { path: '/backups/arkive' } },
+  ];
+  const instructions = [
+    'Install restic (https://restic.net) on any machine.',
+    'Export RESTIC_PASSWORD with the encryption password below.',
+    'For each repository, run: restic -r <repository> snapshots',
+    'Restore with: restic -r <repository> restore latest --target /restore',
+    'Database dumps are inside the snapshot under /config/dumps; load them with the database\'s own client.',
+  ];
+  const password = 'demo-password-not-real';
+  const keyfile = 'demo-keyfile-not-real';
+  const text = [
+    'ARKIVE RECOVERY KIT',
+    `Generated: ${generatedAt}`,
+    'Server: tower',
+    'Arkive version: 0.4.0 (demo)',
+    '',
+    'KEEP THIS FILE SECRET. Anyone with it can read your backups.',
+    '',
+    `Encryption password: ${password}`,
+    `Config keyfile: ${keyfile}`,
+    '',
+    'Repositories:',
+    ...targets.map(t => `  - ${t.name} (${t.type}): ${t.repository}${t.host_path ? ` [host path: ${t.host_path}]` : ''}`),
+    '',
+    'How to restore:',
+    ...instructions.map((step, i) => `  ${i + 1}. ${step}`),
+    '',
+  ].join('\n');
+  return {
+    generated_at: generatedAt,
+    server_name: 'tower',
+    arkive_version: '0.4.0',
+    encryption_password: password,
+    config_keyfile: keyfile,
+    targets,
+    instructions,
+    text,
+  };
+}
 
 const DEMO_DIRECTORIES = {
   directories: [
@@ -310,6 +437,9 @@ async function _mockGet(path: string): Promise<any> {
   }
   if (clean === '/databases') return DEMO_DATABASES;
   if (clean === '/notifications') return DEMO_CHANNELS;
+  if (clean === '/notifications/events') return fallbackEventCatalog();
+  if (clean === '/drills') return DEMO_DRILLS;
+  if (clean.startsWith('/drills/')) return _mockDrillDetail(decodeURIComponent(clean.split('/')[2] ?? ''));
   if (clean === '/settings') return DEMO_SETTINGS;
   if (clean === '/activity') return DEMO_ACTIVITY;
   if (clean === '/storage') return DEMO_STORAGE;
@@ -346,6 +476,19 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean === '/auth/setup') return { api_key: 'demo-api-key-12345', target_created: true, target_errors: [] };
   if (clean === '/auth/rotate-key') return { api_key: 'demo-new-key-67890' };
   if (clean === '/jobs') return { ...data, id: `job-new-${Date.now()}` };
+  if (clean === '/drills/run') return { drill_id: `drill-demo-${Date.now()}`, status: 'running' };
+  if (clean === '/settings/recovery-kit') return _mockRecoveryKit();
+  if (clean === '/settings/recovery-kit/confirm') {
+    const confirmedAt = new Date().toISOString();
+    DEMO_SETTINGS.recovery_kit_confirmed_at = confirmedAt;
+    DEMO_STATUS.recovery_kit_confirmed = true;
+    return { confirmed_at: confirmedAt };
+  }
+  if (clean === '/settings/heartbeat/test') {
+    return (data?.url || DEMO_SETTINGS.heartbeat_url)
+      ? { ok: true, status_code: 200, error: null }
+      : { ok: false, status_code: null, error: 'No heartbeat URL configured' };
+  }
   if (clean.endsWith('/run')) return { run_id: `run-demo-${Date.now()}` };
   if (clean === '/targets') return { ...data, id: `target-new-${Date.now()}` };
   if (clean.startsWith('/notifications/') && clean.endsWith('/test')) return { status: 'ok' };
@@ -373,8 +516,29 @@ function _mockRestore(data?: any): any {
   return { restore_id: `restore-${Date.now()}`, status: 'success', snapshot_id: data?.snapshot_id, message: '' };
 }
 
-async function _mockPut(_path: string, data?: any): Promise<any> {
+async function _mockPut(path: string, data?: any): Promise<any> {
+  if (_stripQuery(path) === '/settings' && data && typeof data === 'object') {
+    const values = data.settings && typeof data.settings === 'object' ? data.settings : data;
+    _applyDemoSettings(values);
+  }
   return data ?? { success: true };
+}
+
+/** Keep demo-mode settings edits visible after a reload of the page data. */
+function _applyDemoSettings(values: Record<string, unknown>): void {
+  const target = DEMO_SETTINGS as Record<string, unknown>;
+  for (const [key, raw] of Object.entries(values)) {
+    if (!(key in target)) continue;
+    const current = target[key];
+    if (typeof current === 'number') {
+      const n = Number(raw);
+      if (Number.isFinite(n)) target[key] = n;
+    } else if (typeof current === 'boolean') {
+      target[key] = raw === true || raw === 'true';
+    } else {
+      target[key] = raw == null ? '' : String(raw);
+    }
+  }
 }
 
 async function _mockDelete(_path: string): Promise<any> {
@@ -419,7 +583,7 @@ export const mockApi = {
   downloadRestorePlan: () => '#',
 
   getSettings: async () => { await delay(); return DEMO_SETTINGS; },
-  updateSettings: async (data: any) => { await delay(); return { ...DEMO_SETTINGS, ...data }; },
+  updateSettings: async (data: any) => { await delay(); if (data && typeof data === 'object') _applyDemoSettings(data.settings && typeof data.settings === 'object' ? data.settings : data); return { ...DEMO_SETTINGS, ...data }; },
 
   listChannels: async () => { await delay(); return DEMO_CHANNELS; },
   createChannel: async (data: any) => { await delay(500); return { ...data, id: 'ch-new-' + Date.now() }; },

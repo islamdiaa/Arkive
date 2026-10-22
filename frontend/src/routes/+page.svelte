@@ -8,6 +8,9 @@
 	import TrustScoreBadge from '$lib/components/shared/TrustScoreBadge.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import CommandStrip from '$lib/components/dashboard/CommandStrip.svelte';
+	import StaleBackupsAlert from '$lib/components/dashboard/StaleBackupsAlert.svelte';
+	import RecoveryKitBanner from '$lib/components/dashboard/RecoveryKitBanner.svelte';
+	import RestoreDrillsPanel from '$lib/components/dashboard/RestoreDrillsPanel.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
 	import { api, ApiError } from '$lib/api/client';
@@ -16,7 +19,8 @@
 	import { formatBytes } from '$lib/utils/format';
 	import { timeAgo } from '$lib/utils/date';
 	import { describeCron } from '$lib/utils/schedule';
-	import { healthDisplay, isConflictTerminalEvent, resolveTrustScore } from '$lib/utils/run-status';
+	import { dashboardHealth, healthDisplay, isConflictTerminalEvent, resolveTrustScore } from '$lib/utils/run-status';
+	import { drillCountsLabel, drillTimestamp } from '$lib/utils/drills';
 	import { jobTypeLabel, pickPrimaryJob } from '$lib/utils/job-types';
 	import { onMount, onDestroy } from 'svelte';
 
@@ -162,8 +166,10 @@
 	};
 
 	$: hostname = data?.status?.hostname ?? '';
-	$: resolvedStatus = data?.status?.health ?? 'unknown';
-	$: system = healthDisplay(data?.status?.health);
+	$: resolvedStatus = dashboardHealth(data?.status);
+	$: system = healthDisplay(resolvedStatus);
+	$: lastDrill = data?.status?.last_drill ?? null;
+	$: lastDrillAt = drillTimestamp(lastDrill);
 	$: coverageWarnings = data?.status?.coverage?.warnings ?? [];
 	$: lastBackupValue = getLastBackupTime(data?.status)
 		? timeAgo(getLastBackupTime(data?.status) ?? '')
@@ -191,6 +197,9 @@
 			onBackup={handleBackup}
 			backupDisabled={$backupRunning}
 		/>
+		<StaleBackupsAlert freshness={data?.status?.backup_freshness} />
+		<!-- The unauthenticated minimal status payload defaults this to false; ignore it there. -->
+		<RecoveryKitBanner confirmed={data?.status?.authenticated === false ? undefined : data?.status?.recovery_kit_confirmed} />
 	{/if}
 
 	{#if loading}
@@ -250,6 +259,20 @@
 							{verifying ? 'Verifying...' : 'Verify Now'}
 						</button>
 					</div>
+				</div>
+				<div class="mt-3 pt-3 border-t border-border-muted" data-testid="last-drill">
+					<p class="text-[11px] uppercase tracking-wider text-text-muted mb-1">Last restore drill</p>
+					{#if lastDrill}
+						<div class="flex flex-wrap items-center gap-2 text-xs">
+							<StatusBadge status={lastDrill.status} size="sm" />
+							<span class="text-text-secondary">{lastDrillAt ? timeAgo(lastDrillAt) : 'time unknown'}</span>
+						</div>
+						{#if lastDrill.status !== 'running'}
+							<p class="text-[11px] text-text-muted mt-1">{drillCountsLabel(lastDrill)}</p>
+						{/if}
+					{:else}
+						<p class="text-xs text-text-secondary">No drill yet</p>
+					{/if}
 				</div>
 			</div>
 		</div>
@@ -361,5 +384,8 @@
 				{/if}
 			</div>
 		</div>
+
+		<!-- Restore drills: proof that database dumps actually restore -->
+		<RestoreDrillsPanel onChange={refreshDashboard} />
 	{/if}
 </main>

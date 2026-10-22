@@ -14,6 +14,7 @@ from jinja2 import Environment, select_autoescape
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.db_dumper import GLOBALS_DB_NAME, safe_name
 from app.services.repo_paths import build_repo_path
 
 logger = logging.getLogger("arkive.restore_plan")
@@ -180,6 +181,7 @@ class RestorePlanGenerator:
 
         # Build database restore commands
         databases = []
+        seen_databases: set[tuple] = set()
         for c in containers:
             dbs = json.loads(c.get("databases", "[]")) if isinstance(c.get("databases"), str) else c.get("databases", [])
             for d in dbs:
@@ -187,6 +189,23 @@ class RestorePlanGenerator:
                     db_type = d.get("db_type", "")
                     db_name = d.get("db_name", "")
                     container_name = d.get("container_name", c.get("name", ""))
+                    # A companion DB is listed under both the app container and
+                    # the DB container; describe it once.
+                    key = (container_name, db_type, db_name, d.get("host_path"))
+                    if key in seen_databases:
+                        continue
+                    seen_databases.add(key)
+                    if db_type == "postgres" and (container_name, "globals") not in seen_databases:
+                        # Roles first, so the apps' login roles exist before their databases.
+                        seen_databases.add((container_name, "globals"))
+                        globals_cmd, globals_full = self._get_globals_restore_commands(container_name)
+                        databases.append({
+                            "container_name": container_name,
+                            "db_type": db_type,
+                            "db_name": "roles (pg_dumpall --globals-only)",
+                            "restore_cmd": globals_cmd,
+                            "full_restore_cmd": globals_full,
+                        })
                     restore_cmd, full_cmd = self._get_restore_commands(db_type, db_name, container_name)
                     databases.append({
                         "container_name": container_name,
@@ -267,24 +286,51 @@ class RestorePlanGenerator:
         """Return the operator-facing restic repository path for a target."""
         return build_repo_path(target)
 
+    @staticmethod
+    def _dump_glob(container: str, db_name: str, ext: str) -> str:
+        """Glob for a dump file as DBDumper names it: <container>_<db>_<UTC timestamp><ext>."""
+        return f"{safe_name(container)}_{safe_name(db_name)}_[0-9]*{ext}"
+
+    @classmethod
+    def _plain_or_gzip(cls, container: str, db_name: str, ext: str, restore: str) -> str:
+        """Restore instructions for a dump written plain (``ext``) or gzipped (``ext``.gz),
+        depending on the dump_compression setting when it was taken."""
+        plain = cls._dump_glob(container, db_name, ext)
+        return (
+            f"# plain dump ({ext}):\n"
+            f"{restore} < {plain}\n"
+            f"# gzip dump ({ext}.gz):\n"
+            f"gunzip -c {plain}.gz | {restore}"
+        )
+
+    def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:
+        """Restore commands for a Postgres cluster's roles (run before the database dumps)."""
+        short = "psql -U postgres -d postgres < globals.sql  (restore before the databases)"
+        restore = f"docker exec -i {container} psql -U postgres -d postgres"
+        return short, self._plain_or_gzip(container, GLOBALS_DB_NAME, ".sql", restore)
+
     def _get_restore_commands(self, db_type: str, db_name: str, container: str) -> tuple[str, str]:
-        """Get restore commands for a database type."""
+        """Get restore commands for a database type.
+
+        Logical dumps are plain (``.sql``, ``.archive``) or gzipped (``.gz``)
+        depending on the dump_compression setting; both forms are shown.
+        """
         if db_type == "postgres":
-            short = "psql -U postgres < dump.sql"
-            full = f"gunzip -c {container}_{db_name}_*.sql.gz | docker exec -i {container} psql -U postgres"
-            return short, full
+            short = "psql -U postgres -d postgres < dump.sql  (gzip: gunzip -c dump.sql.gz | psql ...)"
+            restore = f"docker exec -i {container} psql -U postgres -d postgres"
+            return short, self._plain_or_gzip(container, db_name, ".sql", restore)
         elif db_type == "sqlite":
             short = f"sqlite3 /path/to/{db_name} '.restore backup.sqlite3'"
             full = f"cp {container}_{db_name}_*.sqlite3 /mnt/user/appdata/{container}/data/{db_name}"
             return short, full
         elif db_type in ("mariadb", "mysql"):
-            short = "mysql -u root < dump.sql"
-            full = f"gunzip -c {container}_{db_name}_*.sql.gz | docker exec -i {container} mysql -u root"
-            return short, full
+            short = "mysql -u root < dump.sql  (gzip: gunzip -c dump.sql.gz | mysql -u root)"
+            restore = f"docker exec -i {container} mysql -u root"
+            return short, self._plain_or_gzip(container, db_name, ".sql", restore)
         elif db_type == "mongodb":
-            short = "mongorestore --archive < dump.archive"
-            full = f"gunzip -c {container}_{db_name}_*.archive.gz | docker exec -i {container} mongorestore --archive"
-            return short, full
+            short = "mongorestore --archive < dump.archive  (gzip: gunzip -c dump.archive.gz | mongorestore --archive)"
+            restore = f"docker exec -i {container} mongorestore --archive"
+            return short, self._plain_or_gzip(container, db_name, ".archive", restore)
         elif db_type == "redis":
             short = "cp dump.rdb /data/dump.rdb && redis-cli SHUTDOWN NOSAVE"
             full = f"cp {container}_redis_*.rdb /mnt/user/appdata/{container}/data/dump.rdb"

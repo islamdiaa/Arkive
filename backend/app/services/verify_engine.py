@@ -3,7 +3,7 @@
 Runs a multi-step verification pipeline per storage target:
 1. restic check (repository consistency)
 2. Random file restore + SHA-256 verification
-3. Database dump validation (SQLite PRAGMA integrity_check / pg_restore --list)
+3. Database dump validation (SQLite PRAGMA integrity_check / SQL dump completion trailer)
 4. Trust score computation (weighted average)
 
 Results are stored in the verification_runs table for historical tracking.
@@ -26,6 +26,12 @@ import aiosqlite
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.db_dumper import (
+    MYSQL_DUMP_TRAILER,
+    PG_DUMP_TRAILER,
+    PG_DUMPALL_TRAILER,
+    is_arkive_dump_name,
+)
 from app.services.lock_manager import BackupLockManager
 from app.utils.subprocess_runner import run_command
 
@@ -39,6 +45,9 @@ WEIGHT_DB_INTEGRITY = 0.30
 # Restore-test files above this size are skipped: a random multi-GB pick would
 # fill the disk and tie up a worker hashing it.
 MAX_RESTORE_TEST_BYTES = 256 * 1024 * 1024
+
+# Dump tools write their completion trailer within the last few KB.
+_SQL_TAIL_BYTES = 4096
 
 # Recency thresholds (hours since last successful backup)
 RECENCY_EXCELLENT = 24      # < 24h = 100%
@@ -451,7 +460,9 @@ class VerifyEngine:
         """Validate database dump files in the dump directory.
 
         - SQLite: sqlite3 <file> 'PRAGMA integrity_check'
-        - Postgres: pg_restore --list <file>
+        - SQL dumps (.sql / .sql.gz from pg_dump, pg_dumpall, mysqldump): the
+          tool's completion trailer must end the (uncompressed) stream
+        - other Postgres dumps (.dump / .pgdump, foreign .sql): pg_restore --list
         """
         dump_dir = str(self.config.dump_dir)
         if not os.path.isdir(dump_dir):
@@ -473,7 +484,18 @@ class VerifyEngine:
                 if check["status"] == "success":
                     passed += 1
 
-            elif fname.endswith(".sql") or fname.endswith(".dump") or fname.endswith(".pgdump"):
+            elif fname.endswith(".sql"):
+                # Plain logical dumps written by DBDumper (dump_compression=none).
+                total += 1
+                check = await asyncio.to_thread(self._check_plain_sql_dump, fpath)
+                if check is None:
+                    # Not an Arkive dump and no known trailer: structural check.
+                    check = await self._check_postgres_dump(fpath)
+                results.append(check)
+                if check["status"] == "success":
+                    passed += 1
+
+            elif fname.endswith(".dump") or fname.endswith(".pgdump"):
                 total += 1
                 check = await self._check_postgres_dump(fpath)
                 results.append(check)
@@ -527,7 +549,16 @@ class VerifyEngine:
             }
 
     @staticmethod
-    def _check_gzip_sql_dump(fpath: str) -> dict:
+    def _trailer_check(name: str, tail: bytes) -> dict | None:
+        """Success result when ``tail`` ends a complete pg_dump/pg_dumpall/mysqldump stream."""
+        if PG_DUMP_TRAILER in tail or PG_DUMPALL_TRAILER in tail:
+            return {"file": name, "type": "postgres", "status": "success", "output": "Dump trailer present"}
+        if MYSQL_DUMP_TRAILER in tail:
+            return {"file": name, "type": "mariadb", "status": "success", "output": "Dump trailer present"}
+        return None
+
+    @classmethod
+    def _check_gzip_sql_dump(cls, fpath: str) -> dict:
         """Validate a gzipped SQL dump: the gzip stream must be intact and the
         dump must end with the tool's completion trailer (pg_dump/mysqldump)."""
         name = os.path.basename(fpath)
@@ -535,14 +566,37 @@ class VerifyEngine:
         try:
             with gzip.open(fpath, "rb") as f:
                 while chunk := f.read(1024 * 1024):
-                    tail = (tail + chunk)[-4096:]
+                    tail = (tail + chunk[-_SQL_TAIL_BYTES:])[-_SQL_TAIL_BYTES:]
         except (OSError, EOFError, zlib.error) as e:
             return {"file": name, "type": "sql", "status": "failed", "error": f"Corrupt gzip stream: {e}"}
-        if b"PostgreSQL database dump complete" in tail:
-            return {"file": name, "type": "postgres", "status": "success", "output": "Dump trailer present"}
-        if b"-- Dump completed" in tail:
-            return {"file": name, "type": "mariadb", "status": "success", "output": "Dump trailer present"}
-        return {"file": name, "type": "sql", "status": "failed", "error": "Dump is truncated (no completion trailer)"}
+        return cls._trailer_check(name, tail) or {
+            "file": name, "type": "sql", "status": "failed", "error": "Dump is truncated (no completion trailer)",
+        }
+
+    @classmethod
+    def _check_plain_sql_dump(cls, fpath: str) -> dict | None:
+        """Validate a plain .sql dump by its completion trailer, reading only the tail.
+
+        Returns None for a .sql file that has no known trailer and does not
+        follow Arkive's dump naming (not ours: the caller falls back to a
+        structural check). An Arkive dump without its trailer is truncated.
+        """
+        name = os.path.basename(fpath)
+        try:
+            with open(fpath, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - _SQL_TAIL_BYTES))
+                tail = f.read()
+        except OSError as e:
+            return {"file": name, "type": "sql", "status": "failed", "error": f"Cannot read dump: {e}"}
+        found = cls._trailer_check(name, tail)
+        if found is not None:
+            return found
+        if not is_arkive_dump_name(name):
+            return None
+        error = "Empty dump file" if size == 0 else "Dump is truncated (no completion trailer)"
+        return {"file": name, "type": "sql", "status": "failed", "error": error}
 
     async def _check_postgres_dump(self, fpath: str) -> dict:
         """Validate a Postgres dump by checking its structure with pg_restore --list."""

@@ -14,6 +14,7 @@
 	import { timeAgo } from '$lib/utils/date';
 	import { jobTypeLabel } from '$lib/utils/job-types';
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/stores';
 
 	let jobs: any[] = [];
 	let selectedJob: any = null;
@@ -59,7 +60,9 @@
 				const result = await api.listJobs();
 				jobs = result.items || result.jobs || [];
 				if (jobs.length > 0) {
-					await selectJob(jobs[0]);
+					// Deep link from the dashboard's overdue-backups alert: /backups?job=<id>
+					const requested = $page.url.searchParams.get('job');
+					await selectJob(jobs.find(j => j.id === requested) ?? jobs[0]);
 				}
 			} catch (e: any) {
 				console.error(e);

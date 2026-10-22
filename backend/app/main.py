@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.core.security import decrypt_config
+from app.core.security import KeyfileError, decrypt_config, verify_keyfile
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -31,9 +31,11 @@ from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
 from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
+from app.services.host_identity import resolve_hostname
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
+from app.services.restore_drill import RestoreDrillEngine
 from app.services.restore_plan import RestorePlanGenerator
 from app.services.scheduler import ArkiveScheduler
 from app.services.verify_engine import VerifyEngine
@@ -59,6 +61,14 @@ def _warn_unraid_runtime_permissions(platform: Platform) -> None:
         uid,
         gid,
     )
+
+
+async def _display_hostname(app: FastAPI) -> str:
+    """Server name for messages (the container hostname is just its ID)."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(resolve_hostname, app=app), timeout=10)
+    except Exception:
+        return socket.gethostname()
 
 
 @asynccontextmanager
@@ -100,6 +110,14 @@ async def lifespan(app: FastAPI):
     # Step 4: Initialize DB
     await init_db(config.db_path)
     await run_migrations(config.db_path)
+
+    # Never start on a keyfile that can't decrypt the stored secrets: a fresh
+    # key would silently strand the restic password and every credential.
+    try:
+        verify_keyfile(config.config_dir, config.db_path)
+    except KeyfileError as e:
+        logger.critical("Refusing to start: %s", e)
+        raise SystemExit(f"Refusing to start: {e}")
 
     # Step 5: Detect platform
     platform = detect_platform()
@@ -209,6 +227,17 @@ async def lifespan(app: FastAPI):
 
     verify_engine = VerifyEngine(config, backup_engine=backup_engine)
 
+    # Restore drills: a crash mid-drill leaves a 'running' row, scratch files
+    # and possibly a throwaway DB container behind — clean all of them up.
+    restore_drill = RestoreDrillEngine(
+        config, backup_engine=backup_engine, docker_client=docker_client,
+        notifier=notifier, event_bus=event_bus,
+    )
+    await restore_drill.recover_after_restart()
+    if docker_client is not None:
+        # Docker may be slow right after boot; don't hold up startup for it.
+        app.state.drill_sweep = asyncio.create_task(restore_drill.remove_leftover_containers())
+
     scheduler = ArkiveScheduler(
         orchestrator, config,
         discovery=discovery,
@@ -217,6 +246,7 @@ async def lifespan(app: FastAPI):
         notifier=notifier,
         verify_engine=verify_engine,
         event_bus=event_bus,
+        restore_drill=restore_drill,
     )
 
     # Wire services to app.state
@@ -234,6 +264,7 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orchestrator
     app.state.scheduler = scheduler
     app.state.verify_engine = verify_engine
+    app.state.restore_drill = restore_drill
 
     # Step 7b: Auto-unlock stale restic locks (part of self-healing, before scheduler)
     try:
@@ -280,6 +311,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("Arkive v%s ready", __version__)
 
+    try:
+        await notifier.send(
+            "system.startup",
+            "Arkive Started",
+            f"Arkive v{__version__} on {await _display_hostname(app)} started.",
+            severity="info",
+        )
+    except Exception as e:
+        logger.debug("Startup notification failed (non-critical): %s", e)
+
     yield
 
     # Shutdown
@@ -290,7 +331,7 @@ async def lifespan(app: FastAPI):
         await notifier.send(
             "system.shutdown",
             "Arkive Shutting Down",
-            f"Arkive v{__version__} on {socket.gethostname()} is shutting down.",
+            f"Arkive v{__version__} on {await _display_hostname(app)} is shutting down.",
             severity="info",
         )
     except Exception as e:

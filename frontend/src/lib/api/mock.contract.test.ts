@@ -33,6 +33,9 @@ const REQUIRED_STATUS_FIELDS = [
   'next_backup',
   'checks',
   'coverage',
+  'backup_freshness',
+  'recovery_kit_confirmed',
+  'last_drill',
 ];
 
 /**
@@ -143,6 +146,79 @@ describe('Mock API contract validation', () => {
       for (const field of REQUIRED_ACTIVITY_FIELDS) {
         expect(entry).toHaveProperty(field);
       }
+    }
+  });
+
+  it('status.backup_freshness has stale, checked_at and stale_jobs', async () => {
+    const status = await mockApi.getStatus();
+    expect(typeof status.backup_freshness.stale).toBe('boolean');
+    expect(status.backup_freshness).toHaveProperty('checked_at');
+    expect(Array.isArray(status.backup_freshness.stale_jobs)).toBe(true);
+    expect(typeof status.recovery_kit_confirmed).toBe('boolean');
+  });
+
+  it('status.last_drill matches the drill summary shape', async () => {
+    const status = await mockApi.getStatus();
+    for (const field of ['id', 'status', 'started_at', 'completed_at', 'databases_tested', 'databases_passed', 'databases_failed']) {
+      expect(status.last_drill).toHaveProperty(field);
+    }
+  });
+
+  it('drills list and detail match the contract', async () => {
+    const list = await mockApi.get('/drills?limit=5&offset=0');
+    expect(Array.isArray(list.items)).toBe(true);
+    expect(typeof list.total).toBe('number');
+    const drill = list.items[0];
+    for (const field of [
+      'id', 'trigger', 'status', 'target_id', 'target_name', 'snapshot_id', 'started_at', 'completed_at',
+      'duration_seconds', 'databases_tested', 'databases_passed', 'databases_failed', 'error_message',
+    ]) {
+      expect(drill).toHaveProperty(field);
+    }
+    const detail = await mockApi.get(`/drills/${drill.id}`);
+    expect(detail.id).toBe(drill.id);
+    expect(detail.results.length).toBeGreaterThan(0);
+    for (const field of ['container_name', 'db_type', 'db_name', 'dump_file', 'dump_size_bytes', 'status', 'detail', 'duration_seconds']) {
+      expect(detail.results[0]).toHaveProperty(field);
+    }
+    const run = await mockApi.post('/drills/run');
+    expect(run).toHaveProperty('drill_id');
+    expect(run.status).toBe('running');
+  });
+
+  it('notification events endpoint returns events and defaults', async () => {
+    const result = await mockApi.get('/notifications/events');
+    expect(result.events.length).toBeGreaterThan(0);
+    for (const event of result.events) {
+      expect(event).toHaveProperty('value');
+      expect(event).toHaveProperty('label');
+      expect(event).toHaveProperty('description');
+    }
+    const values = result.events.map((e: any) => e.value);
+    for (const value of result.defaults) expect(values).toContain(value);
+  });
+
+  it('recovery kit and heartbeat endpoints match the contract', async () => {
+    const kit = await mockApi.post('/settings/recovery-kit');
+    for (const field of ['generated_at', 'server_name', 'arkive_version', 'encryption_password', 'config_keyfile', 'targets', 'instructions', 'text']) {
+      expect(kit).toHaveProperty(field);
+    }
+    for (const field of ['id', 'name', 'type', 'repository', 'host_path', 'details']) {
+      expect(kit.targets[0]).toHaveProperty(field);
+    }
+    const confirmed = await mockApi.post('/settings/recovery-kit/confirm');
+    expect(typeof confirmed.confirmed_at).toBe('string');
+    const ping = await mockApi.post('/settings/heartbeat/test', { url: 'https://uptime.example.com/api/push/abc' });
+    expect(ping).toEqual({ ok: true, status_code: 200, error: null });
+  });
+
+  it('settings include the new monitoring, dump and drill keys', async () => {
+    const settings = await mockApi.getSettings();
+    for (const field of [
+      'heartbeat_url', 'stale_backup_hours', 'dump_compression', 'restore_drill_enabled',
+      'restore_drill_schedule', 'restore_drill_max_databases', 'restore_drill_max_dump_mb', 'recovery_kit_confirmed_at',
+    ]) {
+      expect(settings).toHaveProperty(field);
     }
   });
 

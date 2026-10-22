@@ -40,6 +40,8 @@ const SSE_EVENT_NAMES: SSEEventType[] = [
   'verification:started',
   'verification:completed',
   'verification:failed',
+  'drill:started',
+  'drill:completed',
   'notification',
   'log:entry',
 ];
@@ -72,6 +74,8 @@ function dispatchEvent(event: SSEEvent): void {
     if (event.type === 'verification:started') next.verificationStarted = event.data;
     if (event.type === 'verification:completed') next.verificationCompleted = event.data;
     if (event.type === 'verification:failed') next.verificationFailed = event.data;
+    if (event.type === 'drill:started') next.drillStarted = event.data;
+    if (event.type === 'drill:completed') next.drillCompleted = event.data;
     return next;
   });
   const typeHandlers = handlers.get(event.type);

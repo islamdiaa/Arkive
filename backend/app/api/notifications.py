@@ -12,12 +12,19 @@ from app.models.notifications import (
     NotificationChannelCreate,
     NotificationChannelUpdate,
 )
+from app.services.notification_events import DEFAULT_EVENTS, NOTIFICATION_EVENTS
 
 router = APIRouter(
     prefix="/notifications",
     tags=["notifications"],
     dependencies=[Depends(require_auth)],
 )
+
+
+@router.get("/events")
+async def list_events():
+    """Event types a channel can subscribe to, and the defaults for a new channel."""
+    return {"events": NOTIFICATION_EVENTS, "defaults": DEFAULT_EVENTS}
 
 
 @router.get("")

@@ -242,6 +242,52 @@ MIGRATIONS: dict[int, list[str]] = {
         "DELETE FROM job_run_databases WHERE run_id NOT IN (SELECT id FROM job_runs)",
         "DELETE FROM verification_runs WHERE target_id NOT IN (SELECT id FROM storage_targets)",
     ],
+    5: [
+        # Restore drills: database dumps are restored from a snapshot and loaded
+        # into a throwaway instance to prove they actually restore.
+        """CREATE TABLE IF NOT EXISTS restore_drills (
+            id TEXT PRIMARY KEY,
+            trigger TEXT NOT NULL DEFAULT 'scheduled',
+            status TEXT NOT NULL DEFAULT 'running',
+            target_id TEXT,
+            snapshot_id TEXT,
+            started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            completed_at TEXT,
+            duration_seconds INTEGER,
+            databases_tested INTEGER NOT NULL DEFAULT 0,
+            databases_passed INTEGER NOT NULL DEFAULT 0,
+            databases_failed INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_restore_drills_started ON restore_drills(started_at DESC)",
+        """CREATE TABLE IF NOT EXISTS restore_drill_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            drill_id TEXT NOT NULL REFERENCES restore_drills(id) ON DELETE CASCADE,
+            container_name TEXT NOT NULL,
+            db_type TEXT NOT NULL,
+            db_name TEXT,
+            dump_file TEXT,
+            dump_size_bytes INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            detail TEXT,
+            duration_seconds REAL NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_restore_drill_results_drill ON restore_drill_results(drill_id)",
+        """CREATE INDEX IF NOT EXISTS idx_restore_drill_results_db
+            ON restore_drill_results(container_name, db_name)""",
+        # Channels that asked for backup failures also want to hear about the
+        # failure modes that were added alongside them.
+        *[
+            f"""UPDATE notification_channels
+                SET events = json_insert(events, '$[#]', '{event}')
+                WHERE json_valid(events)
+                  AND EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                              WHERE value = 'backup.failed')
+                  AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                                  WHERE value = '{event}')"""  # nosec B608 - constant event names
+            for event in ("backup.stale", "drill.failed", "verification.failed", "target.error")
+        ],
+    ],
 }
 
 async def run_migrations(db_path: str | Path) -> int:

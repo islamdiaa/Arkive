@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
   import {
     Dialog,
     DialogContent,
@@ -10,6 +10,10 @@
   } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import NotificationEventPicker from '$lib/components/shared/NotificationEventPicker.svelte';
+  import { loadNotificationEvents } from '$lib/api/notifications';
+  import { fallbackEventCatalog, partitionEvents } from '$lib/utils/notification-events';
+  import type { NotificationEventCatalog } from '$lib/types';
 
   export let open: boolean = false;
 
@@ -19,7 +23,18 @@
   let type: string = 'discord';
   let url: string = '';
   let loading: boolean = false;
-  let events: string[] = ['backup.success', 'backup.failed'];
+  // Catalog from GET /api/notifications/events; built-in copy until it loads.
+  let catalog: NotificationEventCatalog = fallbackEventCatalog();
+  let catalogFromFallback = false;
+  let events: string[] = [...catalog.defaults];
+  let eventsTouched = false;
+
+  onMount(async () => {
+    const loaded = await loadNotificationEvents();
+    catalog = { events: loaded.events, defaults: loaded.defaults };
+    catalogFromFallback = loaded.fromFallback;
+    if (!eventsTouched) events = [...catalog.defaults];
+  });
 
   const channelTypes: Array<{ value: string; label: string }> = [
     { value: 'discord', label: 'Discord' },
@@ -31,16 +46,6 @@
     { value: 'gotify', label: 'Gotify' },
     { value: 'webhook', label: 'Webhook' },
     { value: 'uptimekuma', label: 'Uptime Kuma' },
-  ];
-
-  const allEvents: Array<{ value: string; label: string; description: string }> = [
-    { value: 'backup.success', label: 'Backup Success', description: 'When a backup completes successfully' },
-    { value: 'backup.failed', label: 'Backup Failed', description: 'When a backup fails' },
-    { value: 'backup.partial', label: 'Backup Partial', description: 'When a backup partially completes' },
-    { value: 'discovery.completed', label: 'Discovery Done', description: 'When container discovery finishes' },
-    { value: 'target.error', label: 'Target Error', description: 'When a storage target has issues' },
-    { value: 'system.startup', label: 'System Start', description: 'When Arkive starts up' },
-    { value: 'system.shutdown', label: 'System Stop', description: 'When Arkive shuts down' },
   ];
 
   $: urlPlaceholder = getUrlPlaceholder(type);
@@ -85,26 +90,20 @@
     }
   }
 
-  function toggleEvent(eventValue: string) {
-    if (events.includes(eventValue)) {
-      events = events.filter((e) => e !== eventValue);
-    } else {
-      events = [...events, eventValue];
-    }
-  }
-
   function resetForm() {
     name = '';
     type = 'discord';
     url = '';
     loading = false;
-    events = ['backup.success', 'backup.failed'];
+    events = [...catalog.defaults];
+    eventsTouched = false;
   }
 
   function handleSave() {
     if (!canSubmit) return;
     loading = true;
-    dispatch('save', { name, type, url, events, enabled: true });
+    // Only send values the backend accepts (unknown events are rejected with 422).
+    dispatch('save', { name, type, url, events: partitionEvents(events, catalog).kept, enabled: true });
   }
 
   function handleCancel() {
@@ -159,34 +158,15 @@
       </div>
 
       <!-- Events -->
-      <div class="space-y-2">
-        <span id="channel-events-label" class="text-sm font-medium text-text-primary">Events</span>
+      <div class="space-y-1">
+        <NotificationEventPicker
+          {catalog}
+          bind:selected={events}
+          fromFallback={catalogFromFallback}
+          idPrefix="channel-events"
+          on:change={() => (eventsTouched = true)}
+        />
         <p class="text-xs text-text-muted">Select which events should trigger a notification.</p>
-        <div class="grid gap-1.5" role="group" aria-labelledby="channel-events-label">
-          {#each allEvents as event (event.value)}
-            <button
-              type="button"
-              class="flex items-center gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors
-                {events.includes(event.value)
-                  ? 'border-primary/40 bg-primary/5 text-text-primary'
-                  : 'border-border bg-bg-input text-text-secondary hover:bg-bg-surface-hover'}"
-              on:click={() => toggleEvent(event.value)}
-            >
-              <span class="flex h-4 w-4 shrink-0 items-center justify-center rounded border
-                {events.includes(event.value) ? 'border-primary bg-primary' : 'border-border'}">
-                {#if events.includes(event.value)}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                {/if}
-              </span>
-              <div class="min-w-0">
-                <span class="font-medium">{event.label}</span>
-                <span class="ml-1.5 text-xs text-text-muted">{event.description}</span>
-              </div>
-            </button>
-          {/each}
-        </div>
       </div>
     </div>
 

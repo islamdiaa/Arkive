@@ -62,6 +62,26 @@ INSERT INTO `users` VALUES (1,'alice'),(2,'bob');
 -- Dump completed
 """
 
+POSTGRES_GLOBALS = b"""\
+--
+-- PostgreSQL database cluster dump
+--
+
+SET default_transaction_read_only = off;
+
+--
+-- Roles
+--
+
+CREATE ROLE postgres;
+ALTER ROLE postgres WITH SUPERUSER INHERIT CREATEROLE CREATEDB LOGIN REPLICATION BYPASSRLS;
+
+--
+-- PostgreSQL database cluster dump complete
+--
+
+"""
+
 MONGODB_ARCHIVE = b"\x00\x01\x02\x03" + b"mongodump-archive-v1" + os.urandom(256)
 
 
@@ -225,6 +245,8 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "POSTGRES_PASSWORD=secret",
             ],
             exec_handlers={
+                # Checked in order with substring matching: pg_dumpall first.
+                "pg_dumpall": (0, POSTGRES_GLOBALS),
                 "pg_dump": (0, POSTGRES_DUMP),
             },
         ),

@@ -226,7 +226,7 @@ class TestIntegrityCheckNotifications:
     async def test_notification_sent_on_check_failure(
         self, scheduler, mock_backup_engine, mock_notifier, mock_config
     ):
-        """When check() raises, notifier.send() is called with integrity.failed."""
+        """When check() raises, notifier.send() is called with verification.failed."""
         await _insert_target(mock_config.db_path, "t1", "MyRepo", "local", 1, "{}")
         mock_backup_engine.check.side_effect = RuntimeError("pack integrity error")
 
@@ -234,7 +234,7 @@ class TestIntegrityCheckNotifications:
 
         mock_notifier.send.assert_awaited_once()
         args = mock_notifier.send.call_args
-        assert args[0][0] == "integrity.failed"
+        assert args[0][0] == "verification.failed"
         assert args[0][3] == "error"
 
     @pytest.mark.asyncio

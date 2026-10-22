@@ -105,6 +105,30 @@ describe('sse store reconnect', () => {
 		expect(FakeEventSource.instances).toHaveLength(2);
 	});
 
+	it('listens for restore drill events and dispatches them to subscribers', async () => {
+		vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => tokenResponse()));
+		const listeners = new Map<string, (e: MessageEvent) => void>();
+		const addEventListener = vi
+			.spyOn(FakeEventSource.prototype, 'addEventListener')
+			.mockImplementation(function (name: string, fn: (e: MessageEvent) => void) {
+				listeners.set(name, fn);
+			} as any);
+
+		const sse = await loadSse();
+		const received: unknown[] = [];
+		const unsub = sse.subscribe('drill:completed', (event) => received.push(event.data));
+		await sse.connect();
+
+		expect(listeners.has('drill:started')).toBe(true);
+		expect(listeners.has('drill:completed')).toBe(true);
+		listeners.get('drill:completed')!({ data: JSON.stringify({ drill_id: 'd1', status: 'passed' }) } as MessageEvent);
+		expect(received).toEqual([{ drill_id: 'd1', status: 'passed' }]);
+
+		unsub();
+		addEventListener.mockRestore();
+		sse.disconnect();
+	});
+
 	it('does not retry when the session is no longer valid (401)', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 401 }));
 		vi.stubGlobal('fetch', fetchMock);

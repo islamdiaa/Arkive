@@ -33,7 +33,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 		if (res.status === 401 && !path.startsWith('/auth/')) {
 			handleUnauthorized();
 		}
-		throw new ApiError(res.status, error.message || res.statusText);
+		// Arkive's exception handlers put the human-readable reason in `message`;
+		// fall back to FastAPI's default `detail` string so it is never lost.
+		const message =
+			(typeof error?.message === 'string' && error.message) ||
+			(typeof error?.detail === 'string' && error.detail) ||
+			res.statusText;
+		throw new ApiError(res.status, message);
 	}
 
 	return res.json();

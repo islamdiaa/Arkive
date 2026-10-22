@@ -21,6 +21,8 @@
 		'directories': 'Directories',
 		'notifications': 'Notifications',
 		'security': 'Security',
+		'monitoring': 'Monitoring',
+		'recovery-kit': 'Recovery Kit',
 	};
 
 	$: segments = $page.url.pathname.split('/').filter(Boolean);

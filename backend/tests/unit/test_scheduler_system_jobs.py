@@ -476,7 +476,7 @@ class TestHealthCheck:
         assert "unreachable" in rows[0]["message"]
         assert "reachable again" in rows[1]["message"]
         notifier.send.assert_awaited_once()
-        assert notifier.send.await_args.args[0] == "target.unreachable"
+        assert notifier.send.await_args.args[0] == "target.error"
 
     @pytest.mark.asyncio
     async def test_health_check_skips_without_cloud_manager(self, mock_orchestrator, mock_config):

@@ -152,6 +152,103 @@ export interface SystemStatus {
   last_verified_at: string | null;
   verification_status: VerificationStatus | null;
   coverage: BackupCoverage | null;
+  /** Backup freshness watchdog result; a stale job makes status "error". */
+  backup_freshness?: BackupFreshness | null;
+  /** False until the user confirms they stored a recovery kit off-server. */
+  recovery_kit_confirmed?: boolean;
+  last_drill?: LastDrill | null;
+}
+
+// ── Backup freshness (stale backups) ──
+export interface StaleJob {
+  job_id: string;
+  job_name: string;
+  last_good_at: string | null;
+  threshold_hours: number | null;
+  overdue_hours: number | null;
+}
+
+export interface BackupFreshness {
+  stale: boolean;
+  checked_at: string | null;
+  stale_jobs: StaleJob[];
+}
+
+// ── Restore drills ──
+export type DrillStatus = 'running' | 'passed' | 'failed' | 'skipped';
+
+export interface LastDrill {
+  id: string;
+  status: DrillStatus | string;
+  started_at: string | null;
+  completed_at: string | null;
+  databases_tested: number;
+  databases_passed: number;
+  databases_failed: number;
+}
+
+export interface RestoreDrill extends LastDrill {
+  trigger: string;
+  target_id: string | null;
+  target_name: string | null;
+  snapshot_id: string | null;
+  duration_seconds: number | null;
+  error_message: string | null;
+}
+
+export interface RestoreDrillResult {
+  container_name: string;
+  db_type: string;
+  db_name: string;
+  dump_file: string | null;
+  dump_size_bytes: number | null;
+  status: 'passed' | 'failed' | 'skipped' | string;
+  detail: string | null;
+  duration_seconds: number | null;
+}
+
+export interface RestoreDrillDetail extends RestoreDrill {
+  results: RestoreDrillResult[];
+}
+
+// ── Recovery kit ──
+export interface RecoveryKitTarget {
+  id: string;
+  name: string;
+  type: string;
+  repository: string;
+  host_path: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface RecoveryKit {
+  generated_at: string;
+  server_name: string;
+  arkive_version: string;
+  encryption_password: string;
+  config_keyfile: string | null;
+  targets: RecoveryKitTarget[];
+  instructions: string[];
+  text: string;
+}
+
+// ── Monitoring ──
+export interface HeartbeatTestResult {
+  ok: boolean;
+  status_code: number | null;
+  error: string | null;
+}
+
+// ── Notification event catalog ──
+export interface NotificationEventOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
+export interface NotificationEventCatalog {
+  events: NotificationEventOption[];
+  defaults: string[];
 }
 
 export interface BackupCoverage {
@@ -222,6 +319,8 @@ export type SSEEventType =
   | 'verification:started'
   | 'verification:completed'
   | 'verification:failed'
+  | 'drill:started'
+  | 'drill:completed'
   | 'notification'
   | 'log:entry';
 

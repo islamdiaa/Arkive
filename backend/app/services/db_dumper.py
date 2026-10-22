@@ -1,25 +1,45 @@
-"""Database dump engine — safe dumps for Postgres, SQLite, MariaDB, MongoDB, Redis."""
+"""Database dump engine — safe dumps for Postgres, SQLite, MariaDB, MongoDB, Redis.
+
+Logical dumps (pg_dump, mysqldump, mongodump) are written as plain files by
+default (``dump_compression = "none"``): the restic repository already
+compresses with zstd and, unlike a gzip stream, a plain dump deduplicates
+between runs. ``dump_compression = "gzip"`` pipes the stream through
+``gzip --rsyncable``, which still lets restic reuse unchanged regions.
+
+After every run the dump directory carries ``arkive-dumps-manifest.json``
+describing each dump file (source container/image, database, kind,
+compression, size, integrity), see ``write_dump_manifest``.
+"""
 
 import asyncio
+import functools
 import gzip
 import hashlib
 import io
+import json
 import logging
 import os
 import re
 import shlex
 import shutil
+import subprocess  # nosec B404 — fixed argv, no shell
 import tarfile
+import tempfile
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiosqlite
 import docker
 
+from app import __version__
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
+from app.services.settings_store import DEFAULTS as SETTING_DEFAULTS
+from app.services.settings_store import get_setting
 from app.utils.subprocess_runner import run_command
 from app.utils.redact import redact_credentials
 
@@ -28,8 +48,17 @@ logger = logging.getLogger("arkive.db_dumper")
 # Trailers written by the dump tools as their very last output. A dump that
 # lacks its trailer was cut short (connection drop, OOM kill, timeout).
 PG_DUMP_TRAILER = b"PostgreSQL database dump complete"
+PG_DUMPALL_TRAILER = b"PostgreSQL database cluster dump complete"
 MYSQL_DUMP_TRAILER = b"-- Dump completed"
+DUMP_TRAILERS = (PG_DUMP_TRAILER, PG_DUMPALL_TRAILER, MYSQL_DUMP_TRAILER)
 _TAIL_BYTES = 4096
+
+DUMP_COMPRESSIONS = ("none", "gzip")
+DUMP_MANIFEST_NAME = "arkive-dumps-manifest.json"
+DUMP_MANIFEST_VERSION = 1
+# db_name / file label of the per-cluster Postgres roles dump.
+GLOBALS_DB_NAME = "globals"
+_MANIFEST_INTEGRITY = {"ok", "failed", "skipped", "unverifiable"}
 
 # SQLite integrity-check errors that mean "this stock sqlite3 binary can't
 # evaluate the schema" (app-specific collations/extensions such as Plex's
@@ -42,11 +71,41 @@ _SQLITE_UNVERIFIABLE_MARKERS = (
 )
 
 # Files in the dump directory that are not per-database dumps and are managed
-# elsewhere (flash backup retention, Arkive self-backup).
+# elsewhere (flash backup retention, Arkive self-backup, the dump manifest).
 _NON_DUMP_PREFIXES = ("flash_",)
-_NON_DUMP_FILES = {"arkive_self.db"}
+_NON_DUMP_FILES = {"arkive_self.db", DUMP_MANIFEST_NAME}
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _DUMP_TS_PATTERN = re.compile(r"^(.+?)_(\d{8}_\d{6})\.")
+_MANIFEST_TMP_PREFIX = f".{DUMP_MANIFEST_NAME}."
+_STALE_TMP_SECONDS = 3600
+
+_manifest_lock = threading.Lock()
+
+
+def safe_name(value: str) -> str:
+    """File-name-safe form of a container or database name (as used in dump file names)."""
+    return re.sub(r'[^a-zA-Z0-9_.\-]', '_', value)
+
+
+def postgres_user_from_env(env: dict[str, str]) -> str:
+    """The role Arkive connects as for a Postgres container (from its environment)."""
+    return env.get("POSTGRES_USER") or env.get("DB_USERNAME") or env.get("DB_USER") or "postgres"
+
+
+def dump_compression_of(file_name: str) -> str:
+    return "gzip" if file_name.endswith(".gz") else "none"
+
+
+def is_dump_file_name(name: str) -> bool:
+    """True for per-database dump files (not flash archives, sidecars, the manifest...)."""
+    if name.startswith(".") or name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
+        return False
+    return not name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+
+
+def is_arkive_dump_name(name: str) -> bool:
+    """True when ``name`` follows Arkive's ``<container>_<db>_<YYYYmmdd_HHMMSS>.<ext>`` scheme."""
+    return bool(_DUMP_TS_PATTERN.match(name))
 
 
 @dataclass
@@ -57,14 +116,318 @@ class StreamResult:
     tail: bytes
 
 
+# ---------------------------------------------------------------------------
+# Dump file writers
+# ---------------------------------------------------------------------------
+
+class _PlainDumpWriter:
+    """Writes the stream unchanged; restic compresses and deduplicates it."""
+
+    def __init__(self, path: str):
+        self._file = open(path, "wb")
+
+    def write(self, data: bytes) -> None:
+        self._file.write(data)
+
+    def close(self) -> None:
+        self._file.close()
+
+    def abort(self) -> None:
+        try:
+            self._file.close()
+        except OSError:
+            pass
+
+
+class _PythonGzipDumpWriter(_PlainDumpWriter):
+    """Fallback when no gzip binary with --rsyncable is available. Each run
+    produces an entirely new byte stream, so restic cannot deduplicate it."""
+
+    def __init__(self, path: str):
+        self._file = gzip.open(path, "wb", compresslevel=6)
+
+
+class _RsyncableGzipDumpWriter:
+    """Pipes the stream through ``gzip --rsyncable``.
+
+    --rsyncable resets the compressor at content-defined points, so a local
+    change only alters the compressed output around it and restic can still
+    reuse the unchanged chunks of the previous dump.
+    """
+
+    def __init__(self, path: str, gzip_binary: str):
+        self._out = open(path, "wb")
+        try:
+            self._proc = subprocess.Popen(  # nosec B603 — fixed argv
+                [gzip_binary, "--rsyncable", "-6", "-c"],
+                stdin=subprocess.PIPE, stdout=self._out, stderr=subprocess.PIPE,
+            )
+        except BaseException:
+            self._out.close()
+            raise
+
+    def _stderr(self) -> str:
+        try:
+            return self._proc.stderr.read().decode(errors="replace").strip()[:300]
+        except Exception:
+            return ""
+
+    def write(self, data: bytes) -> None:
+        try:
+            self._proc.stdin.write(data)
+        except BrokenPipeError:
+            self._proc.wait()
+            raise RuntimeError(f"gzip exited early (code {self._proc.returncode}): {self._stderr()}")
+
+    def close(self) -> None:
+        try:
+            self._proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        err = self._stderr()
+        code = self._proc.wait()
+        self._out.close()
+        if code != 0:
+            raise RuntimeError(f"gzip exited with code {code}: {err or 'no output'}")
+
+    def abort(self) -> None:
+        try:
+            self._proc.kill()
+        except OSError:
+            pass
+        for stream in (self._proc.stdin, self._proc.stderr, self._out):
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+        try:
+            self._proc.wait(timeout=10)
+        except Exception:
+            pass
+
+
+@functools.lru_cache(maxsize=1)
+def _rsyncable_gzip_binary() -> str | None:
+    """Path of a gzip binary that supports --rsyncable (GNU gzip), else None."""
+    binary = shutil.which("gzip")
+    if not binary:
+        logger.warning("gzip binary not found; gzip dumps fall back to Python gzip (no restic dedup)")
+        return None
+    try:
+        probe = subprocess.run(  # nosec B603 — fixed argv
+            [binary, "--rsyncable", "-c"], input=b"", capture_output=True, timeout=10,
+        )
+    except Exception as e:
+        logger.warning("gzip --rsyncable probe failed (%s); using Python gzip", e)
+        return None
+    if probe.returncode != 0:
+        logger.warning("%s does not support --rsyncable; using Python gzip", binary)
+        return None
+    return binary
+
+
+def _open_dump_writer(path: str, compression: str):
+    if compression != "gzip":
+        return _PlainDumpWriter(path)
+    binary = _rsyncable_gzip_binary()
+    if binary:
+        try:
+            return _RsyncableGzipDumpWriter(path, binary)
+        except OSError as e:
+            logger.warning("Could not start gzip --rsyncable (%s); using Python gzip", e)
+    return _PythonGzipDumpWriter(path)
+
+
+# ---------------------------------------------------------------------------
+# Dump manifest
+# ---------------------------------------------------------------------------
+
+def _utc_iso(ts: float | None = None) -> str:
+    moment = datetime.now(timezone.utc) if ts is None else datetime.fromtimestamp(ts, timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _created_at(name: str, mtime: float) -> str:
+    """Dump start time from the file name's UTC timestamp, else the file mtime."""
+    match = _DUMP_TS_PATTERN.match(name)
+    if match:
+        try:
+            parsed = datetime.strptime(match.group(2), "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+            return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            pass
+    return _utc_iso(mtime)
+
+
+def _empty_manifest() -> dict:
+    return {"version": DUMP_MANIFEST_VERSION, "generated_at": None, "arkive_version": None, "dumps": []}
+
+
+def read_dump_manifest(dump_dir) -> dict:
+    """Return the dump manifest of ``dump_dir``.
+
+    A missing or unreadable manifest yields an empty one (``dumps == []``).
+    Shape: ``{"version": 1, "generated_at", "arkive_version", "dumps": [{"file",
+    "container_name", "image", "db_type", "db_name", "host_path", "kind",
+    "compression", "size_bytes", "created_at", "integrity"}]}``.
+    """
+    path = Path(dump_dir) / DUMP_MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return _empty_manifest()
+    except (OSError, ValueError) as e:
+        logger.warning("Ignoring unreadable dump manifest %s: %s", path, e)
+        return _empty_manifest()
+    if not isinstance(data, dict) or not isinstance(data.get("dumps"), list):
+        logger.warning("Ignoring malformed dump manifest %s", path)
+        return _empty_manifest()
+    data["dumps"] = [e for e in data["dumps"] if isinstance(e, dict) and isinstance(e.get("file"), str)]
+    return data
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _read_head(path: Path, size: int = 2048) -> bytes:
+    try:
+        opener = gzip.open if path.name.endswith(".gz") else open
+        with opener(path, "rb") as handle:
+            return handle.read(size)
+    except Exception:
+        return b""
+
+
+def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) -> dict:
+    """Best-effort entry for a dump file with no recorded metadata (e.g. written
+    by an Arkive version before the manifest existed). ``container_name`` and
+    ``db_name`` stay empty when they cannot be derived unambiguously."""
+    name = path.name
+    match = _DUMP_TS_PATTERN.match(name)
+    prefix = match.group(1) if match else name.split(".", 1)[0]
+    kind = "database"
+    db_type = "unknown"
+    if name.endswith((".sql", ".sql.gz")):
+        head = _read_head(path)
+        if b"PostgreSQL database cluster dump" in head:
+            db_type, kind = "postgres", "globals"
+        elif b"PostgreSQL database dump" in head:
+            db_type = "postgres"
+        elif b"MySQL dump" in head or b"MariaDB dump" in head:
+            db_type = "mariadb"
+    elif name.endswith(".sqlite3"):
+        db_type = "sqlite"
+    elif name.endswith((".archive", ".archive.gz")):
+        db_type = "mongodb"
+    elif name.endswith(".rdb"):
+        db_type = "redis"
+
+    container_name = ""
+    db_name = ""
+    for container in sorted(known_containers, key=len, reverse=True):
+        safe_container = safe_name(container)
+        if prefix.startswith(safe_container + "_"):
+            container_name = container
+            db_name = prefix[len(safe_container) + 1:]
+            break
+    if not container_name:
+        for marker, kind_or_type in ((f"_{GLOBALS_DB_NAME}", "globals"), ("_redis", "redis")):
+            if prefix.endswith(marker) and kind_or_type in (kind, db_type):
+                container_name = prefix[: -len(marker)]
+    if kind == "globals":
+        db_name = GLOBALS_DB_NAME
+    elif db_type == "redis":
+        db_name = "redis"
+
+    return {
+        "file": name, "container_name": container_name, "image": "", "db_type": db_type,
+        "db_name": db_name, "host_path": None, "kind": kind,
+        "compression": dump_compression_of(name), "size_bytes": stat.st_size,
+        "created_at": _created_at(name, stat.st_mtime), "integrity": "skipped",
+    }
+
+
+def write_dump_manifest(dump_dir, new_entries: list[dict] | None = None,
+                        known_containers=()) -> dict:
+    """Rewrite ``arkive-dumps-manifest.json`` (atomically) for the files now in ``dump_dir``.
+
+    Each dump file present gets an entry: from ``new_entries`` (this run),
+    else carried over from the previous manifest (size refreshed), else
+    inferred from the file itself. Entries of files that are gone are dropped.
+    """
+    dump_dir = Path(dump_dir)
+    with _manifest_lock:
+        previous = {e["file"]: e for e in read_dump_manifest(dump_dir)["dumps"]}
+        fresh = {e["file"]: e for e in (new_entries or [])}
+        entries = []
+        for path in sorted(dump_dir.iterdir(), key=lambda p: p.name):
+            if not is_dump_file_name(path.name):
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            entry = fresh.get(path.name) or previous.get(path.name)
+            if entry is None:
+                entry = _infer_manifest_entry(path, stat, known_containers)
+            else:
+                entry = {**entry, "size_bytes": stat.st_size}
+            entries.append(entry)
+        manifest = {
+            "version": DUMP_MANIFEST_VERSION,
+            "generated_at": _utc_iso(),
+            "arkive_version": __version__,
+            "dumps": entries,
+        }
+        _atomic_write_json(dump_dir / DUMP_MANIFEST_NAME, manifest)
+    return manifest
+
+
+def prune_dump_manifest(dump_dir) -> bool:
+    """Drop manifest entries whose dump files no longer exist. Returns True if rewritten."""
+    dump_dir = Path(dump_dir)
+    if not (dump_dir / DUMP_MANIFEST_NAME).is_file():
+        return False
+    entries = read_dump_manifest(dump_dir)["dumps"]
+    if all((dump_dir / e["file"]).is_file() for e in entries):
+        return False
+    write_dump_manifest(dump_dir)
+    return True
+
+
+def _dump_sort_key(path: Path) -> str:
+    match = _DUMP_TS_PATTERN.match(path.name)
+    return match.group(2) if match else path.name
+
+
 def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7) -> int:
     """Prune the database dump directory.
 
     Keeps the newest ``keep_last`` dumps per container/database and removes
     any dump older than ``max_age_days`` (dumps of containers that no longer
-    exist would otherwise be re-uploaded in every snapshot forever). Orphaned
-    SQLite ``-wal``/``-shm``/``-journal`` sidecars are removed with their base
-    file. Flash archives and the Arkive self-backup are left alone.
+    exist would otherwise be re-uploaded in every snapshot forever). A
+    database's dumps are grouped regardless of format, so switching between
+    ``.sql`` and ``.sql.gz`` leaves only the newest. Orphaned SQLite
+    ``-wal``/``-shm``/``-journal`` sidecars are removed with their base file.
+    Flash archives, the Arkive self-backup and the dump manifest are left
+    alone; the manifest is rewritten without the removed files.
 
     Returns the number of files removed.
     """
@@ -79,7 +442,15 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
         if not path.is_file():
             continue
         name = path.name
-        if name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
+        if name.startswith(_MANIFEST_TMP_PREFIX):
+            # Left behind by a crash mid-write; never the live manifest.
+            try:
+                if path.stat().st_mtime < time.time() - _STALE_TMP_SECONDS:
+                    path.unlink()
+            except OSError:
+                pass
+            continue
+        if name.startswith(".") or name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
             continue
         if name.endswith(_SQLITE_SIDECAR_SUFFIXES):
             sidecars.append(path)
@@ -90,8 +461,8 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
 
     to_remove: list[Path] = []
     for files in groups.values():
-        # Timestamps in the name sort chronologically; newest first.
-        files.sort(key=lambda p: p.name, reverse=True)
+        # Newest first by the timestamp in the name (extension-independent).
+        files.sort(key=_dump_sort_key, reverse=True)
         for index, path in enumerate(files):
             if index >= keep_last:
                 to_remove.append(path)
@@ -125,6 +496,11 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
             except OSError as e:
                 logger.warning("Failed to remove dump sidecar %s: %s", sidecar, e)
 
+    try:
+        prune_dump_manifest(dump_dir)
+    except Exception as e:
+        logger.warning("Failed to update dump manifest after cleanup: %s", e)
+
     if removed:
         logger.info("Dump cleanup: removed %d old dump files", removed)
     return removed
@@ -141,6 +517,12 @@ class DumpResult:
     status: str  # success, failed
     error: str | None = None
     duration_seconds: float = 0.0
+    # "database", or "globals" for a Postgres cluster's roles/tablespaces
+    # (pg_dumpall --globals-only, db_name "globals"); not a discovered database.
+    kind: str = "database"
+    # Finer integrity detail for the manifest, e.g. "unverifiable" when the
+    # stock checker cannot evaluate an app-specific SQLite schema.
+    integrity_detail: str | None = None
 
 
 class DBDumper:
@@ -154,22 +536,49 @@ class DBDumper:
         # (container, db_name) pairs shared by several distinct databases,
         # e.g. two SQLite files both named credentials.db in one container.
         self._name_collisions: set[tuple[str, str]] = set()
+        # Output format for logical dumps; refreshed from the dump_compression
+        # setting at the start of every dump_all / dump_single.
+        self.compression = SETTING_DEFAULTS.get("dump_compression", "none")
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     @staticmethod
     def _safe(value: str) -> str:
-        return re.sub(r'[^a-zA-Z0-9_.\-]', '_', value)
+        return safe_name(value)
+
+    def _sql_ext(self) -> str:
+        return ".sql.gz" if self.compression == "gzip" else ".sql"
 
     def _dump_path(self, db: DiscoveredDatabase, ts: str, ext: str, db_label: str | None = None) -> str:
         """Build a unique dump file path for a database."""
         label = self._safe(db_label or db.db_name)
+        if db.db_type == "postgres" and label == GLOBALS_DB_NAME:
+            # Keep a database literally named "globals" apart from the roles dump.
+            label = f"{label}-db"
         if (db.container_name, db.db_name) in self._name_collisions and db.host_path:
             # Same basename in one container — disambiguate by source path so
             # the dumps don't overwrite each other within the same second.
             label = f"{label}-{hashlib.sha1(db.host_path.encode()).hexdigest()[:8]}"  # nosec B324
         return str(self.dump_dir / f"{self._safe(db.container_name)}_{label}_{ts}{ext}")
+
+    async def _load_compression(self) -> str:
+        """Read the dump_compression setting; default on any problem."""
+        default = SETTING_DEFAULTS.get("dump_compression", "none")
+        db_path = getattr(self.config, "db_path", None)
+        try:
+            if not isinstance(db_path, (str, os.PathLike)) or not os.path.isfile(db_path):
+                return default
+            async with aiosqlite.connect(db_path) as db:
+                value = await get_setting(db, "dump_compression", default)
+        except Exception as e:
+            logger.warning("Could not read dump_compression setting, using %r: %s", default, e)
+            return default
+        value = (value or "").strip().lower()
+        if value not in DUMP_COMPRESSIONS:
+            logger.warning("Unknown dump_compression %r, using %r", value, default)
+            return default
+        return value
 
     @staticmethod
     def dedupe(databases: list[DiscoveredDatabase]) -> list[DiscoveredDatabase]:
@@ -185,10 +594,14 @@ class DBDumper:
             unique.append(db)
         return unique
 
-    def _exec_stream_to_gzip(
+    def _exec_stream_to_file(
         self, container, cmd: list[str], dump_path: str, environment: dict | None = None,
     ) -> StreamResult:
-        """Run ``cmd`` in ``container`` and stream stdout into a gzip file.
+        """Run ``cmd`` in ``container`` and stream stdout into ``dump_path``.
+
+        The output is written chunk by chunk (never buffered whole) as plain
+        bytes or through gzip, per ``self.compression``. The completion-trailer
+        tail is taken from the uncompressed stream.
 
         docker-py's ``exec_run(stream=True)`` always reports ``exit_code=None``,
         which hid failed dumps. With a real Docker API client we use the
@@ -210,18 +623,23 @@ class DBDumper:
         bytes_written = 0
         tail = b""
         stderr_chunks: list[bytes] = []
-        with gzip.open(dump_path, "wb") as f:
+        writer = _open_dump_writer(dump_path, self.compression)
+        try:
             for chunk in output:
                 if isinstance(chunk, tuple):
                     stdout_data, stderr_data = chunk
                 else:
                     stdout_data, stderr_data = chunk, None
                 if stdout_data:
-                    f.write(stdout_data)
+                    writer.write(stdout_data)
                     bytes_written += len(stdout_data)
-                    tail = (tail + stdout_data)[-_TAIL_BYTES:]
+                    tail = (tail + stdout_data[-_TAIL_BYTES:])[-_TAIL_BYTES:]
                 if stderr_data:
                     stderr_chunks.append(stderr_data)
+            writer.close()
+        except BaseException:
+            writer.abort()
+            raise
 
         if exec_id is not None:
             try:
@@ -282,11 +700,18 @@ class DBDumper:
         )
 
     async def dump_all(self, databases: list[DiscoveredDatabase]) -> list[DumpResult]:
-        """Dump all discovered databases. Continue on failure."""
+        """Dump all discovered databases. Continue on failure.
+
+        Besides one result per database, every Postgres container gets one
+        ``kind="globals"`` result (roles via pg_dumpall --globals-only). The
+        dump manifest is rewritten afterwards.
+        """
         databases = self.dedupe(databases)
+        self.compression = await self._load_compression()
         name_counts = Counter((db.container_name, db.db_name) for db in databases)
         self._name_collisions = {key for key, count in name_counts.items() if count > 1}
-        results = []
+        results: list[DumpResult] = []
+        host_paths: dict[int, str | None] = {}
         for db in databases:
             try:
                 result = await self._dump_one(db)
@@ -294,12 +719,11 @@ class DBDumper:
                     # A failed/truncated dump must not shadow the previous
                     # good dump (cleanup keeps only the newest file).
                     self._remove_dump_file(result.dump_path)
-                results.append(result)
             except Exception as e:
                 error_str = str(e)
                 redacted_error = redact_credentials(error_str)
                 logger.error("Failed to dump %s/%s: %s", db.container_name, db.db_name, redacted_error)
-                results.append(DumpResult(
+                result = DumpResult(
                     container_name=db.container_name,
                     db_type=db.db_type,
                     db_name=db.db_name,
@@ -308,8 +732,92 @@ class DBDumper:
                     integrity_check="skipped",
                     status="failed",
                     error=redacted_error,
-                ))
+                )
+            host_paths[id(result)] = db.host_path
+            results.append(result)
+
+        # Roles and tablespaces live outside any single database: dump them
+        # once per Postgres container, connecting to a database known to work.
+        clusters: dict[str, str] = {}
+        connect_ok: dict[str, bool] = {}
+        for db, result in zip(databases, results):
+            if db.db_type != "postgres":
+                continue
+            ok = result.status == "success"
+            if db.container_name not in clusters or (ok and not connect_ok[db.container_name]):
+                clusters[db.container_name] = db.db_name
+                connect_ok[db.container_name] = ok
+        for container_name, connect_db in clusters.items():
+            try:
+                result = await asyncio.to_thread(self._dump_postgres_globals_blocking, container_name, connect_db)
+            except Exception as e:
+                result = DumpResult(
+                    container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME,
+                    dump_path="", dump_size_bytes=0, integrity_check="skipped", status="failed",
+                    error=redact_credentials(str(e)), kind="globals",
+                )
+            if result.status != "success":
+                self._remove_dump_file(result.dump_path)
+            results.append(result)
+
+        await self._update_manifest(results, host_paths, {db.container_name for db in databases})
         return results
+
+    async def _update_manifest(self, results: list[DumpResult], host_paths: dict[int, str | None],
+                               known_containers: set[str]) -> None:
+        def build_and_write() -> None:
+            images: dict[str, str] = {}
+            entries = []
+            for result in results:
+                if result.status != "success" or not result.dump_path or not os.path.isfile(result.dump_path):
+                    continue
+                if result.container_name not in images:
+                    images[result.container_name] = self._container_image(result.container_name)
+                stat = os.stat(result.dump_path)
+                name = os.path.basename(result.dump_path)
+                integrity = result.integrity_detail or result.integrity_check
+                entries.append({
+                    "file": name,
+                    "container_name": result.container_name,
+                    "image": images[result.container_name],
+                    "db_type": result.db_type,
+                    "db_name": result.db_name,
+                    "host_path": host_paths.get(id(result)),
+                    "kind": result.kind,
+                    "compression": dump_compression_of(name),
+                    "size_bytes": stat.st_size,
+                    "created_at": _created_at(name, stat.st_mtime),
+                    "integrity": integrity if integrity in _MANIFEST_INTEGRITY else "skipped",
+                })
+            write_dump_manifest(self.dump_dir, entries, known_containers)
+
+        try:
+            await asyncio.to_thread(build_and_write)
+        except Exception as e:
+            logger.error("Failed to write dump manifest in %s: %s", self.dump_dir, e)
+
+    def _container_image(self, container_name: str) -> str:
+        """Image tag (or ID) of a container, '' when it cannot be determined."""
+        try:
+            container = self.docker.containers.get(container_name)
+        except Exception:
+            return ""
+        image = getattr(container, "image", None)
+        try:
+            tags = getattr(image, "tags", None)
+        except Exception:
+            tags = None
+        if isinstance(tags, (list, tuple)) and tags and isinstance(tags[0], str):
+            return tags[0]
+        attrs = getattr(container, "attrs", None)
+        if isinstance(attrs, dict):
+            config = attrs.get("Config")
+            if isinstance(config, dict) and isinstance(config.get("Image"), str):
+                return config["Image"]
+            if isinstance(attrs.get("Image"), str):
+                return attrs["Image"]
+        image_id = getattr(image, "id", None)
+        return image_id if isinstance(image_id, str) else ""
 
     @staticmethod
     def _remove_dump_file(path: str) -> None:
@@ -372,6 +880,24 @@ class DBDumper:
         return value
 
     @staticmethod
+    def _sanitize_pg_dbname(value: str) -> str:
+        """Validate a Postgres database name passed as one argv element.
+
+        Commands run without a shell, so the only hazards are libpq treating
+        the value as a connection string ("=" or a postgres:// URI) or as an
+        option (leading "-"). Names enumerated from pg_database may contain
+        spaces or capitals and must still be dumpable.
+        """
+        if (
+            not value
+            or len(value.encode()) > 63
+            or value.startswith("-")
+            or any(ch in value for ch in "=/\x00\r\n")
+        ):
+            raise ValueError("Invalid database name: contains disallowed characters")
+        return value
+
+    @staticmethod
     def _copy_file_from_container_archive(container, container_path: str, dump_path: str) -> tuple[bool, str | None]:
         """Copy a file out of a container via the Docker archive API."""
         try:
@@ -405,20 +931,14 @@ class DBDumper:
 
     def _dump_postgres_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Postgres via docker exec with streaming."""
-        dump_path = self._dump_path(db, self._timestamp(), ".sql.gz")
+        dump_path = self._dump_path(db, self._timestamp(), self._sql_ext())
 
         try:
             container = self.docker.containers.get(db.container_name)
             env = self._get_container_env(container)
-            pg_user = (
-                env.get("POSTGRES_USER")
-                or env.get("DB_USERNAME")
-                or env.get("DB_USER")
-                or "postgres"
-            )
             # Sanitize identifiers to prevent command injection
-            pg_user = self._sanitize_identifier(pg_user)
-            db_name = self._sanitize_identifier(db.db_name)
+            pg_user = self._sanitize_identifier(postgres_user_from_env(env))
+            db_name = self._sanitize_pg_dbname(db.db_name)
             # Produce a self-contained logical dump that can be restored into a
             # fresh instance without recreating roles by hand.
             exec_cmd = [
@@ -433,7 +953,7 @@ class DBDumper:
                 "-d",
                 db_name,
             ]
-            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path)
+            stream = self._exec_stream_to_file(container, exec_cmd, dump_path)
             return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER)
         except Exception as e:
             return DumpResult(
@@ -441,6 +961,43 @@ class DBDumper:
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
+
+    def _dump_postgres_globals_blocking(self, container_name: str, connect_db: str) -> DumpResult:
+        """Dump a Postgres cluster's roles/tablespaces (pg_dumpall --globals-only).
+
+        A non-superuser cannot read pg_authid; then the dump is retried with
+        --no-role-passwords (roles restored without passwords). Any other
+        failure is reported like a failed database dump.
+        """
+        pseudo_db = DiscoveredDatabase(container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME)
+        dump_path = str(self.dump_dir / f"{self._safe(container_name)}_{GLOBALS_DB_NAME}_{self._timestamp()}{self._sql_ext()}")
+        try:
+            container = self.docker.containers.get(container_name)
+            env = self._get_container_env(container)
+            pg_user = self._sanitize_identifier(postgres_user_from_env(env))
+            options = ["-U", pg_user, "-l", self._sanitize_pg_dbname(connect_db)]
+            stream = self._exec_stream_to_file(container, ["pg_dumpall", "--globals-only", *options], dump_path)
+            failed = (stream.exit_code not in (None, 0)) or PG_DUMPALL_TRAILER not in stream.tail
+            if failed and "permission denied" in stream.stderr.lower():
+                logger.warning(
+                    "pg_dumpall --globals-only on %s: %s is not a superuser; retrying with "
+                    "--no-role-passwords (roles will be restored without passwords)",
+                    container_name, pg_user,
+                )
+                stream = self._exec_stream_to_file(
+                    container, ["pg_dumpall", "--globals-only", "--no-role-passwords", *options], dump_path,
+                )
+            result = self._streamed_dump_result(
+                pseudo_db, "postgres", "pg_dumpall", dump_path, stream, PG_DUMPALL_TRAILER,
+            )
+        except Exception as e:
+            result = DumpResult(
+                container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME,
+                dump_path=dump_path, dump_size_bytes=0, integrity_check="skipped",
+                status="failed", error=redact_credentials(str(e)),
+            )
+        result.kind = "globals"
+        return result
 
     async def _dump_sqlite(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump SQLite using HOST sqlite3 binary on bind-mounted path."""
@@ -502,12 +1059,14 @@ class DBDumper:
 
         # Integrity check
         integrity = "skipped"
+        integrity_detail = None
         check_result = await run_command(["sqlite3", dump_path, "PRAGMA integrity_check"])
         check_output = f"{check_result.stdout}\n{check_result.stderr}".lower()
         if any(marker in check_output for marker in _SQLITE_UNVERIFIABLE_MARKERS):
             # App-specific collation/extension (e.g. Plex icu_root) — the
             # stock sqlite3 binary cannot evaluate it, which is not corruption.
             integrity = "skipped"
+            integrity_detail = "unverifiable"
         elif check_result.returncode == 0 and check_result.stdout.strip().lower() == "ok":
             integrity = "ok"
         else:
@@ -520,11 +1079,12 @@ class DBDumper:
             container_name=db.container_name, db_type="sqlite",
             db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
             integrity_check=integrity, status="success" if size > 0 else "failed",
+            integrity_detail=integrity_detail,
         )
 
     def _dump_mariadb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MariaDB/MySQL via docker exec with streaming."""
-        dump_path = self._dump_path(db, self._timestamp(), ".sql.gz")
+        dump_path = self._dump_path(db, self._timestamp(), self._sql_ext())
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -560,7 +1120,7 @@ class DBDumper:
             if mysql_password:
                 exec_env["MYSQL_PWD"] = mysql_password
             exec_cmd.extend(["--databases", db_name])
-            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path, environment=exec_env)
+            stream = self._exec_stream_to_file(container, exec_cmd, dump_path, environment=exec_env)
             return self._streamed_dump_result(db, "mariadb", dump_binary, dump_path, stream, MYSQL_DUMP_TRAILER)
         except Exception as e:
             return DumpResult(
@@ -571,7 +1131,8 @@ class DBDumper:
 
     def _dump_mongodb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MongoDB via docker exec with authentication support."""
-        dump_path = self._dump_path(db, self._timestamp(), ".archive.gz")
+        ext = ".archive.gz" if self.compression == "gzip" else ".archive"
+        dump_path = self._dump_path(db, self._timestamp(), ext)
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -588,7 +1149,7 @@ class DBDumper:
                     "--authenticationDatabase", "admin",
                 ])
 
-            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path)
+            stream = self._exec_stream_to_file(container, exec_cmd, dump_path)
             return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None)
         except Exception as e:
             return DumpResult(
@@ -596,6 +1157,23 @@ class DBDumper:
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
+
+    def _redis_auth_env(self, container) -> dict[str, str]:
+        """REDISCLI_AUTH for password-protected Redis (never passed in argv)."""
+        password = self._get_container_env(container).get("REDIS_PASSWORD", "")
+        if not password:
+            try:
+                cmd = container.attrs.get("Config", {}).get("Cmd") or []
+                tokens: list[str] = []
+                for item in cmd if isinstance(cmd, list) else [cmd]:
+                    tokens.extend(shlex.split(item) if isinstance(item, str) else [])
+                for index, token in enumerate(tokens[:-1]):
+                    if token in ("--requirepass", "requirepass"):
+                        password = tokens[index + 1]
+                        break
+            except (ValueError, AttributeError, TypeError):
+                password = ""
+        return {"REDISCLI_AUTH": password} if password else {}
 
     def _dump_redis_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Redis via BGSAVE (non-blocking) + LASTSAVE polling."""
@@ -605,9 +1183,14 @@ class DBDumper:
 
         try:
             container = self.docker.containers.get(db.container_name)
+            auth_env = self._redis_auth_env(container)
+
+            def redis_cli(*args: str):
+                kwargs = {"environment": auth_env} if auth_env else {}
+                return container.exec_run(["redis-cli", *args], **kwargs)
 
             # Get current LASTSAVE timestamp before triggering save
-            exit_code, output = container.exec_run(["redis-cli", "LASTSAVE"])
+            exit_code, output = redis_cli("LASTSAVE")
             if exit_code != 0:
                 error_msg = output.decode(errors="replace") if isinstance(output, bytes) else str(output)
                 return DumpResult(
@@ -619,7 +1202,7 @@ class DBDumper:
             prev_lastsave = output.decode(errors="replace").strip().split()[-1] if isinstance(output, bytes) else str(output).strip().split()[-1]
 
             # Trigger BGSAVE (non-blocking)
-            exit_code, output = container.exec_run(["redis-cli", "BGSAVE"])
+            exit_code, output = redis_cli("BGSAVE")
             if exit_code != 0:
                 error_msg = output.decode(errors="replace") if isinstance(output, bytes) else str(output)
                 return DumpResult(
@@ -635,7 +1218,7 @@ class DBDumper:
             while waited < max_wait:
                 time.sleep(1)
                 waited += 1
-                exit_code, output = container.exec_run(["redis-cli", "LASTSAVE"])
+                exit_code, output = redis_cli("LASTSAVE")
                 if exit_code != 0:
                     continue
                 current_lastsave = output.decode(errors="replace").strip().split()[-1] if isinstance(output, bytes) else str(output).strip().split()[-1]
@@ -660,14 +1243,14 @@ class DBDumper:
                 )
 
             # Get the actual RDB file location via CONFIG GET
-            exit_code, output = container.exec_run(["redis-cli", "CONFIG", "GET", "dir"])
+            exit_code, output = redis_cli("CONFIG", "GET", "dir")
             redis_dir = "/data"  # default
             if exit_code == 0:
                 parts = output.decode(errors="replace").strip().split("\n") if isinstance(output, bytes) else str(output).strip().split("\n")
                 if len(parts) >= 2:
                     redis_dir = parts[1].strip()
 
-            exit_code, output = container.exec_run(["redis-cli", "CONFIG", "GET", "dbfilename"])
+            exit_code, output = redis_cli("CONFIG", "GET", "dbfilename")
             rdb_filename = "dump.rdb"  # default
             if exit_code == 0:
                 parts = output.decode(errors="replace").strip().split("\n") if isinstance(output, bytes) else str(output).strip().split("\n")
@@ -753,11 +1336,16 @@ class DBDumper:
 
     async def dump_single(self, container_name: str, db_name: str, db_type: str,
                           host_path: str | None = None, verify_integrity: bool = True) -> DumpResult:
-        """Dump a single database on-demand."""
+        """Dump a single database on-demand (and record it in the dump manifest)."""
         db = DiscoveredDatabase(
             container_name=container_name,
             db_type=db_type,
             db_name=db_name,
             host_path=host_path,
         )
-        return await self._dump_one(db)
+        self.compression = await self._load_compression()
+        result = await self._dump_one(db)
+        if result.status != "success":
+            self._remove_dump_file(result.dump_path)
+        await self._update_manifest([result], {id(result): host_path}, {container_name})
+        return result

@@ -153,7 +153,7 @@ async def test_journey_notification_create_and_test(journey_target_client):
         "type": "webhook",
         "name": "Test Webhook",
         "url": "https://example.com/webhook/test",
-        "events": ["backup.completed"],
+        "events": ["backup.success"],
     }, headers=auth_headers(api_key))
     assert resp.status_code == 201
     channel_id = resp.json()["id"]

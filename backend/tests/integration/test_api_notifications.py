@@ -23,7 +23,7 @@ async def _create_channel(client, api_key):
             "type": "discord",
             "name": "Test",
             "url": "https://discord.com/api/webhooks/1234567890/token-value-here",
-            "events": ["backup.completed"],
+            "events": ["backup.success"],
         },
         headers=auth_headers(api_key),
     )
@@ -52,7 +52,7 @@ async def test_create_notification(client):
             "type": "discord",
             "name": "Test",
             "url": "https://discord.com/api/webhooks/1234567890/token-value-here",
-            "events": ["backup.completed"],
+            "events": ["backup.success"],
         },
         headers=auth_headers(api_key),
     )

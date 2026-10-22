@@ -239,6 +239,40 @@ async def test_databases_in_stopped_containers_are_skipped_not_failed(config):
 
 
 @pytest.mark.asyncio
+async def test_roles_dumps_are_not_counted_as_databases(config):
+    db = _db("pg")
+    roles_ok = DumpResult(container_name="pg", db_type="postgres", db_name="globals", dump_path="/g",
+                          dump_size_bytes=5, integrity_check="ok", status="success", kind="globals")
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg", [db])]))
+    dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), roles_ok]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
+
+    result = await orch.run_backup("job-db", run_id="r-roles")
+
+    assert result["status"] == "success"
+    row = await _run_row(config, "r-roles")
+    assert (row["databases_discovered"], row["databases_dumped"], row["databases_failed"]) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_failed_roles_dump_makes_run_partial(config):
+    db = _db("pg")
+    roles_failed = DumpResult(container_name="pg", db_type="postgres", db_name="globals", dump_path="",
+                              dump_size_bytes=0, integrity_check="skipped", status="failed",
+                              error="permission denied", kind="globals")
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg", [db])]))
+    dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), roles_failed]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
+
+    result = await orch.run_backup("job-db", run_id="r-roles-bad")
+
+    assert result["status"] == "partial"
+    row = await _run_row(config, "r-roles-bad")
+    assert row["databases_failed"] == 0
+    assert "roles dump failed for pg" in row["error_message"]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_companion_databases_are_dumped_once(config):
     db = _db("immich_postgres", name="immich")
     discovery = MagicMock(scan=AsyncMock(return_value=[

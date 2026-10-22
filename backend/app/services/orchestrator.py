@@ -478,8 +478,10 @@ class BackupOrchestrator:
                             (run_id, dr.container_name, dr.db_type, dr.db_name,
                              dr.dump_size_bytes, dr.integrity_check, dr.status, dr.dump_path, dr.error),
                         )
-                    dumped = sum(1 for d in dump_results if d.status == "success")
-                    failed = sum(1 for d in dump_results if d.status == "failed")
+                    # Roles/globals dumps are recorded per run but aren't databases.
+                    database_results = [d for d in dump_results if d.kind == "database"]
+                    dumped = sum(1 for d in database_results if d.status == "success")
+                    failed = sum(1 for d in database_results if d.status == "failed")
                     await db.execute(
                         """UPDATE job_runs SET databases_discovered = ?, databases_dumped = ?, databases_failed = ?
                         WHERE id = ?""",
@@ -723,11 +725,14 @@ class BackupOrchestrator:
 
             # Step 9: Complete — check if any targets failed
             duration = int(time.monotonic() - start_time)
-            database_failures = sum(1 for d in dump_results if d.status == "failed")
+            database_failures = sum(1 for d in dump_results if d.status == "failed" and d.kind == "database")
+            roles_failures = [d.container_name for d in dump_results if d.status == "failed" and d.kind != "database"]
             flash_failed = flash_result is not None and flash_result.status == "failed"
             substep_failures = []
             if database_failures:
                 substep_failures.append(f"{database_failures} database dump(s) failed")
+            if roles_failures:
+                substep_failures.append(f"roles dump failed for {', '.join(roles_failures)}")
             if flash_failed:
                 flash_error = (flash_result.error or "").strip() if flash_result is not None else ""
                 if flash_error:

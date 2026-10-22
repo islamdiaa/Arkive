@@ -14,6 +14,7 @@ from app import __version__
 from app.core.dependencies import get_db, request_has_valid_credentials
 from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
+from app.services.freshness import evaluate_freshness
 from app.services.host_identity import resolve_hostname
 
 logger = logging.getLogger("arkive.status")
@@ -104,6 +105,45 @@ async def _fetch_setting(db: aiosqlite.Connection, key: str) -> str | None:
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         return None
     return row["value"] if row and row["value"] is not None else None
+
+
+async def recovery_kit_confirmed(db: aiosqlite.Connection) -> bool:
+    """True once the user confirmed saving a recovery kit generated after the
+    current encryption password was set."""
+    try:
+        cursor = await db.execute(
+            "SELECT key, value, updated_at FROM settings "
+            "WHERE key IN ('recovery_kit_confirmed_at', 'encryption_password')"
+        )
+        rows = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return False
+    confirmed = rows.get("recovery_kit_confirmed_at")
+    if not confirmed or not confirmed[0]:
+        return False
+    password = rows.get("encryption_password")
+    return not password or (password[1] or "") <= confirmed[0]
+
+
+async def latest_drill(db: aiosqlite.Connection) -> dict | None:
+    """Most recent finished restore drill, or None."""
+    try:
+        cursor = await db.execute(
+            """SELECT id, status, started_at, completed_at, databases_tested,
+                      databases_passed, databases_failed
+               FROM restore_drills
+               WHERE status != 'running'
+               ORDER BY started_at DESC, rowid DESC
+               LIMIT 1"""
+        )
+        row = await cursor.fetchone()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return None
+    if not row:
+        return None
+    keys = ("id", "status", "started_at", "completed_at", "databases_tested",
+            "databases_passed", "databases_failed")
+    return {key: row[i] for i, key in enumerate(keys)}
 
 
 async def _check_db_health(db: aiosqlite.Connection) -> dict:
@@ -344,6 +384,17 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     ):
         overall_status = "degraded"
 
+    # Backup freshness: a job without a recent good backup is an error — this
+    # is what catches backups that silently stopped happening.
+    backup_freshness = await evaluate_freshness(db)
+    if backup_freshness["stale"]:
+        overall_status = "error"
+
+    # A failed restore drill means a dump in the repository did not restore.
+    last_drill = await latest_drill(db)
+    if last_drill and last_drill["status"] == "failed" and overall_status == "ok":
+        overall_status = "degraded"
+
     # Storage
     try:
         cursor = await db.execute("SELECT COALESCE(SUM(total_size_bytes), 0) as total FROM storage_targets")
@@ -435,4 +486,11 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         last_verified_at=last_verified_at,
         verification_status=verification_status_obj,
         coverage=coverage,
+        backup_freshness={
+            "stale": backup_freshness["stale"],
+            "checked_at": backup_freshness["checked_at"],
+            "stale_jobs": backup_freshness["stale_jobs"],
+        },
+        recovery_kit_confirmed=await recovery_kit_confirmed(db),
+        last_drill=last_drill,
     )

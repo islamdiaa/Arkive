@@ -56,6 +56,20 @@ export function healthDisplay(health: string | null | undefined): HealthDisplay 
 	}
 }
 
+/**
+ * Health label for the dashboard. Prefers the backend's `health` alias, and
+ * never shows green while the payload itself reports overdue backups (status
+ * "error") or a failed last restore drill (at least "degraded").
+ */
+export function dashboardHealth(status: Record<string, any> | null | undefined): string {
+	if (!status) return 'unknown';
+	const raw = status.health ?? (status.status === 'ok' ? 'healthy' : status.status);
+	let health = typeof raw === 'string' && raw ? raw : 'unknown';
+	if (status.backup_freshness?.stale) return 'error';
+	if (status.last_drill?.status === 'failed' && health === 'healthy') health = 'degraded';
+	return health;
+}
+
 // ── Storage target health ──
 
 const HEALTHY_TARGET_STATUSES = new Set(['ok', 'healthy', 'online', 'connected']);

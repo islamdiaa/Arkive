@@ -17,6 +17,8 @@
 		Bell,
 		FolderOpen,
 		Shield,
+		HeartPulse,
+		KeyRound,
 	} from 'lucide-svelte';
 
 	const groups = [
@@ -50,8 +52,10 @@
 				{ href: '/settings/targets', label: 'Targets', icon: Cloud },
 				{ href: '/settings/schedule', label: 'Schedule', icon: Clock },
 				{ href: '/settings/notifications', label: 'Notifications', icon: Bell },
+				{ href: '/settings/monitoring', label: 'Monitoring', icon: HeartPulse },
 				{ href: '/settings/directories', label: 'Directories', icon: FolderOpen },
 				{ href: '/settings/security', label: 'Security', icon: Shield },
+				{ href: '/settings/recovery-kit', label: 'Recovery Kit', icon: KeyRound },
 			],
 		},
 	];

@@ -104,6 +104,17 @@
 			<div class="p-3 bg-warning/10 border border-warning/30 rounded text-sm text-warning">
 				Your encryption password cannot be changed after setup. If lost, backups cannot be restored.
 			</div>
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<p class="text-sm font-medium text-text">Recovery kit</p>
+					<p class="text-xs text-text-secondary mt-0.5">
+						{settings?.recovery_kit_confirmed_at
+							? `Saved off-server — confirmed ${new Date(settings.recovery_kit_confirmed_at).toLocaleDateString()}`
+							: 'Store the encryption password and repository locations somewhere other than this server.'}
+					</p>
+				</div>
+				<a href="/settings/recovery-kit" class="btn-secondary text-sm">Open recovery kit</a>
+			</div>
 		</SectionCard>
 
 		<SectionCard title="Security Features" description="Active protections in this Arkive instance">

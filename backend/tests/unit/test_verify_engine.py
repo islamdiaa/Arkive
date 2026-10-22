@@ -50,6 +50,7 @@ def mock_config(tmp_path):
     config.config_dir = tmp_path
     config.dump_dir = tmp_path / "dumps"
     config.dump_dir.mkdir(exist_ok=True)
+    config.restore_dir = tmp_path / "restores"
 
     from app.core.security import _load_fernet_from_dir, _reset_fernet
     _reset_fernet()
@@ -580,6 +581,7 @@ class TestResultStorage:
         config.db_path = str(empty_db)
         config.config_dir = tmp_path
         config.dump_dir = tmp_path / "dumps"
+        config.restore_dir = tmp_path / "restores"
 
         engine = VerifyEngine(config=config, backup_engine=mock_backup_engine)
 

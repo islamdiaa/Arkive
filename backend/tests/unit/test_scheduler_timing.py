@@ -88,11 +88,16 @@ class TestSystemJobRegistration:
         jobs = {job.id: job for job in scheduler.scheduler.get_jobs()}
         return jobs
 
-    def test_registers_exactly_six_system_jobs(self, scheduler):
-        """_register_system_jobs must register exactly 6 jobs (discovery, retention, health, log prune, integrity check, integrity verify)."""
+    def test_registers_the_fixed_system_jobs(self, scheduler):
+        """_register_system_jobs registers discovery, retention, health, log prune,
+        integrity check, integrity verify and backup freshness."""
         scheduler._register_system_jobs()
-        jobs = scheduler.scheduler.get_jobs()
-        assert len(jobs) == 6
+        ids = {job.id for job in scheduler.scheduler.get_jobs()}
+        assert {
+            "system_discovery_scan", "system_retention_cleanup", "system_health_check",
+            "system_activity_log_prune", "system_integrity_check", "system_integrity_verify",
+            "system_backup_freshness",
+        } <= ids
 
     def test_discovery_uses_cron_trigger(self, scheduler):
         """Discovery job must use CronTrigger."""

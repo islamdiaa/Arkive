@@ -51,3 +51,11 @@ class StatusResponse(BaseModel):
 
     # Coverage
     coverage: dict | None = None
+
+    # Jobs without a recent good backup: {"stale", "checked_at", "stale_jobs": [...]}
+    backup_freshness: dict | None = None
+    # False until the user confirms saving a recovery kit for the current password.
+    recovery_kit_confirmed: bool = False
+    # Latest finished restore drill: {"id", "status", "started_at", "completed_at",
+    # "databases_tested", "databases_passed", "databases_failed"} or None.
+    last_drill: dict | None = None

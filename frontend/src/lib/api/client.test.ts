@@ -94,6 +94,37 @@ describe('api client', () => {
 		await expect(api.getStatus()).rejects.toEqual(new ApiError(401, 'Nope'));
 	});
 
+	it('surfaces a 400 restore error message verbatim (read-only destination)', async () => {
+		const detail = "Restore destination /mnt/user/restore is on a read-only mount; choose a writable folder.";
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: 'bad_request', message: detail, details: {} }), {
+				status: 400,
+				statusText: 'Bad Request',
+				headers: { 'Content-Type': 'application/json' },
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { api, ApiError } = await loadClientModule();
+
+		await expect(api.restore({ snapshot_id: 'abc', target: 't1', paths: [] })).rejects.toEqual(new ApiError(400, detail));
+	});
+
+	it('falls back to a FastAPI-style detail string when there is no message', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ detail: 'A restore drill is already running' }), {
+				status: 409,
+				statusText: 'Conflict',
+				headers: { 'Content-Type': 'application/json' },
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { api, ApiError } = await loadClientModule();
+
+		await expect(api.post('/drills/run')).rejects.toEqual(new ApiError(409, 'A restore drill is already running'));
+	});
+
 	it('redirects to login with a next parameter when an authenticated session gets a 401', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ message: 'Missing API key' }), {

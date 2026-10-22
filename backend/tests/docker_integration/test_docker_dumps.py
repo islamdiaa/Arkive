@@ -1,6 +1,5 @@
 """Phase 5: Docker DB dump tests using FakeDockerClient exec_run."""
 
-import gzip
 import os
 import shutil
 
@@ -23,7 +22,7 @@ class TestPostgresDump:
     """Postgres dump via fake exec_run."""
 
     async def test_postgres_dump_success(self, tmp_config, fake_docker):
-        """Fake pg_dump yields SQL → gzipped file > 0 bytes."""
+        """Fake pg_dump yields SQL → plain .sql file > 0 bytes (dump_compression default "none")."""
         dumper = DBDumper(docker_client=fake_docker, config=tmp_config)
         db = DiscoveredDatabase(
             container_name="fake-postgres",
@@ -36,9 +35,8 @@ class TestPostgresDump:
 
         assert result.status == "success"
         assert result.dump_size_bytes > 0
-        assert result.dump_path.endswith(".sql.gz")
-        # Verify gzip content
-        with gzip.open(result.dump_path, "rb") as f:
+        assert result.dump_path.endswith(".sql")
+        with open(result.dump_path, "rb") as f:
             content = f.read()
         assert b"PostgreSQL database dump" in content
         assert b"CREATE TABLE" in content
@@ -70,7 +68,7 @@ class TestMariaDBDump:
     """MariaDB dump via fake exec_run."""
 
     async def test_mariadb_dump_success(self, tmp_config, fake_docker):
-        """Fake mysqldump yields SQL → gzipped file > 0 bytes."""
+        """Fake mysqldump yields SQL → plain .sql file > 0 bytes."""
         dumper = DBDumper(docker_client=fake_docker, config=tmp_config)
         db = DiscoveredDatabase(
             container_name="fake-mariadb",
@@ -83,7 +81,8 @@ class TestMariaDBDump:
 
         assert result.status == "success"
         assert result.dump_size_bytes > 0
-        with gzip.open(result.dump_path, "rb") as f:
+        assert result.dump_path.endswith(".sql")
+        with open(result.dump_path, "rb") as f:
             content = f.read()
         assert b"MySQL dump" in content
 
@@ -113,7 +112,7 @@ class TestMongoDBDump:
     """MongoDB dump via fake exec_run."""
 
     async def test_mongodb_dump_success(self, tmp_config, fake_docker):
-        """Fake mongodump yields binary → gzipped file > 0 bytes."""
+        """Fake mongodump yields binary → plain .archive file > 0 bytes."""
         dumper = DBDumper(docker_client=fake_docker, config=tmp_config)
         db = DiscoveredDatabase(
             container_name="fake-mongo",
@@ -126,7 +125,7 @@ class TestMongoDBDump:
 
         assert result.status == "success"
         assert result.dump_size_bytes > 0
-        assert result.dump_path.endswith(".archive.gz")
+        assert result.dump_path.endswith(".archive")
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from app.core.security import decrypt_config
 from app.models.restore import RestoreRequest
 from app.services.orchestrator import _get_proc_start_time
 from app.services.repo_paths import build_repo_path
+from app.utils.mounts import read_only_mount_for
 
 logger = logging.getLogger("arkive.restore")
 
@@ -325,6 +326,21 @@ async def restore_files(
             }
 
     restore_to = body.restore_to or str(Path(config.restore_dir) / f"restore-{restore_id}")
+
+    # Arkive is meant to run with the data it backs up mounted read-only; a
+    # restore into such a mount would fail file-by-file deep inside restic.
+    destinations = [restore_to] + [
+        os.path.join(restore_to, p.lstrip("/")) for p in (body.paths or []) if p.strip("/")
+    ]
+    for destination in destinations:
+        read_only_mount = read_only_mount_for(destination)
+        if read_only_mount:
+            raise HTTPException(
+                400,
+                f"Cannot restore to {destination}: {read_only_mount} is mounted read-only in the "
+                f"Arkive container. Restore to {config.restore_dir} (the default) and copy the files "
+                f"into place, or mount {read_only_mount} read-write.",
+            )
 
     # Take the lock before recording anything: a 409 (backup running / another
     # restore) must not leave a restore_runs row stuck in 'running'.

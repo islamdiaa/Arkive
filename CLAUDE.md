@@ -340,6 +340,59 @@ Rules that follow from this:
 - test doubles for dumps must emit realistic output (including trailers)
 - tests that exercise scheduled conflicts must pass `lock_wait_seconds=0`
 
+### 13. Knowing the backups work (v0.4.0)
+
+The v0.3.0 failure went unnoticed for months because nothing outside a run
+looked at whether backups were still happening. This pass adds checks that
+don't depend on a run reporting its own failure.
+
+- **Freshness watchdog** (`services/freshness.py`, scheduler job
+  `system_backup_freshness`, every 15 min). A job is stale when its last *good*
+  run is older than its longest cron gap plus 25% (at least 2 h), or the
+  `stale_backup_hours` override. Good means `success`, or `partial` with a
+  snapshot written and, for DB jobs on a system that has had databases, at
+  least one dump. Stale jobs make `/api/status` `status: "error"`
+  (`backup_freshness` field) and notify `backup.stale` (repeated daily).
+- **Heartbeat** (`heartbeat_url` setting). The freshness job GETs it only while
+  every job is healthy, so an external monitor (Uptime Kuma push,
+  healthchecks.io) alerts when Arkive is down *or* backups are bad.
+- **Restore drills** (`services/restore_drill.py`, `api/drills.py`, migration 5
+  tables `restore_drills` / `restore_drill_results`, setting-driven weekly job).
+  Restores recent dumps from the latest snapshot and loads them into a
+  throwaway, network-less container of the source image.
+- **Recovery kit** (`services/recovery_kit.py`, `POST /api/settings/recovery-kit`).
+  Password + repository locations + restore steps; `/api/status`
+  `recovery_kit_confirmed` drives a dashboard nag until confirmed (reset when the
+  encryption password changes).
+- **Keyfile guard** (`core/security.verify_keyfile`, called at startup). Refuses
+  to start when `/config/.keyfile` is missing, corrupt or can't decrypt the
+  stored secrets, instead of silently generating a new key.
+  `ARKIVE_ALLOW_NEW_KEYFILE=1` overrides.
+- **Dumps deduplicate.** `dump_compression` defaults to `none` (plain `.sql`;
+  restic compresses). Every database in a Postgres cluster is dumped, plus
+  roles via `pg_dumpall --globals-only`. `arkive-dumps-manifest.json` in the
+  dump dir maps files to containers/databases (drills read it from snapshots).
+- **Notification events** have one catalog (`services/notification_events.py`,
+  `GET /api/notifications/events`); channel create/update rejects unknown events.
+  The UI previously offered events the backend never sent, and the backend sent
+  events no UI subscription could match.
+- **Legacy host names.** Weekly retention re-labels Arkive snapshots recorded
+  under a container ID (`restic rewrite --new-host --forget`) so old retention
+  groups merge and get thinned.
+- **Read-only data mounts.** Restores only go to `/config/restores` (model
+  validation) and are refused with a clear 400 when the destination is on a
+  read-only mount, so `/mnt/user` and the flash config can be mounted `:ro`.
+- uvicorn's own log lines are JSON too (`backend/logging.json`, `--log-config`).
+
+Tests: `tests/unit/test_watchdog_recovery.py`, `tests/unit/test_restore_drill.py`,
+`tests/integration/test_api_drills.py`, `tests/unit/test_dump_formats.py`.
+
+Rules that follow from this:
+- every event the backend sends must be in `NOTIFICATION_EVENTS`, and the UI
+  must take its list from the API
+- new status signals that mean "backups are not happening" belong in
+  `evaluate_freshness`, so the dashboard, notifications and heartbeat agree
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.

@@ -169,6 +169,8 @@ class TestCredentialRedactionInDumper:
         dumper._dump_one = _raising_dump_one
 
         results = await dumper.dump_all([db])
+        # Postgres containers also get a roles ("globals") result; check the database one.
+        results = [r for r in results if r.kind == "database"]
 
         assert len(results) == 1
         assert results[0].status == "failed"

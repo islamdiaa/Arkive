@@ -15,11 +15,15 @@ import aiosqlite
 import yaml
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.core.dependencies import get_cloud_manager, get_config, get_db, get_event_bus, require_auth
 from app.core.security import decrypt_config, decrypt_value, encrypt_config, encrypt_value, is_encrypted
+from app.core.activity import log_activity
+from app.services.freshness import ping_heartbeat
+from app.services.recovery_kit import build_recovery_kit
+from app.services.settings_store import DEFAULTS, get_setting, set_setting
 
 logger = logging.getLogger("arkive.api.settings")
 router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_auth)])
@@ -55,6 +59,15 @@ def _int_setting(values: dict, key: str, default: int) -> int:
 
 _RETENTION_KEYS = {"retention_days", "keep_daily", "keep_weekly", "keep_monthly", "flash_retention"}
 _DISK_SPACE_KEYS = {"min_disk_space_bytes", "warn_disk_space_bytes"}
+# key -> (minimum, maximum) for bounded integer settings
+_BOUNDED_INT_KEYS = {
+    "stale_backup_hours": (0, 8760),
+    "restore_drill_max_databases": (1, 100),
+    "restore_drill_max_dump_mb": (1, 1024 * 1024),
+}
+_BOOL_KEYS = {"restore_drill_enabled"}
+_CHOICE_KEYS = {"dump_compression": {"none", "gzip"}}
+_HTTP_URL_RE = re.compile(r"^https?://[^\s/?#]+[^\s]*$")
 
 
 def _validate_setting_value(key: str, value) -> str:
@@ -96,12 +109,51 @@ def _validate_setting_value(key: str, value) -> str:
             raise HTTPException(status_code=422, detail=f"'{key}' must be an integer")
         if int_val < 0:
             raise HTTPException(status_code=422, detail=f"'{key}' must be non-negative")
+    if key in _BOUNDED_INT_KEYS:
+        low, high = _BOUNDED_INT_KEYS[key]
+        try:
+            int_val = int(text)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail=f"'{key}' must be an integer")
+        if not low <= int_val <= high:
+            raise HTTPException(status_code=422, detail=f"'{key}' must be between {low} and {high}")
+        text = str(int_val)
+    if key in _BOOL_KEYS:
+        lowered = text.strip().lower()
+        if lowered not in ("true", "false"):
+            raise HTTPException(status_code=422, detail=f"'{key}' must be true or false")
+        text = lowered
+    if key in _CHOICE_KEYS and text not in _CHOICE_KEYS[key]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{key}' must be one of: {', '.join(sorted(_CHOICE_KEYS[key]))}",
+        )
+    if key == "heartbeat_url":
+        text = text.strip()
+        if text and (len(text) > 2048 or not _HTTP_URL_RE.match(text)):
+            raise HTTPException(status_code=422, detail="heartbeat_url must be an http(s) URL or empty")
+    if key == "restore_drill_schedule":
+        text = text.strip()
+        if len(text.split()) != 5 or not croniter.is_valid(text):
+            raise HTTPException(status_code=422, detail=f"Invalid cron expression for '{key}': '{text}'")
     if key == "bandwidth_limit" and text and not _BANDWIDTH_RE.match(text):
         raise HTTPException(
             status_code=422,
             detail="bandwidth_limit must be a positive integer (KiB/s) or empty to disable",
         )
     return text
+
+
+async def _reload_drill_job(request: Request) -> None:
+    """Re-register the restore drill system job after its settings changed."""
+    scheduler = getattr(request.app.state, "scheduler", None)
+    reload = getattr(scheduler, "reload_restore_drill_job", None)
+    if reload is None:
+        return
+    try:
+        await reload()
+    except Exception as exc:
+        logger.warning("Could not reschedule restore drills: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +200,17 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         "web_url": values.get("web_url", ""),
         "theme": values.get("theme", "dark"),
         "bandwidth_limit": values.get("bandwidth_limit", ""),
+        "heartbeat_url": values.get("heartbeat_url", DEFAULTS["heartbeat_url"]),
+        "stale_backup_hours": _int_setting(values, "stale_backup_hours", 0),
+        "dump_compression": values.get("dump_compression", DEFAULTS["dump_compression"]),
+        "restore_drill_enabled": values.get(
+            "restore_drill_enabled", DEFAULTS["restore_drill_enabled"]) == "true",
+        "restore_drill_schedule": values.get("restore_drill_schedule", DEFAULTS["restore_drill_schedule"]),
+        "restore_drill_max_databases": _int_setting(
+            values, "restore_drill_max_databases", int(DEFAULTS["restore_drill_max_databases"])),
+        "restore_drill_max_dump_mb": _int_setting(
+            values, "restore_drill_max_dump_mb", int(DEFAULTS["restore_drill_max_dump_mb"])),
+        "recovery_kit_confirmed_at": values.get("recovery_kit_confirmed_at"),
         "api_key_set": "api_key_hash" in values,
         "encryption_password_set": ("encryption_password" in values or "restic_password" in values),
     }
@@ -173,7 +236,12 @@ WRITABLE_SETTINGS = {
     "notify_on_success", "notify_on_failure",
     "min_disk_space_bytes", "warn_disk_space_bytes",
     "bandwidth_limit",
+    "heartbeat_url", "stale_backup_hours", "dump_compression",
+    "restore_drill_enabled", "restore_drill_schedule",
+    "restore_drill_max_databases", "restore_drill_max_dump_mb",
 }
+# Settings whose change must re-register the restore drill system job.
+_DRILL_SCHEDULE_KEYS = {"restore_drill_enabled", "restore_drill_schedule"}
 READONLY_SETTINGS = {
     "api_key_hash", "api_key", "encryption_password", "restic_password",
     "setup_completed_at", "setup_completed", "platform",
@@ -240,6 +308,9 @@ async def update_settings_bulk(
 
     await db.commit()
 
+    if _DRILL_SCHEDULE_KEYS & cleaned.keys():
+        await _reload_drill_job(request)
+
     if event_bus is not None:
         await event_bus.publish("settings.updated", {"count": len(updated)})
 
@@ -251,6 +322,7 @@ async def update_settings_bulk(
 async def update_setting(
     key: str,
     body: SettingUpdate,
+    request: Request,
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Update a specific setting."""
@@ -286,6 +358,8 @@ async def update_setting(
 
     await db.commit()
     logger.info("Setting '%s' updated", key)
+    if key in _DRILL_SCHEDULE_KEYS:
+        await _reload_drill_job(request)
 
     return {
         "key": key,
@@ -295,6 +369,45 @@ async def update_setting(
         "updated_at": now,
     }
 
+
+
+@router.post("/recovery-kit")
+async def generate_recovery_kit(
+    request: Request,
+    db: aiosqlite.Connection = Depends(get_db),
+    config=Depends(get_config),
+):
+    """Everything needed to open the backups if this server is lost:
+    encryption password, repository locations, restore steps."""
+    try:
+        kit = await build_recovery_kit(db, config, getattr(request.app.state, "docker_client", None))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await log_activity(db, "system", "recovery_kit", "Recovery kit generated", severity="info")
+    return JSONResponse(kit, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/recovery-kit/confirm")
+async def confirm_recovery_kit(db: aiosqlite.Connection = Depends(get_db)):
+    """Record that the user stored the recovery kit outside this server."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await set_setting(db, "recovery_kit_confirmed_at", now)
+    await log_activity(db, "system", "recovery_kit", "Recovery kit marked as saved")
+    return {"confirmed_at": now}
+
+
+class HeartbeatTest(BaseModel):
+    url: str | None = None
+
+
+@router.post("/heartbeat/test")
+async def test_heartbeat(body: HeartbeatTest | None = None, db: aiosqlite.Connection = Depends(get_db)):
+    """Ping the heartbeat URL now (the given one, or the saved setting)."""
+    url = (body.url if body and body.url else await get_setting(db, "heartbeat_url")).strip()
+    if not url:
+        raise HTTPException(status_code=422, detail="No heartbeat URL configured")
+    url = _validate_setting_value("heartbeat_url", url)
+    return await ping_heartbeat(url)
 
 
 @router.post("/reset")

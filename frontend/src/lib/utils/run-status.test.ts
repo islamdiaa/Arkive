@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+	dashboardHealth,
 	healthDisplay,
 	isConflictTerminalEvent,
 	isHealthyTargetStatus,
@@ -93,5 +94,33 @@ describe('resolveTrustScore', () => {
 			}),
 		).toBe(0);
 		expect(resolveTrustScore({ trust_score: 94, last_verified_at: '2026-10-01T00:00:00Z' })).toBe(94);
+	});
+});
+
+describe('dashboardHealth', () => {
+	it('uses the backend health alias', () => {
+		expect(dashboardHealth({ status: 'ok', health: 'healthy' })).toBe('healthy');
+		expect(dashboardHealth({ status: 'error', health: 'error' })).toBe('error');
+		expect(dashboardHealth({ status: 'degraded', health: 'degraded' })).toBe('degraded');
+	});
+
+	it('derives health from status when the alias is missing', () => {
+		expect(dashboardHealth({ status: 'ok' })).toBe('healthy');
+		expect(dashboardHealth({ status: 'error' })).toBe('error');
+		expect(dashboardHealth(null)).toBe('unknown');
+		expect(dashboardHealth({})).toBe('unknown');
+	});
+
+	it('is red whenever backups are overdue', () => {
+		expect(dashboardHealth({ health: 'error', backup_freshness: { stale: true, stale_jobs: [] } })).toBe('error');
+		// Even if an older backend did not fold staleness into status.
+		expect(dashboardHealth({ health: 'healthy', backup_freshness: { stale: true, stale_jobs: [] } })).toBe('error');
+		expect(dashboardHealth({ health: 'healthy', backup_freshness: { stale: false, stale_jobs: [] } })).toBe('healthy');
+	});
+
+	it('is at least degraded after a failed restore drill', () => {
+		expect(dashboardHealth({ health: 'healthy', last_drill: { status: 'failed' } })).toBe('degraded');
+		expect(dashboardHealth({ health: 'error', last_drill: { status: 'failed' } })).toBe('error');
+		expect(dashboardHealth({ health: 'healthy', last_drill: { status: 'passed' } })).toBe('healthy');
 	});
 });

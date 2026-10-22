@@ -8,7 +8,9 @@
     { href: '/settings/jobs', label: 'Backup Jobs', icon: '📋' },
     { href: '/settings/directories', label: 'Directories', icon: '📁' },
     { href: '/settings/notifications', label: 'Notifications', icon: '🔔' },
+    { href: '/settings/monitoring', label: 'Monitoring', icon: '📡' },
     { href: '/settings/security', label: 'Security', icon: '🔐' },
+    { href: '/settings/recovery-kit', label: 'Recovery Kit', icon: '🔑' },
   ];
 
   function linkClass(href: string, currentPath: string): string {

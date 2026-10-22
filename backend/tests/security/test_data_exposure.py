@@ -116,7 +116,7 @@ async def test_notification_url_redacted(client):
         "type": "discord",
         "name": "Discord",
         "url": "https://discord.com/api/webhooks/123456789/abcdefghijklmnop",
-        "events": ["backup.completed"],
+        "events": ["backup.success"],
     }, headers=auth_headers(api_key))
     assert resp.status_code == 201
 
