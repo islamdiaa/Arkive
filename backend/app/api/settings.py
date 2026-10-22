@@ -6,6 +6,7 @@ Includes config export/import as YAML and cron preview.
 
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -17,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from app.core.dependencies import get_config, get_db, get_event_bus, require_auth
-from app.core.security import decrypt_config
+from app.core.dependencies import get_cloud_manager, get_config, get_db, get_event_bus, require_auth
+from app.core.security import decrypt_config, decrypt_value, encrypt_config, encrypt_value, is_encrypted
 
 logger = logging.getLogger("arkive.api.settings")
 router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_auth)])
@@ -42,6 +43,65 @@ def _is_sensitive(key: str, encrypted: int) -> bool:
     if encrypted:
         return True
     return any(pattern in key.lower() for pattern in SENSITIVE_PATTERNS)
+
+
+def _int_setting(values: dict, key: str, default: int) -> int:
+    """Parse an integer setting, falling back to the default on bad stored data."""
+    try:
+        return int(values.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+_RETENTION_KEYS = {"retention_days", "keep_daily", "keep_weekly", "keep_monthly", "flash_retention"}
+_DISK_SPACE_KEYS = {"min_disk_space_bytes", "warn_disk_space_bytes"}
+
+
+def _validate_setting_value(key: str, value) -> str:
+    """Validate one setting value; return it as the string to store.
+
+    Raises HTTPException(422) on invalid input. Shared by single/bulk update and
+    config import so all write paths apply the same rules.
+    """
+    if value is None:
+        value = ""
+    if isinstance(value, bool):
+        value = "true" if value else "false"
+    if not isinstance(value, (str, int, float)):
+        raise HTTPException(status_code=422, detail=f"Invalid value for '{key}': must be a string or number")
+    text = str(value)
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        raise HTTPException(status_code=422, detail=f"Invalid value for '{key}': control characters are not allowed")
+
+    if key == "timezone":
+        try:
+            import zoneinfo
+            zoneinfo.ZoneInfo(text)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Invalid timezone: '{text}'")
+    if key in _RETENTION_KEYS:
+        try:
+            int_val = int(text)
+        except (ValueError, TypeError):
+            int_val = 0
+        if int_val < 1:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid value for '{key}': must be a positive integer (got {text})",
+            )
+    if key in _DISK_SPACE_KEYS:
+        try:
+            int_val = int(text)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=422, detail=f"'{key}' must be an integer")
+        if int_val < 0:
+            raise HTTPException(status_code=422, detail=f"'{key}' must be non-negative")
+    if key == "bandwidth_limit" and text and not _BANDWIDTH_RE.match(text):
+        raise HTTPException(
+            status_code=422,
+            detail="bandwidth_limit must be a positive integer (KiB/s) or empty to disable",
+        )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -72,15 +132,15 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
             "updated_at": row["updated_at"],
         })
 
-    keep_daily = int(values.get("keep_daily", "7") or 7)
-    keep_weekly = int(values.get("keep_weekly", "4") or 4)
-    keep_monthly = int(values.get("keep_monthly", "6") or 6)
+    keep_daily = _int_setting(values, "keep_daily", 7)
+    keep_weekly = _int_setting(values, "keep_weekly", 4)
+    keep_monthly = _int_setting(values, "keep_monthly", 6)
     return {
         "items": items,
         "total": len(items),
         "server_name": values.get("server_name", ""),
         "timezone": values.get("timezone", "UTC"),
-        "retention_days": int(values.get("retention_days", "30") or 30),
+        "retention_days": _int_setting(values, "retention_days", 30),
         "keep_daily": keep_daily,
         "keep_weekly": keep_weekly,
         "keep_monthly": keep_monthly,
@@ -148,56 +208,12 @@ async def update_settings_bulk(
             detail=f"Unknown settings: {', '.join(unknown)}. Allowed: {', '.join(sorted(WRITABLE_SETTINGS))}",
         )
 
-    # Validate timezone
-    if "timezone" in settings_payload:
-        tz_val = settings_payload["timezone"]
-        try:
-            import zoneinfo
-            zoneinfo.ZoneInfo(tz_val)
-        except (KeyError, Exception):
-            raise HTTPException(status_code=422, detail=f"Invalid timezone: '{tz_val}'")
-
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     updated = []
 
-    # Validate retention values
-    retention_keys = {"retention_days", "keep_daily", "keep_weekly", "keep_monthly", "flash_retention"}
-    for key, value in settings_payload.items():
-        if key in retention_keys:
-            try:
-                int_val = int(value)
-                if int_val < 1:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Invalid value for '{key}': must be a positive integer (got {value})",
-                    )
-            except (ValueError, TypeError):
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Invalid value for '{key}': must be a positive integer (got {value})",
-                )
+    cleaned = {key: _validate_setting_value(key, value) for key, value in settings_payload.items()}
 
-    # Validate disk space values
-    disk_space_keys = {"min_disk_space_bytes", "warn_disk_space_bytes"}
-    for key, value in settings_payload.items():
-        if key in disk_space_keys:
-            try:
-                int_val = int(value)
-                if int_val < 0:
-                    raise HTTPException(status_code=422, detail=f"'{key}' must be non-negative")
-            except (ValueError, TypeError):
-                raise HTTPException(status_code=422, detail=f"'{key}' must be an integer")
-
-    # Validate bandwidth_limit (restic --limit-upload expects a positive integer in KiB/s)
-    if "bandwidth_limit" in settings_payload:
-        bw_val = str(settings_payload["bandwidth_limit"]) if settings_payload["bandwidth_limit"] is not None else ""
-        if bw_val and not _BANDWIDTH_RE.match(bw_val):
-            raise HTTPException(
-                status_code=422,
-                detail="bandwidth_limit must be a positive integer (KiB/s) or empty to disable",
-            )
-
-    for key, value in settings_payload.items():
+    for key, value in cleaned.items():
         encrypted = 1 if _is_sensitive(key, 0) else 0
 
         cursor = await db.execute("SELECT key FROM settings WHERE key = ?", (key,))
@@ -249,46 +265,7 @@ async def update_setting(
             detail=f"Unknown setting '{key}'. Allowed: {', '.join(sorted(WRITABLE_SETTINGS))}",
         )
 
-    # Validate timezone
-    if key == "timezone":
-        try:
-            import zoneinfo
-            zoneinfo.ZoneInfo(body.value)
-        except (KeyError, Exception):
-            raise HTTPException(status_code=422, detail=f"Invalid timezone: '{body.value}'")
-
-    # Validate retention values
-    if key in {"retention_days", "keep_daily", "keep_weekly", "keep_monthly", "flash_retention"}:
-        try:
-            int_val = int(body.value)
-            if int_val < 1:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Invalid value for '{key}': must be a positive integer (got {body.value})",
-                )
-        except (ValueError, TypeError):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid value for '{key}': must be a positive integer (got {body.value})",
-            )
-
-    # Validate disk space values
-    if key in {"min_disk_space_bytes", "warn_disk_space_bytes"}:
-        try:
-            int_val = int(body.value)
-            if int_val < 0:
-                raise HTTPException(status_code=422, detail=f"'{key}' must be non-negative")
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=422, detail=f"'{key}' must be an integer")
-
-    # Validate bandwidth_limit (restic --limit-upload expects a positive integer in KiB/s)
-    if key == "bandwidth_limit":
-        bw_val = str(body.value) if body.value is not None else ""
-        if bw_val and not _BANDWIDTH_RE.match(bw_val):
-            raise HTTPException(
-                status_code=422,
-                detail="bandwidth_limit must be a positive integer (KiB/s) or empty to disable",
-            )
+    body.value = _validate_setting_value(key, body.value)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     encrypted = 1 if _is_sensitive(key, 0) else 0
@@ -528,12 +505,111 @@ async def export_config(db: aiosqlite.Connection = Depends(get_db)):
     )
 
 
+# Placeholders produced by export/list redaction. A secret with one of these
+# values was never really exported and must not overwrite the stored secret.
+_REDACTED_PLACEHOLDERS = {REDACTED, "***", "••••••", "[REDACTED]", "***REDACTED***"}
+_VALID_JOB_TYPES = {"full", "db_dump", "flash"}
+_BLOCKED_DIR_PREFIXES = (
+    "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot",
+    "/proc", "/sys", "/dev", "/var/run", "/root",
+)
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _is_redacted_placeholder(value) -> bool:
+    return isinstance(value, str) and value.strip() in _REDACTED_PLACEHOLDERS
+
+
+def _safe_id(raw) -> str:
+    candidate = str(raw or "").strip()
+    return candidate if _SAFE_ID_RE.match(candidate) else str(uuid.uuid4())[:8]
+
+
+def _as_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
+
+
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _target_config_from_import(raw) -> dict:
+    """Imported target config: a dict (export format) or a JSON/encrypted string."""
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw:
+        try:
+            return decrypt_config(raw, str(get_config().config_dir))
+        except Exception:
+            return {}
+    return {}
+
+
+async def _reload_scheduler_jobs(scheduler, old_job_ids: set[str], jobs: list[dict]) -> None:
+    """Re-register imported jobs with the live scheduler (best effort)."""
+    if scheduler is None:
+        return
+    remove = getattr(scheduler, "remove_job", None)
+    add = getattr(scheduler, "add_job", None)
+    reschedule = getattr(scheduler, "reschedule_job", None)
+    for job_id in old_job_ids:
+        if callable(remove):
+            try:
+                await remove(job_id)
+            except Exception as exc:
+                logger.warning("Config import: failed to unschedule job %s: %s", job_id, exc)
+    for job in jobs:
+        if not job.get("enabled"):
+            continue
+        try:
+            if callable(add):
+                await add({
+                    "id": job["id"],
+                    "name": job["name"],
+                    "schedule": job["schedule"],
+                    "type": job["type"],
+                    "enabled": True,
+                })
+            elif callable(reschedule):
+                await reschedule(job["id"], job["schedule"])
+        except Exception as exc:
+            logger.warning("Config import: failed to schedule job %s: %s", job["id"], exc)
+
+
 @router.post("/import")
 async def import_config(
     request: Request,
     db: aiosqlite.Connection = Depends(get_db),
+    cloud_manager=Depends(get_cloud_manager),
 ):
-    """Import an Arkive configuration from a YAML file."""
+    """Import an Arkive configuration from a YAML file.
+
+    Each section present in the file replaces that section in the database.
+    Secrets that were redacted on export (e.g. ``********``) are merged from
+    the existing target with the same id instead of overwriting it; invalid
+    entries are skipped and reported in ``warnings``.
+    """
+    from app.api.targets import (
+        VALID_TYPES,
+        _control_char_errors,
+        _normalize_config,
+        _sanitize_name,
+        _validate_provider_config,
+    )
+    from app.models.notifications import VALID_NOTIFICATION_TYPES
+
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Empty request body")
@@ -545,11 +621,14 @@ async def import_config(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="Request body must be valid UTF-8")
 
-    if not config or "arkive_config" not in config:
+    if not isinstance(config, dict) or not isinstance(config.get("arkive_config"), dict):
         raise HTTPException(status_code=400, detail="Invalid config format. Expected 'arkive_config' root key.")
 
     arkive_config = config["arkive_config"]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app_config = get_config()
+    config_dir = str(app_config.config_dir)
+    warnings: list[str] = []
 
     restored = {
         "settings": 0,
@@ -559,31 +638,36 @@ async def import_config(
         "notification_channels": 0,
     }
 
+    def _section(name: str) -> list:
+        value = arkive_config.get(name, [])
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise HTTPException(status_code=400, detail=f"'{name}' must be a list")
+        return [item for item in value if isinstance(item, dict)]
+
     # --- Settings ---
-    for setting in arkive_config.get("settings", []):
+    for setting in _section("settings"):
         key = setting.get("key")
-        value = setting.get("value")
-        encrypted = 1 if setting.get("encrypted", False) else 0
-        if not key or key in EXPORT_EXCLUDED_KEYS:
+        if not isinstance(key, str) or not key or key in EXPORT_EXCLUDED_KEYS:
             continue
         # Block importing protected/readonly settings to prevent privilege escalation
         if key in READONLY_SETTINGS:
             logger.warning("Config import: skipping protected setting '%s'", key)
             continue
-
-        # Validate bandwidth_limit format to reject corrupt/malicious values
-        if key == "bandwidth_limit":
-            val_for_check = str(value) if value is not None else ""
-            if not _BANDWIDTH_RE.match(val_for_check):
-                logger.warning(
-                    "Config import: skipping invalid bandwidth_limit '%s'", val_for_check
-                )
-                continue
+        if _CONTROL_RE.search(key):
+            warnings.append("Skipped a setting with an invalid key")
+            continue
+        try:
+            val_str = _validate_setting_value(key, setting.get("value"))
+        except HTTPException as exc:
+            logger.warning("Config import: skipping invalid setting '%s': %s", key, exc.detail)
+            warnings.append(f"Skipped setting '{key}': {exc.detail}")
+            continue
+        encrypted = 1 if setting.get("encrypted", False) else 0
 
         cursor = await db.execute("SELECT key FROM settings WHERE key = ?", (key,))
         existing = await cursor.fetchone()
-        val_str = str(value) if value is not None else ""
-
         if existing:
             await db.execute(
                 "UPDATE settings SET value = ?, encrypted = ?, updated_at = ? WHERE key = ?",
@@ -597,101 +681,240 @@ async def import_config(
         restored["settings"] += 1
 
     # --- Storage Targets ---
-    imported_targets = arkive_config.get("storage_targets", [])
+    rclone_writes: list[dict] = []
+    removed_target_ids: set[str] = set()
+    imported_targets = _section("storage_targets")
     if imported_targets:
-        await db.execute("DELETE FROM storage_targets")
+        cursor = await db.execute("SELECT * FROM storage_targets")
+        existing_targets = {row["id"]: dict(row) for row in await cursor.fetchall()}
+        kept_ids: set[str] = set()
         for t in imported_targets:
-            tid = t.get("id", str(uuid.uuid4())[:8])
-            cfg = t.get("config", {})
-            cfg_str = json.dumps(cfg) if isinstance(cfg, dict) else str(cfg)
+            tid = _safe_id(t.get("id"))
+            if tid in kept_ids:
+                tid = str(uuid.uuid4())[:8]
+            ttype = str(t.get("type") or "").strip()
+            name = _sanitize_name(str(t.get("name") or "Unnamed"))[:50] or "Unnamed"
+            if ttype not in VALID_TYPES:
+                warnings.append(f"Skipped target '{name}': unsupported type '{ttype}'")
+                continue
+            cfg = _normalize_config(_target_config_from_import(t.get("config")))
+            cc_errors = _control_char_errors(cfg)
+            if cc_errors:
+                warnings.append(f"Skipped target '{name}': {'; '.join(cc_errors)}")
+                continue
+
+            existing_cfg: dict = {}
+            if tid in existing_targets:
+                try:
+                    existing_cfg = decrypt_config(existing_targets[tid].get("config", "{}"), config_dir)
+                except Exception:
+                    existing_cfg = {}
+            missing_secrets: list[str] = []
+            for key, value in list(cfg.items()):
+                if _is_redacted_placeholder(value):
+                    if existing_cfg.get(key) not in (None, "") and not _is_redacted_placeholder(existing_cfg.get(key)):
+                        cfg[key] = existing_cfg[key]
+                    else:
+                        cfg.pop(key)
+                        missing_secrets.append(key)
+
+            status = str(t.get("status") or "unknown")
+            provider_errors = _validate_provider_config(ttype, cfg)
+            if missing_secrets:
+                status = "needs_credentials"
+                warnings.append(
+                    f"Target '{name}' ({tid}) is missing secrets that were redacted on export: "
+                    f"{', '.join(sorted(missing_secrets))}. Re-enter them before the next backup."
+                )
+            elif provider_errors:
+                status = "error"
+                warnings.append(f"Target '{name}' ({tid}) has an incomplete config: {'; '.join(provider_errors)}")
+
             await db.execute(
                 """INSERT INTO storage_targets
                    (id, name, type, enabled, config, status, last_tested,
                     snapshot_count, total_size_bytes, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (tid, t.get("name", "Unnamed"), t.get("type", "local"),
-                 1 if t.get("enabled", True) else 0, cfg_str,
-                 t.get("status", "unknown"), t.get("last_tested"),
-                 t.get("snapshot_count"), t.get("total_size_bytes"),
-                 t.get("created_at", now), t.get("updated_at", now)),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name, type = excluded.type, enabled = excluded.enabled,
+                     config = excluded.config, status = excluded.status,
+                     updated_at = excluded.updated_at""",
+                (tid, name, ttype, 1 if t.get("enabled", True) else 0,
+                 encrypt_config(cfg, config_dir), status, t.get("last_tested"),
+                 _as_int(t.get("snapshot_count")), _as_int(t.get("total_size_bytes")),
+                 str(t.get("created_at") or now), now),
             )
+            kept_ids.add(tid)
             restored["storage_targets"] += 1
+            if ttype != "local" and not missing_secrets and not provider_errors:
+                rclone_writes.append({"id": tid, "type": ttype, "config": cfg})
+
+        removed_target_ids = set(existing_targets) - kept_ids
+        for tid in removed_target_ids:
+            await db.execute("DELETE FROM storage_targets WHERE id = ?", (tid,))
+            await db.execute("DELETE FROM snapshots WHERE target_id = ?", (tid,))
+            await db.execute("DELETE FROM size_history WHERE target_id = ?", (tid,))
 
     # --- Backup Jobs ---
-    imported_jobs = arkive_config.get("backup_jobs", [])
+    old_job_ids: set[str] = set()
+    imported_job_rows: list[dict] = []
+    imported_jobs = _section("backup_jobs")
     if imported_jobs:
-        await db.execute("DELETE FROM backup_jobs")
+        cursor = await db.execute("SELECT id FROM backup_jobs")
+        old_job_ids = {row["id"] for row in await cursor.fetchall()}
+        kept_job_ids: set[str] = set()
         for j in imported_jobs:
-            jid = j.get("id", str(uuid.uuid4())[:8])
+            jid = _safe_id(j.get("id"))
+            if jid in kept_job_ids:
+                jid = str(uuid.uuid4())[:8]
+            name = _CONTROL_RE.sub("", str(j.get("name") or "Unnamed Job"))[:100] or "Unnamed Job"
+            jtype = str(j.get("type") or "full")
+            schedule = str(j.get("schedule") or "0 2 * * *").strip()
+            if jtype not in _VALID_JOB_TYPES:
+                warnings.append(f"Skipped job '{name}': unsupported type '{jtype}'")
+                continue
+            if len(schedule.split()) != 5 or not croniter.is_valid(schedule):
+                warnings.append(f"Skipped job '{name}': invalid schedule '{schedule}'")
+                continue
+            targets = [str(x) for x in _as_list(j.get("targets"))]
+            directories = [str(x) for x in _as_list(j.get("directories"))]
+            excludes = [str(x) for x in _as_list(j.get("exclude_patterns"))]
+            if any(d.startswith("-") or _CONTROL_RE.search(d) for d in directories):
+                warnings.append(f"Skipped job '{name}': invalid directory path")
+                continue
+            enabled = bool(j.get("enabled", True))
             await db.execute(
                 """INSERT INTO backup_jobs
                    (id, name, type, schedule, enabled, targets, directories,
                     exclude_patterns, include_databases, include_flash,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (jid, j.get("name", "Unnamed Job"), j.get("type", "full"),
-                 j.get("schedule", "0 2 * * *"),
-                 1 if j.get("enabled", True) else 0,
-                 json.dumps(j.get("targets", [])) if isinstance(j.get("targets"), list) else j.get("targets", "[]"),
-                 json.dumps(j.get("directories", [])) if isinstance(j.get("directories"), list) else j.get("directories", "[]"),
-                 json.dumps(j.get("exclude_patterns", [])) if isinstance(j.get("exclude_patterns"), list) else j.get("exclude_patterns", "[]"),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name, type = excluded.type, schedule = excluded.schedule,
+                     enabled = excluded.enabled, targets = excluded.targets,
+                     directories = excluded.directories, exclude_patterns = excluded.exclude_patterns,
+                     include_databases = excluded.include_databases,
+                     include_flash = excluded.include_flash, updated_at = excluded.updated_at""",
+                (jid, name, jtype, schedule, 1 if enabled else 0,
+                 json.dumps(targets), json.dumps(directories), json.dumps(excludes),
                  1 if j.get("include_databases", True) else 0,
                  1 if j.get("include_flash", True) else 0,
-                 j.get("created_at", now), j.get("updated_at", now)),
+                 str(j.get("created_at") or now), now),
             )
+            kept_job_ids.add(jid)
+            imported_job_rows.append({"id": jid, "name": name, "type": jtype, "schedule": schedule, "enabled": enabled})
             restored["backup_jobs"] += 1
+        for jid in old_job_ids - kept_job_ids:
+            await db.execute("DELETE FROM backup_jobs WHERE id = ?", (jid,))
 
     # --- Watched Directories ---
-    imported_dirs = arkive_config.get("watched_directories", [])
+    imported_dirs = _section("watched_directories")
     if imported_dirs:
         await db.execute("DELETE FROM watched_directories")
+        seen_paths: set[str] = set()
         for d in imported_dirs:
-            did = d.get("id", str(uuid.uuid4())[:8])
+            raw_path = str(d.get("path") or "")
+            path = os.path.normpath(raw_path) if raw_path else ""
+            if (
+                not path.startswith("/")
+                or _CONTROL_RE.search(path)
+                or any(path == p or path.startswith(p + "/") for p in _BLOCKED_DIR_PREFIXES)
+            ):
+                warnings.append(f"Skipped watched directory with invalid path: {raw_path!r}")
+                continue
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
             await db.execute(
                 """INSERT INTO watched_directories
                    (id, path, label, exclude_patterns, enabled, size_bytes,
                     file_count, last_scanned, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (did, d.get("path", "/unknown"), d.get("label", "Unnamed"),
-                 json.dumps(d.get("exclude_patterns", [])) if isinstance(d.get("exclude_patterns"), list) else d.get("exclude_patterns", "[]"),
+                (_safe_id(d.get("id")), path,
+                 _CONTROL_RE.sub("", str(d.get("label") or os.path.basename(path) or "Unnamed")),
+                 json.dumps([str(x) for x in _as_list(d.get("exclude_patterns"))]),
                  1 if d.get("enabled", True) else 0,
                  d.get("size_bytes"), d.get("file_count"),
-                 d.get("last_scanned"), d.get("created_at", now)),
+                 d.get("last_scanned"), str(d.get("created_at") or now)),
             )
             restored["watched_directories"] += 1
 
     # --- Notification Channels ---
-    imported_channels = arkive_config.get("notification_channels", [])
+    imported_channels = _section("notification_channels")
     if imported_channels:
         await db.execute("DELETE FROM notification_channels")
         for ch in imported_channels:
-            chid = ch.get("id", str(uuid.uuid4())[:8])
-            cfg = ch.get("config", "{}")
-            cfg_str = json.dumps(cfg) if isinstance(cfg, dict) else str(cfg)
-            events = ch.get("events", [])
-            events_str = json.dumps(events) if isinstance(events, list) else str(events)
+            name = _CONTROL_RE.sub("", str(ch.get("name") or "Unnamed"))[:50] or "Unnamed"
+            ctype = str(ch.get("type") or "webhook")
+            if ctype not in VALID_NOTIFICATION_TYPES:
+                warnings.append(f"Skipped notification channel '{name}': unsupported type '{ctype}'")
+                continue
+            cfg = ch.get("config", {})
+            if isinstance(cfg, str):
+                try:
+                    cfg = json.loads(cfg) if cfg else {}
+                except (json.JSONDecodeError, TypeError):
+                    cfg = {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            url = cfg.get("url", "")
+            if isinstance(url, str) and url and not is_encrypted(url):
+                if _is_redacted_placeholder(url):
+                    warnings.append(f"Notification channel '{name}' has no URL (redacted on export); re-enter it")
+                    url = ""
+                else:
+                    url = encrypt_value(url)
+            elif isinstance(url, str) and url:
+                try:
+                    decrypt_value(url)
+                except Exception:
+                    warnings.append(
+                        f"Notification channel '{name}' URL was encrypted with a different key and "
+                        "cannot be decrypted here; re-enter it"
+                    )
+                    url = ""
+            cfg["url"] = url if isinstance(url, str) else ""
+            events = [str(e) for e in _as_list(ch.get("events"))]
             await db.execute(
                 """INSERT INTO notification_channels
                    (id, type, name, enabled, config, events, last_sent,
                     last_status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (chid, ch.get("type", "webhook"), ch.get("name", "Unnamed"),
-                 1 if ch.get("enabled", True) else 0, cfg_str, events_str,
+                (_safe_id(ch.get("id")), ctype, name,
+                 1 if ch.get("enabled", True) and cfg["url"] else 0,
+                 json.dumps(cfg), json.dumps(events),
                  ch.get("last_sent"), ch.get("last_status"),
-                 ch.get("created_at", now)),
+                 str(ch.get("created_at") or now)),
             )
             restored["notification_channels"] += 1
 
-    await db.commit()
-
-    # Log import
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
         ("settings", "imported", "Configuration imported from YAML",
-         json.dumps(restored), "info", now),
+         json.dumps({**restored, "warnings": len(warnings)}), "warning" if warnings else "info", now),
     )
     await db.commit()
 
-    logger.info("Config imported from YAML: %s", restored)
-    return {"message": "Configuration imported successfully", "restored": restored, "imported_at": now}
+    # Post-commit side effects: rclone remotes and the live scheduler.
+    if cloud_manager is not None:
+        for tid in removed_target_ids:
+            try:
+                await cloud_manager.remove_target_config(tid)
+            except Exception as exc:
+                logger.warning("Config import: failed to remove rclone section %s: %s", tid, exc)
+        for target in rclone_writes:
+            try:
+                await cloud_manager.write_target_config(target)
+            except Exception as exc:
+                warnings.append(f"Target {target['id']}: rclone config could not be written: {exc}")
+    if imported_jobs:
+        await _reload_scheduler_jobs(getattr(request.app.state, "scheduler", None), old_job_ids, imported_job_rows)
+
+    logger.info("Config imported from YAML: %s (%d warnings)", restored, len(warnings))
+    return {
+        "message": "Configuration imported successfully",
+        "restored": restored,
+        "warnings": warnings,
+        "imported_at": now,
+    }

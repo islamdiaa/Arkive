@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import type { SSEEvent, SSEEventType } from '$lib/types';
+import { handleUnauthorized } from '$lib/api/session';
 
 export const connected = writable(false);
 export const lastEvent = writable<SSEEvent | null>(null);
@@ -11,6 +12,7 @@ const handlers = new Map<SSEEventType, Set<EventHandler>>();
 let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let connecting = false;  // in-flight guard for async connect
+let stopped = false;     // set by disconnect(); aborts in-flight connects and retries
 
 /**
  * Named SSE event types sent by the backend.
@@ -76,84 +78,118 @@ function dispatchEvent(event: SSEEvent): void {
   if (typeHandlers) typeHandlers.forEach(h => h(event));
 }
 
+/** Exponential backoff reconnect (1s, 2s, 4s ... capped at 30s). */
+function scheduleReconnect(customUrl?: string) {
+  if (stopped) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  const attempts = get(reconnectAttempts);
+  const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
+  reconnectAttempts.update(n => n + 1);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connect(customUrl);
+  }, delay);
+}
+
 export async function connect(customUrl?: string) {
+  stopped = false;
   if (eventSource || connecting) return;
 
   connecting = true;
   try {
-    // Fetch short-lived SSE token
-    const tokenResp = await fetch('/api/auth/sse-token', {
-      method: 'POST',
-      credentials: 'include',
-    });
-    if (!tokenResp.ok) {
-      if (tokenResp.status !== 401) {
-        console.error('Failed to get SSE token:', tokenResp.status);
-      }
+    // Fetch short-lived, single-use SSE token. Any failure other than 401
+    // (server restarting, proxy 502/503, network error) schedules a retry so
+    // live updates recover on their own after a container restart.
+    let tokenResp: Response;
+    try {
+      tokenResp = await fetch('/api/auth/sse-token', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch {
+      scheduleReconnect(customUrl);
       return;
     }
-    const { token: sseToken } = await tokenResp.json();
-
-    // Re-check after await — another call may have connected while we waited
-    if (eventSource) return;
-
-    const url = customUrl || `/api/events/stream?token=${sseToken}`;
-    eventSource = new EventSource(url);
-
-  eventSource.onopen = () => {
-    connected.set(true);
-    reconnectAttempts.set(0);
-  };
-
-  // Fallback: handles events sent without an `event:` field (type defaults to "message").
-  // If the backend sends all events as unnamed with a `type` field in the JSON data,
-  // this handler catches them.
-  eventSource.onmessage = (e) => {
+    if (stopped) return;
+    if (tokenResp.status === 401) {
+      // Session expired or invalidated: stop retrying and send the user to login.
+      handleUnauthorized();
+      return;
+    }
+    if (!tokenResp.ok) {
+      console.warn('Failed to get SSE token:', tokenResp.status);
+      scheduleReconnect(customUrl);
+      return;
+    }
+    let sseToken = '';
     try {
-      const event: SSEEvent = JSON.parse(e.data);
-      dispatchEvent(event);
-    } catch { /* ignore parse errors */ }
-  };
+      ({ token: sseToken } = await tokenResp.json());
+    } catch {
+      scheduleReconnect(customUrl);
+      return;
+    }
 
-  // Named event listeners: the backend sends SSE events with the `event:` field
-  // set to the event type (e.g., `event: backup:started`). The browser's
-  // EventSource only fires `onmessage` for unnamed events (event: message).
-  // We must register explicit listeners for each named event type.
-  for (const eventName of SSE_EVENT_NAMES) {
-    eventSource.addEventListener(eventName, ((e: MessageEvent) => {
+    // Re-check after await — another call may have connected, or we were stopped
+    if (eventSource || stopped) return;
+
+    const url = customUrl || `/api/events/stream?token=${encodeURIComponent(sseToken)}`;
+    const es = new EventSource(url);
+    eventSource = es;
+
+    es.onopen = () => {
+      connected.set(true);
+      reconnectAttempts.set(0);
+    };
+
+    // Fallback: handles events sent without an `event:` field (type defaults to "message").
+    es.onmessage = (e) => {
       try {
-        const data = JSON.parse(e.data);
-        const event: SSEEvent = {
-          type: eventName,
-          data,
-          timestamp: data.timestamp || new Date().toISOString(),
-        };
+        const event: SSEEvent = JSON.parse(e.data);
         dispatchEvent(event);
       } catch { /* ignore parse errors */ }
-    }) as EventListener);
-  }
+    };
 
-  eventSource.onerror = () => {
-    connected.set(false);
-    events.set({});
-    eventSource?.close();
-    eventSource = null;
-    const attempts = get(reconnectAttempts);
-    const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
-    reconnectAttempts.update(n => n + 1);
-    // Fetch a new SSE token on reconnect (tokens are single-use)
-    reconnectTimer = setTimeout(() => connect(customUrl), delay);
-  };
+    // Named event listeners: the backend sends SSE events with the `event:` field
+    // set to the event type (e.g., `event: backup:started`). The browser's
+    // EventSource only fires `onmessage` for unnamed events (event: message).
+    for (const eventName of SSE_EVENT_NAMES) {
+      es.addEventListener(eventName, ((e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          const event: SSEEvent = {
+            type: eventName,
+            data,
+            timestamp: data.timestamp || new Date().toISOString(),
+          };
+          dispatchEvent(event);
+        } catch { /* ignore parse errors */ }
+      }) as EventListener);
+    }
+
+    es.onerror = () => {
+      if (eventSource !== es) return;
+      connected.set(false);
+      events.set({});
+      es.close();
+      eventSource = null;
+      // Fetch a new SSE token on reconnect (tokens are single-use)
+      scheduleReconnect(customUrl);
+    };
   } finally {
     connecting = false;
   }
 }
 
 export function disconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer);
+  stopped = true;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   eventSource?.close();
   eventSource = null;
   connected.set(false);
+  reconnectAttempts.set(0);
   events.set({});
 }
 

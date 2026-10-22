@@ -15,6 +15,8 @@ class StatusResponse(BaseModel):
     version: str = "0.0.0"
     uptime_seconds: int = 0
     setup_completed: bool = False
+    # False only in the minimal payload served to unauthenticated callers.
+    authenticated: bool = True
     platform: str = "linux"
     hostname: str = ""
 

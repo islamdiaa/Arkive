@@ -49,9 +49,9 @@ async def _full_setup(client, tmp_path):
 
 async def test_full_setup_to_status_flow(client):
     """After setup, status should report setup_completed and system info."""
-    await do_setup(client)
+    setup_data = await do_setup(client)
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] in ("ok", "degraded", "error")
@@ -71,7 +71,7 @@ async def test_setup_creates_default_jobs_accessible_via_api(client):
     assert len(jobs) == 3
 
     names = {j["name"] for j in jobs}
-    assert names == {"DB Dumps", "Cloud Sync", "Flash Backup"}
+    assert names == {"DB Dumps", "Full Backup", "Flash Backup"}
 
     types = {j["type"] for j in jobs}
     assert types == {"db_dump", "full", "flash"}
@@ -83,7 +83,7 @@ async def test_setup_then_create_target_then_link_to_job(client, tmp_path):
 
     # Get the Cloud Sync job
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
-    cloud_sync = next(j for j in resp.json()["items"] if j["name"] == "Cloud Sync")
+    cloud_sync = next(j for j in resp.json()["items"] if j["name"] == "Full Backup")
     job_id = cloud_sync["id"]
 
     # Link target to job

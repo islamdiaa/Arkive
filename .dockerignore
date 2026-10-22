@@ -26,8 +26,10 @@ htmlcov/
 backend/.venv
 backend/tests
 backend/logs
+backend/*.egg-info
 
-# Frontend dev artifacts
+# Frontend dev artifacts (the image builds its own)
+frontend/build
 frontend/.svelte-kit
 frontend/test-results
 frontend/playwright-report

@@ -60,8 +60,11 @@ class TestAutoescape:
         """Flash restore instructions must point to the restored /config/dumps archive path."""
         html = _render_template(flash_available=True, platform="unraid")
 
-        assert "/config/restore/config/dumps/flash_TIMESTAMP.tar.gz" in html
-        assert "/config/restore/flash_TIMESTAMP.tar.gz" not in html
+        # Flash backups are uncompressed .tar archives now; `tar -xf` auto-detects
+        # compression so the same command also restores legacy .tar.gz archives.
+        assert "tar -xf /config/restore/config/dumps/flash_TIMESTAMP.tar -C /boot/config/" in html
+        assert "tar -xzf" not in html
+        assert "/config/restore/flash_TIMESTAMP.tar" not in html
 
     def test_html_special_chars_in_db_name_are_escaped(self):
         """Angle brackets in database names must not appear raw in HTML output."""

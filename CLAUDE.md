@@ -288,6 +288,58 @@ Earlier work in this repo lifecycle already fixed and validated other important 
 
 Those fixes are in git history even if they are not all repeated in the short recent-commit list above.
 
+### 12. Production hardening pass (v0.3.0)
+
+Found by auditing a long-running production install. Before this pass, Arkive
+reported `success` for weeks while backing up **no databases at all**.
+
+Root causes and fixes:
+- **Docker client never recovered from a boot-time timeout.** `docker.from_env()`
+  handshakes at construction; one timeout at startup left `discovery`/`db_dumper`
+  as `None` until the next container restart, and the orchestrator silently
+  skipped dumps. Fix: `services/docker_client.py` (`ResilientDockerClient`, a lazy
+  self-reconnecting proxy). Discovery retries (`discovery_attempts`) and a failure
+  now makes the run `partial` with the reason in `job_runs.error_message`.
+- **Silent-success paths removed.** A run is `partial` when discovery fails, when
+  the DB count drops to 0 from a previous non-zero run, when a backup path is
+  missing (restic silently drops missing paths), when restic exits 3 (snapshot
+  written, some files unreadable), or when there are no enabled targets.
+  `error_message` is populated for partial runs.
+- **Stream exit codes.** docker-py `exec_run(stream=True)` always returns
+  `exit_code=None`. Dumps now use the low-level exec API (`exec_create` /
+  `exec_start` / `exec_inspect`) and require the pg_dump/mysqldump completion
+  trailer; truncated dumps fail and their files are deleted.
+- **Job types are honored.** `db_dump` refreshes DB dumps, `flash` refreshes the
+  flash archive, `full` does both. All types upload the same path set (dump dir +
+  watched dirs) so every snapshot is a complete restore point and restic retention
+  groups them together.
+- **Scheduled collisions queue instead of skipping** (`scheduled_lock_wait_seconds`).
+  The default setup schedules made the flash job skip every day and the weekly
+  verification skip every week. Weekly prune holds the backup lock; verify waits.
+- **Dump directory hygiene.** `cleanup_dump_dir` keeps the newest dump per DB,
+  removes dumps older than 7 days (vanished containers) and orphaned SQLite
+  sidecars, and runs even when Docker is down. Duplicate companion DBs are
+  deduped; same-basename SQLite files get distinct dump names.
+- **Stable restic host name.** Resolution order: `server_name` setting → Docker
+  daemon name (cached) → last daemon name → Unraid `ident.cfg` → container
+  hostname. Container IDs leaking in split restic retention groups.
+- **Noise.** The 5-minute target health check only logs status changes (migration
+  4 purges old entries). Logs are valid JSON with true UTC timestamps.
+- **Restic coordination.** `--retry-lock` on backup/forget/check; post-backup
+  forget no longer prunes (weekly job prunes); `--exclude-if-present .arkive-exclude`
+  plus `--exclude-caches` keep Arkive's own repo/restore dirs out of watched parents.
+- **Local targets** on the container's ephemeral filesystem are rejected
+  (`utils/mounts.py`).
+
+Tests: `tests/unit/test_backup_pipeline_hardening.py`,
+`tests/unit/test_dump_hardening.py`, `tests/unit/test_resilience_helpers.py`.
+
+Rules that follow from this:
+- never add a code path where a backup phase is skipped without either a
+  warning that makes the run `partial` or an explicit, documented reason
+- test doubles for dumps must emit realistic output (including trailers)
+- tests that exercise scheduled conflicts must pass `lock_wait_seconds=0`
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -421,6 +473,10 @@ Before submitting PRs:
 - security scanning should be a standard part of the PR process
 
 ## Known Watch Areas
+
+- a run that is `partial` every time usually means configuration drift (a watched
+  directory that no longer exists, a target that was disabled) — the message in
+  `job_runs.error_message` says which
 
 Not current blockers, but worth monitoring:
 - transient database warnings in logs that still end in successful final dumps

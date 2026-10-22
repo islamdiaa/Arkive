@@ -1,6 +1,5 @@
 """Storage statistics API routes."""
 
-import json
 
 import aiosqlite
 from fastapi import APIRouter, Depends

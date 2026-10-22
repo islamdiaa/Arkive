@@ -9,6 +9,7 @@
 	import { onMount } from 'svelte';
 	import FormToggle from '$lib/components/ui/FormToggle.svelte';
 	import SectionCard from '$lib/components/ui/SectionCard.svelte';
+	import { jobTypeDescription, jobTypeLabel } from '$lib/utils/job-types';
 
 	let jobs: any[] = [];
 	let loading = true;
@@ -69,7 +70,7 @@
 		</div>
 	{:else}
 		{#each jobs as job}
-			<SectionCard title={job.name} description="Type: {job.type}">
+			<SectionCard title={job.name} description="{jobTypeLabel(job.type)} — {jobTypeDescription(job.type)}">
 				<FormToggle
 					checked={job.enabled}
 					label={job.enabled ? 'Enabled' : 'Paused'}

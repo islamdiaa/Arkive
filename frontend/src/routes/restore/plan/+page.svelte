@@ -4,23 +4,27 @@
 
 <script lang="ts">
 	import Header from '$lib/components/layout/Header.svelte';
-	import { downloadRestorePlanPdf } from '$lib/api/restore';
+	import { downloadRestorePlan } from '$lib/api/restore';
 	import { addToast } from '$lib/stores/app';
 
 	async function downloadPdf() {
 		try {
-			const blob = await downloadRestorePlanPdf();
+			const { blob, filename, isPdf } = await downloadRestorePlan();
 			const url = URL.createObjectURL(blob);
 			const link = document.createElement('a');
 			link.href = url;
-			link.download = 'arkive-restore-plan.pdf';
+			link.download = filename;
 			document.body.appendChild(link);
 			link.click();
 			link.remove();
 			URL.revokeObjectURL(url);
-			addToast({ type: 'info', message: 'Restore plan PDF downloaded.' });
+			addToast(
+				isPdf
+					? { type: 'info', message: 'Restore plan PDF downloaded.' }
+					: { type: 'warning', message: `PDF generation is unavailable on the server; downloaded ${filename} instead.` },
+			);
 		} catch (e: any) {
-			addToast({ type: 'error', message: e?.message || 'Failed to download restore plan PDF' });
+			addToast({ type: 'error', message: e?.message || 'Failed to download restore plan' });
 		}
 	}
 </script>

@@ -16,8 +16,11 @@ from pydantic import BaseModel
 from app.core.dependencies import (
     _enforce_session_origin,
     _is_locked_out,
+    _is_missing_table_error,
     _track_failed_attempt,
     clear_rate_limit,
+    client_ip,
+    get_cloud_manager,
     get_db,
     get_scheduler,
     require_auth,
@@ -58,19 +61,19 @@ def _reset_setup_rate_limit() -> None:
 
 def _check_setup_rate_limit(request: Request) -> None:
     """Rate-limit setup attempts per IP. Raises 429 when exceeded."""
-    client_ip = request.client.host if request.client else "unknown"
+    ip = client_ip(request)
     now = time.time()
     window_start = now - SETUP_RATE_WINDOW
 
     # Prune timestamps outside the current window
-    _setup_attempts[client_ip] = [
-        ts for ts in _setup_attempts[client_ip] if ts > window_start
+    _setup_attempts[ip] = [
+        ts for ts in _setup_attempts[ip] if ts > window_start
     ]
 
     # Remove empty entries to prevent unbounded dict growth
-    if not _setup_attempts[client_ip]:
-        del _setup_attempts[client_ip]
-    elif len(_setup_attempts[client_ip]) >= SETUP_RATE_LIMIT:
+    if not _setup_attempts[ip]:
+        del _setup_attempts[ip]
+    elif len(_setup_attempts[ip]) >= SETUP_RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Too many setup attempts. Try again later.")
 
     # Evict oldest entries if we exceed the IP cap (DoS protection)
@@ -78,7 +81,7 @@ def _check_setup_rate_limit(request: Request) -> None:
         oldest_ip = min(_setup_attempts, key=lambda ip: _setup_attempts[ip][0])
         del _setup_attempts[oldest_ip]
 
-    _setup_attempts[client_ip].append(now)
+    _setup_attempts[ip].append(now)
 
 
 def _default_setup_directories(request: Request) -> list[tuple[str, str]]:
@@ -121,8 +124,11 @@ async def _session_payload(request: Request, db: aiosqlite.Connection) -> dict[s
     try:
         cursor = await db.execute("SELECT value FROM settings WHERE key = 'api_key_hash'")
         row = await cursor.fetchone()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        return {"setup_required": True, "authenticated": False}
+    except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
+        if _is_missing_table_error(exc):
+            return {"setup_required": True, "authenticated": False}
+        # A transient DB error must not send the UI into the setup wizard.
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable") from exc
     if not row:
         return {"setup_required": True, "authenticated": False}
 
@@ -143,7 +149,7 @@ async def _session_payload(request: Request, db: aiosqlite.Connection) -> dict[s
 
 @router.post("/setup", status_code=201)
 async def complete_setup(request: Request, response: Response, body: SetupCompleteRequest, db: aiosqlite.Connection = Depends(get_db),
-                         scheduler=Depends(get_scheduler)):
+                         scheduler=Depends(get_scheduler), cloud_manager=Depends(get_cloud_manager)):
     """Complete initial setup — generates API key, stores encryption password, creates default jobs."""
     # Rate-limit FIRST — before any other check so attackers can't probe indefinitely
     _check_setup_rate_limit(request)
@@ -182,10 +188,13 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
     target_ids = list(body.target_ids or [])
     directory_ids = list(body.directory_ids or [])
     schedules = body.schedules or {}
+    target_errors: list[str] = []
 
+    created_target: dict | None = None
     if not target_ids and body.storage:
         from app.api.targets import (
             VALID_TYPES,
+            _normalize_config,
             _sanitize_name,
             _validate_local_path,
             _validate_provider_config,
@@ -194,12 +203,17 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
         storage = dict(body.storage)
         storage_type = str(storage.get("type", "")).strip()
         storage_name = _sanitize_name(str(storage.get("name") or f"{storage_type.title()} Target"))
-        storage_config = {k: v for k, v in storage.items() if k not in {"type", "name"}}
+        storage_config = _normalize_config({k: v for k, v in storage.items() if k not in {"type", "name"}})
 
-        if storage_type in VALID_TYPES and storage_name:
+        if storage_type not in VALID_TYPES:
+            target_errors.append(f"Unsupported storage type: {storage_type or '(none)'}")
+        elif not storage_name:
+            target_errors.append("Storage target name is invalid")
+        else:
             errors = _validate_provider_config(storage_type, storage_config)
             if storage_type == "local":
                 errors.extend(_validate_local_path(storage_config))
+            target_errors.extend(errors)
             if not errors:
                 target_id = str(uuid.uuid4())[:8]
                 encrypted_config = encrypt_config(storage_config, str(Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config"))))
@@ -210,6 +224,7 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
                     (target_id, storage_name, storage_type, encrypted_config, now, now),
                 )
                 target_ids.append(target_id)
+                created_target = {"id": target_id, "type": storage_type, "config": storage_config}
 
     candidate_directories = list(body.directories or [])
     if not directory_ids and not candidate_directories:
@@ -240,7 +255,7 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
 
     jobs = [
         (str(uuid.uuid4())[:8], "DB Dumps", "db_dump", db_dump_sched),
-        (str(uuid.uuid4())[:8], "Cloud Sync", "full", cloud_sync_sched),
+        (str(uuid.uuid4())[:8], "Full Backup", "full", cloud_sync_sched),
         (str(uuid.uuid4())[:8], "Flash Backup", "flash", flash_sched),
     ]
     jobs_created = []
@@ -266,7 +281,14 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
 
     # Clear rate limit state for this IP to prevent post-setup lockout
     if request.client:
-        clear_rate_limit(request.client.host)
+        clear_rate_limit(client_ip(request))
+
+    # Write the rclone remote for a cloud target so the first backup can use it.
+    if created_target is not None and created_target["type"] != "local" and cloud_manager is not None:
+        try:
+            await cloud_manager.write_target_config(created_target)
+        except Exception as exc:
+            target_errors.append(f"Target saved, but rclone config could not be written: {exc}")
 
     # Save API key to file for CLI access (mode 0o600 — owner read/write only)
     api_key_path = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / ".api_key"
@@ -302,6 +324,8 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
         "api_key": api_key,
         "message": "Setup complete. Save this API key — it will not be shown again.",
         "first_backup_triggered": first_backup_triggered,
+        "target_created": bool(target_ids),
+        "target_errors": target_errors,
         "jobs_created": len(jobs_created),
         "setup_completed_at": now,
         "web_url": web_url,
@@ -322,9 +346,7 @@ async def login(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Create a browser session from a valid API key."""
-    client_ip = request.client.host if request.client else "unknown"
-    if _is_locked_out(client_ip):
-        raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
+    ip = client_ip(request)
 
     cursor = await db.execute("SELECT value FROM settings WHERE key = 'api_key_hash'")
     row = await cursor.fetchone()
@@ -332,10 +354,14 @@ async def login(
         raise HTTPException(status_code=409, detail="Setup required before login.")
 
     if not body.api_key or not verify_api_key(body.api_key, row[0]):
-        _track_failed_attempt(client_ip)
+        # Lockout is only enforced on the failure path, so a valid key from a
+        # shared IP (NAT / reverse proxy) still works during someone else's lockout.
+        if _is_locked_out(ip):
+            raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
+        _track_failed_attempt(ip)
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    clear_rate_limit(client_ip)
+    clear_rate_limit(ip)
     _set_browser_session(response, request, row[0])
     payload = await _session_payload(request, db)
     payload["authenticated"] = True

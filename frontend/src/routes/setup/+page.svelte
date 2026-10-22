@@ -9,11 +9,16 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import CronEditor from '$lib/components/shared/CronEditor.svelte';
+	import { JOB_TYPE_DESCRIPTIONS, JOB_TYPES_OVERVIEW } from '$lib/utils/job-types';
 
 	let step = 1;
 	let hydrated = false;
 	let loading = false;
 	let generatedKey = '';
+	// Set from the setup response: false when a storage target was requested
+	// but the backend rejected its configuration and did not create it.
+	let targetCreated: boolean | null = null;
+	let targetErrors: string[] = [];
 
 	// Step 1: Encryption password
 	let encryptionPassword = '';
@@ -46,6 +51,8 @@
 	let wasabiRegion = 'us-east-1';
 
 	let dropboxToken = '';
+	let gdriveClientId = '';
+	let gdriveClientSecret = '';
 	let gdriveToken = '';
 
 	let sftpHost = '';
@@ -56,10 +63,10 @@
 
 	let localPath = '/mnt/user/backups';
 
-	// Step 4: Schedules
+	// Step 4: Schedules (staggered so jobs don't contend for the backup lock)
 	let dbDumpSchedule = '0 6,18 * * *';
-	let cloudSyncSchedule = '0 7 * * *';
-	let flashSchedule = '0 6 * * *';
+	let fullBackupSchedule = '0 7 * * *';
+	let flashSchedule = '0 5 * * *';
 
 	// Step 5: Directories
 	let directories: string[] = [];
@@ -83,7 +90,7 @@
 		void storageProvider; void b2KeyId; void b2AppKey; void b2Bucket;
 		void s3AccessKey; void s3SecretKey; void s3Bucket;
 		void wasabiAccessKey; void wasabiSecretKey; void wasabiBucket;
-		void dropboxToken; void gdriveToken;
+		void dropboxToken; void gdriveToken; void gdriveClientId;
 		void sftpHost; void sftpUsername;
 		void localPath;
 		return isStorageValid();
@@ -171,23 +178,39 @@
 	function getStorageConfig(): Record<string, unknown> {
 		switch (storageProvider) {
 			case 'b2': return { type: 'b2', key_id: b2KeyId, app_key: b2AppKey, bucket: b2Bucket };
-			case 's3': return { type: 's3', endpoint: s3Endpoint, access_key: s3AccessKey, secret_key: s3SecretKey, bucket: s3Bucket, region: s3Region };
+			case 's3': return { type: 's3', endpoint: resolvedS3Endpoint(), access_key: s3AccessKey, secret_key: s3SecretKey, bucket: s3Bucket, region: s3Region };
 			case 'wasabi': return { type: 'wasabi', access_key: wasabiAccessKey, secret_key: wasabiSecretKey, bucket: wasabiBucket, region: wasabiRegion };
 			case 'dropbox': return { type: 'dropbox', token: dropboxToken };
-			case 'gdrive': return { type: 'gdrive', token: gdriveToken };
+			case 'gdrive': return { type: 'gdrive', client_id: gdriveClientId.trim(), client_secret: gdriveClientSecret, token: gdriveToken };
 			case 'sftp': return { type: 'sftp', host: sftpHost, port: sftpPort, username: sftpUsername, password: sftpPassword, remote_path: sftpPath };
 			case 'local': return { type: 'local', path: localPath };
 			default: return {};
 		}
 	}
 
+	/** The backend requires an endpoint; blank means Amazon S3 in the chosen region. */
+	function resolveS3Endpoint(endpoint: string, region: string): string {
+		const trimmed = endpoint.trim();
+		if (trimmed) return trimmed;
+		const r = (region || 'us-east-1').trim() || 'us-east-1';
+		return `https://s3.${r}.amazonaws.com`;
+	}
+
+	function resolvedS3Endpoint(): string {
+		return resolveS3Endpoint(s3Endpoint, s3Region);
+	}
+
+	$: s3EndpointPreview = resolveS3Endpoint(s3Endpoint, s3Region);
+
+	// Mirrors backend validation in api/targets.py (_validate_provider_config)
+	// so a target is never silently dropped during setup.
 	function isStorageValid(): boolean {
 		switch (storageProvider) {
 			case 'b2': return !!(b2KeyId && b2AppKey && b2Bucket);
 			case 's3': return !!(s3AccessKey && s3SecretKey && s3Bucket);
 			case 'wasabi': return !!(wasabiAccessKey && wasabiSecretKey && wasabiBucket);
 			case 'dropbox': return !!dropboxToken;
-			case 'gdrive': return !!gdriveToken;
+			case 'gdrive': return !!(gdriveClientId.trim() && gdriveToken);
 			case 'sftp': return !!(sftpHost && sftpUsername);
 			case 'local': return !!localPath;
 			default: return false;
@@ -208,11 +231,13 @@
 				encryption_password: encryptionPassword,
 				storage: getStorageConfig(),
 				db_dump_schedule: dbDumpSchedule,
-				cloud_sync_schedule: cloudSyncSchedule,
+				cloud_sync_schedule: fullBackupSchedule,
 				flash_schedule: flashSchedule,
 				directories,
 			});
 			generatedKey = result.api_key;
+			targetCreated = typeof result.target_created === 'boolean' ? result.target_created : null;
+			targetErrors = Array.isArray(result.target_errors) ? result.target_errors : [];
 			applySession({
 				setup_required: false,
 				authenticated: true,
@@ -386,7 +411,10 @@
 					<div class="space-y-3 border-t border-border pt-4">
 						<div>
 							<label for="s3-endpoint" class="block text-sm text-text-secondary mb-1">Endpoint URL</label>
-							<input id="s3-endpoint" type="text" bind:value={s3Endpoint} class="input font-mono" placeholder="https://s3.us-east-1.amazonaws.com" />
+							<input id="s3-endpoint" type="text" bind:value={s3Endpoint} class="input font-mono" placeholder="Leave blank for Amazon S3" />
+							<p class="text-xs text-text-secondary mt-1">
+								Blank uses Amazon S3 in the region below ({s3EndpointPreview}). Set it for MinIO or other S3-compatible services.
+							</p>
 						</div>
 						<div class="grid grid-cols-2 gap-3">
 							<div>
@@ -445,7 +473,17 @@
 
 				{:else if storageProvider === 'gdrive'}
 					<div class="space-y-3 border-t border-border pt-4">
-						<p class="text-xs text-text-secondary">Use <code class="bg-surface px-1 rounded">rclone authorize "drive"</code> to generate a token, then paste it here.</p>
+						<p class="text-xs text-text-secondary">Create an OAuth client in Google Cloud Console, then use <code class="bg-surface px-1 rounded">rclone authorize "drive" &lt;client_id&gt; &lt;client_secret&gt;</code> to generate a token and paste it here.</p>
+						<div class="grid grid-cols-2 gap-3">
+							<div>
+								<label for="gdrive-client-id" class="block text-sm text-text-secondary mb-1">Client ID</label>
+								<input id="gdrive-client-id" type="text" bind:value={gdriveClientId} class="input font-mono" />
+							</div>
+							<div>
+								<label for="gdrive-client-secret" class="block text-sm text-text-secondary mb-1">Client Secret</label>
+								<input id="gdrive-client-secret" type="password" bind:value={gdriveClientSecret} class="input font-mono" />
+							</div>
+						</div>
 						<div>
 							<label for="gdrive-token" class="block text-sm text-text-secondary mb-1">OAuth Token</label>
 							<input id="gdrive-token" type="password" bind:value={gdriveToken} class="input font-mono" />
@@ -499,16 +537,20 @@
 			{:else if step === 4}
 				<!-- Step 4: Schedule -->
 				<h2 class="text-lg font-semibold text-text mb-2">Backup Schedule</h2>
-				<p class="text-sm text-text-secondary mb-6">Configure when backups run. Each schedule shows upcoming run times so you do not have to read raw cron.</p>
+				<p class="text-sm text-text-secondary mb-2">Configure when backups run. Each schedule shows upcoming run times so you do not have to read raw cron.</p>
+				<p class="text-xs text-text-secondary mb-6">{JOB_TYPES_OVERVIEW}</p>
 				<div class="space-y-4">
 					<div>
+						<CronEditor bind:value={fullBackupSchedule} label="Full Backup" />
+						<p class="text-xs text-text-secondary mt-1">{JOB_TYPE_DESCRIPTIONS.full}</p>
+					</div>
+					<div>
 						<CronEditor bind:value={dbDumpSchedule} label="Database Dumps" />
+						<p class="text-xs text-text-secondary mt-1">{JOB_TYPE_DESCRIPTIONS.db_dump}</p>
 					</div>
 					<div>
-						<CronEditor bind:value={cloudSyncSchedule} label="Cloud Sync" />
-					</div>
-					<div>
-						<CronEditor bind:value={flashSchedule} label="Flash Backup (Unraid)" />
+						<CronEditor bind:value={flashSchedule} label="Flash Drive (Unraid)" />
+						<p class="text-xs text-text-secondary mt-1">{JOB_TYPE_DESCRIPTIONS.flash}</p>
 					</div>
 				</div>
 				<div class="mt-6 flex justify-between">
@@ -561,6 +603,24 @@
 					</div>
 					<h2 class="text-lg font-semibold text-text mb-2">Setup Complete!</h2>
 					<p class="text-sm text-text-secondary mb-6">Save your API key below. It won't be shown again.</p>
+					{#if targetCreated === false}
+						<div class="mb-6 rounded-lg border border-danger/40 bg-danger/10 p-4 text-left" role="alert">
+							<p class="text-sm font-semibold text-danger">Your storage destination was NOT saved</p>
+							<p class="text-sm text-text-secondary mt-1">
+								Backups have nowhere to go until you add a storage target. The server rejected the configuration:
+							</p>
+							{#if targetErrors.length}
+								<ul class="mt-2 list-disc pl-5 text-sm text-danger">
+									{#each targetErrors as targetError}
+										<li>{targetError}</li>
+									{/each}
+								</ul>
+							{/if}
+							<p class="text-sm text-text-secondary mt-2">
+								After saving your API key, open the dashboard and go to <span class="font-medium text-text">Settings → Storage Targets</span> to add one.
+							</p>
+						</div>
+					{/if}
 					<div class="bg-page border border-border rounded p-4 mb-6">
 						<p class="text-xs text-text-secondary mb-2">API Key</p>
 						<code class="text-sm text-primary break-all font-mono">{generatedKey}</code>

@@ -15,7 +15,7 @@ class TestFlashBackup:
     """Flash backup with fake boot-config directory."""
 
     async def test_flash_backup_success(self, tmp_config, fake_boot_config):
-        """Unraid platform + valid boot dir → success with valid tar.gz."""
+        """Unraid platform + valid boot dir → success with a valid (uncompressed) tar."""
         tmp_config.boot_config_path = fake_boot_config
         fb = FlashBackup(tmp_config, Platform.UNRAID)
 
@@ -23,9 +23,9 @@ class TestFlashBackup:
 
         assert result.status == "success"
         assert result.size_bytes > 0
-        assert result.path.endswith(".tar.gz")
+        assert result.path.endswith(".tar")
         # Verify the archive is valid and contains our files
-        with tarfile.open(result.path, "r:gz") as tar:
+        with tarfile.open(result.path, "r:") as tar:
             names = tar.getnames()
             assert any("ident.cfg" in n for n in names)
             assert any("go" in n for n in names)
@@ -72,5 +72,5 @@ class TestFlashBackup:
             paths.append(result.path)
 
         # Only 3 should remain (retention = 3)
-        remaining = sorted(glob.glob(str(tmp_config.dump_dir / "flash_*.tar.gz")))
+        remaining = sorted(glob.glob(str(tmp_config.dump_dir / "flash_*.tar")))
         assert len(remaining) == 3

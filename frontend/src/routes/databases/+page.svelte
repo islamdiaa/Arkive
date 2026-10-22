@@ -29,8 +29,19 @@
 	async function dumpDb(db: any) {
 		dumpingDb = `${db.container_name}:${db.db_name}`;
 		try {
+			// Backend returns HTTP 200 with status success|failed|skipped and an error.
 			const result = await api.dumpDatabase(db.container_name, db.db_name);
-			addToast({ type: 'success', message: `Dumped ${db.db_name} (${formatBytes(result.dump_size_bytes || 0)})` });
+			if (result?.status === 'success') {
+				const integrity = result.integrity_check && result.integrity_check !== 'ok' && result.integrity_check !== 'passed'
+					? `, integrity: ${result.integrity_check}`
+					: '';
+				addToast({ type: 'success', message: `Dumped ${db.db_name} (${formatBytes(result.dump_size_bytes || 0)}${integrity})` });
+			} else {
+				addToast({
+					type: result?.status === 'skipped' ? 'warning' : 'error',
+					message: `Dump ${result?.status || 'failed'} for ${db.db_name}${result?.error ? `: ${result.error}` : ''}`,
+				});
+			}
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Dump failed' });
 		}

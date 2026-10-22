@@ -12,9 +12,17 @@ from datetime import datetime, timezone
 
 import aiosqlite
 from croniter import croniter
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.dependencies import get_config, get_db, get_event_bus, get_orchestrator, get_scheduler, require_auth
+from app.core.dependencies import (
+    connect_db,
+    get_config,
+    get_db,
+    get_event_bus,
+    get_orchestrator,
+    get_scheduler,
+    require_auth,
+)
 from app.services.orchestrator import cleanup_stale_backup_lock
 from app.utils.cron_validation import validate_cron_expression
 
@@ -22,6 +30,9 @@ from app.models.jobs import BackupJobCreate, BackupJobUpdate
 
 logger = logging.getLogger("arkive.api.jobs")
 router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
+
+# Strong references to background backup tasks (asyncio keeps only weak refs).
+_background_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +97,8 @@ def _severity_to_level(severity: str) -> str:
 
 @router.get("")
 async def list_jobs(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all backup jobs with computed last_run and next_run."""
@@ -117,8 +128,8 @@ async def list_jobs(
 @router.get("/runs")
 async def list_all_runs(
     db: aiosqlite.Connection = Depends(get_db),
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     status: str | None = None,
     days: int | None = None,
     sort_by: str = "started_at",
@@ -146,8 +157,10 @@ async def list_all_runs(
         conditions.append("r.status = ?")
         params.append(status)
     if days is not None and days > 0:
-        conditions.append("r.started_at >= datetime('now', ?)")
-        params.append(f"-{days} days")
+        # started_at is stored as YYYY-MM-DDTHH:MM:SSZ; compare in that format
+        # (datetime('now') uses a space separator, which sorts differently).
+        conditions.append("r.started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)")
+        params.append(f"-{int(days)} days")
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""  # nosec B608
 
@@ -236,31 +249,28 @@ async def get_run(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
 async def get_run_logs(
     run_id: str,
     db: aiosqlite.Connection = Depends(get_db),
-    limit: int = 500,
+    limit: int = Query(default=500, ge=1, le=2000),
 ):
     """Return activity-derived log entries for a specific run."""
     cursor = await db.execute("SELECT id FROM job_runs WHERE id = ?", (run_id,))
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="Run not found")
 
-    # There is no dedicated run_logs table yet; use activity log entries that
-    # include matching run_id in the details payload.
+    # There is no dedicated run_logs table yet; filter activity entries whose
+    # details carry this run_id in SQL (previously only the newest limit*4 rows
+    # were scanned in Python, so older runs showed no logs at all). The CASE
+    # guards json_extract against any malformed legacy details.
     cursor = await db.execute(
-        "SELECT type, message, details, severity, timestamp FROM activity_log ORDER BY timestamp DESC LIMIT ?",
-        (max(limit * 4, limit),),
+        """SELECT type, message, details, severity, timestamp FROM activity_log
+           WHERE CASE WHEN json_valid(details) THEN json_extract(details, '$.run_id') END = ?
+           ORDER BY timestamp DESC, id DESC
+           LIMIT ?""",
+        (run_id, limit),
     )
     rows = await cursor.fetchall()
 
     entries: list[dict] = []
     for row in rows:
-        details_raw = row["details"] if isinstance(row, aiosqlite.Row) else row[2]
-        try:
-            details = json.loads(details_raw or "{}")
-        except (json.JSONDecodeError, TypeError):
-            details = {}
-        if details.get("run_id") != run_id:
-            continue
-
         type_value = row["type"] if isinstance(row, aiosqlite.Row) else row[0]
         message_value = row["message"] if isinstance(row, aiosqlite.Row) else row[1]
         severity_value = row["severity"] if isinstance(row, aiosqlite.Row) else row[3]
@@ -311,10 +321,10 @@ async def create_job(
     # Validate directory paths — reject paths starting with '-' to prevent CLI injection
     for path in body.directories:
         if path.startswith("-"):
-            raise HTTPException(422, f"Invalid path: paths cannot start with '-'")
+            raise HTTPException(422, "Invalid path: paths cannot start with '-'")
 
     # Validate cron expression
-    validate_cron_expression(body.schedule)
+    body.schedule = validate_cron_expression(body.schedule)
 
     job_id = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -402,7 +412,7 @@ async def update_job(
     if body.directories is not None:
         for path in body.directories:
             if path.startswith("-"):
-                raise HTTPException(422, f"Invalid path: paths cannot start with '-'")
+                raise HTTPException(422, "Invalid path: paths cannot start with '-'")
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     updates: list[str] = []
@@ -412,7 +422,7 @@ async def update_job(
         updates.append("name = ?")
         params.append(body.name)
     if body.schedule is not None:
-        validate_cron_expression(body.schedule)
+        body.schedule = validate_cron_expression(body.schedule)
         updates.append("schedule = ?")
         params.append(body.schedule)
     if body.enabled is not None:
@@ -579,18 +589,36 @@ async def run_job(
     )
     await db.commit()
 
-    # Launch pipeline in background — orchestrator creates its own run record
+    # Launch pipeline in background — orchestrator updates the run record
     if orchestrator is not None:
         async def _run_backup():
-            async with aiosqlite.connect(config.db_path) as bg_db:
-                bg_db.row_factory = aiosqlite.Row
+            try:
                 await orchestrator.run_backup(
                     job_id=job_id,
                     trigger="manual",
                     run_id=run_id,
                 )
+            except Exception as exc:
+                logger.error("Manual run %s for job %s crashed: %s", run_id, job_id, exc, exc_info=True)
+                # Don't leave the pre-created row stuck in 'running'.
+                try:
+                    async with connect_db(config.db_path) as bg_db:
+                        await bg_db.execute(
+                            """UPDATE job_runs SET status = 'failed', completed_at = ?, error_message = ?
+                               WHERE id = ? AND status = 'running'""",
+                            (
+                                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                f"Backup pipeline crashed: {exc}"[:1000],
+                                run_id,
+                            ),
+                        )
+                        await bg_db.commit()
+                except Exception as db_exc:
+                    logger.error("Failed to mark run %s failed: %s", run_id, db_exc)
 
-        asyncio.create_task(_run_backup())
+        task = asyncio.create_task(_run_backup())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     if event_bus is not None:
         await event_bus.publish("job.run_started", {"job_id": job_id})
@@ -644,8 +672,8 @@ async def cancel_job_run(
 async def get_job_history(
     job_id: str,
     db: aiosqlite.Connection = Depends(get_db),
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     """Get run history for a specific job."""
     cursor = await db.execute(

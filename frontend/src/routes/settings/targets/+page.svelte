@@ -11,6 +11,7 @@
 	import { onMount } from 'svelte';
 	import { Cloud, Folder, Server, HardDrive } from 'lucide-svelte';
 	import ConfirmDangerModal from '$lib/components/ui/ConfirmDangerModal.svelte';
+	import { isHealthyTargetStatus } from '$lib/utils/run-status';
 
 	let targets: any[] = [];
 	let loading = true;
@@ -116,7 +117,12 @@
 		testing = id;
 		try {
 			const result = await api.testTarget(id);
-			addToast({ type: result.status === 'ok' ? 'success' : 'error', message: result.message || 'Test complete' });
+			// Backend returns { success, message, tested_at }.
+			const ok = result?.success === true;
+			addToast({
+				type: ok ? 'success' : 'error',
+				message: result?.message || (ok ? 'Connection test passed' : 'Connection test failed'),
+			});
 			await fetchTargets();
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message });
@@ -255,7 +261,7 @@
 								{:else}
 									<div class="flex items-center gap-2">
 										<p class="text-sm font-medium text-text">{target.name}</p>
-										<span class="badge {target.status === 'healthy' ? 'badge-success' : target.status === 'error' ? 'badge-danger' : 'badge-warning'}">{target.status || 'unknown'}</span>
+										<span class="badge {isHealthyTargetStatus(target.status) ? 'badge-success' : target.status === 'error' ? 'badge-danger' : 'badge-warning'}">{isHealthyTargetStatus(target.status) ? 'healthy' : target.status || 'unknown'}</span>
 									</div>
 								{/if}
 								<p class="text-xs font-mono text-text-secondary mt-0.5">

@@ -32,6 +32,36 @@ LIVE_PATH_MARKERS = {
 
 
 # ---------------------------------------------------------------------------
+# Local-target persistence check
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _neutralize_ephemeral_path_check():
+    """Tests run inside a container where tmp_path sits on the overlay root,
+    which the local-target validation correctly flags as non-persistent. Treat
+    every path as persistent for the whole session (session scope so that
+    module-scoped client fixtures are covered too); tests can opt back in to
+    the real check with the ``real_ephemeral_check`` fixture."""
+    import app.api.targets as targets_mod
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(targets_mod, "ephemeral_path_reason", lambda *a, **k: None)
+    yield
+    mp.undo()
+
+
+@pytest.fixture
+def real_ephemeral_check(monkeypatch):
+    """Restore the real persistent-storage check for this test."""
+    import app.api.targets as targets_mod
+    from app.utils.mounts import ephemeral_path_reason
+
+    monkeypatch.setattr(targets_mod, "ephemeral_path_reason", ephemeral_path_reason)
+    return ephemeral_path_reason
+
+
+# ---------------------------------------------------------------------------
 # Async test client — isolated DB, no scheduler/Docker dependencies
 # ---------------------------------------------------------------------------
 

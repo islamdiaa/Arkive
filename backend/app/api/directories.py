@@ -105,6 +105,8 @@ def _validate_directory_path(path: str) -> str:
     """Validate and normalize a watched directory path."""
     if not os.path.isabs(path):
         raise HTTPException(400, "Path must be absolute")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise HTTPException(400, "Path must not contain control characters")
 
     normalized = os.path.normpath(path)
     blocked_prefixes = (
@@ -128,7 +130,10 @@ async def list_directories(db: aiosqlite.Connection = Depends(get_db)):
     dirs = []
     for row in rows:
         d = dict(row)
-        d["exclude_patterns"] = json.loads(d.get("exclude_patterns", "[]"))
+        try:
+            d["exclude_patterns"] = json.loads(d.get("exclude_patterns") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["exclude_patterns"] = []
         d["enabled"] = bool(d["enabled"])
         dirs.append(d)
     total = len(dirs)
@@ -137,7 +142,7 @@ async def list_directories(db: aiosqlite.Connection = Depends(get_db)):
 
 @router.post("", status_code=201)
 async def add_directory(body: DirectoryCreate, db: aiosqlite.Connection = Depends(get_db)):
-    body.path = _validate_directory_path(body.path)
+    body.path = await asyncio.to_thread(_validate_directory_path, body.path)
 
     # Check for duplicate path
     cursor = await db.execute("SELECT id FROM watched_directories WHERE path = ?", (body.path,))
@@ -161,7 +166,13 @@ async def update_directory(dir_id: str, body: DirectoryCreate, db: aiosqlite.Con
     if not await cursor.fetchone():
         raise HTTPException(404, "Directory not found")
 
-    body.path = _validate_directory_path(body.path)
+    body.path = await asyncio.to_thread(_validate_directory_path, body.path)
+
+    cursor = await db.execute(
+        "SELECT id FROM watched_directories WHERE path = ? AND id != ?", (body.path, dir_id)
+    )
+    if await cursor.fetchone():
+        raise HTTPException(409, f"Directory already watched: {body.path}")
 
     await db.execute(
         """UPDATE watched_directories SET path = ?, label = ?, exclude_patterns = ?, enabled = ?
@@ -255,7 +266,8 @@ async def scan_directories(db: aiosqlite.Connection = Depends(get_db)):
                     info = known_paths.get(full_path)
                     if info:
                         label, priority, excludes = info
-                        size, count = size_cache.get(full_path, _quick_size(full_path, max_files=5000))
+                        cached = size_cache.get(full_path)
+                        size, count = cached if cached is not None else _quick_size(full_path, max_files=5000)
                         suggestions.append({
                             "path": full_path,
                             "label": label,

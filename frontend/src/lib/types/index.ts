@@ -11,7 +11,7 @@ export interface PaginatedResponse<T> {
 export interface BackupJob {
   id: string;
   name: string;
-  type: 'full' | 'db_dump' | 'flash' | 'custom';
+  type: 'full' | 'db_dump' | 'flash';
   schedule: string;
   enabled: boolean;
   targets: string[];
@@ -28,7 +28,8 @@ export interface StorageTarget {
   name: string;
   type: 'b2' | 'dropbox' | 'gdrive' | 's3' | 'local' | 'sftp' | 'wasabi';
   enabled: boolean;
-  status: 'connected' | 'error' | 'unknown';
+  /** Backend writes 'ok' / 'error' after a test; 'unknown' until tested. */
+  status: 'ok' | 'healthy' | 'error' | 'unknown' | string;
   last_tested: string | null;
   snapshot_count: number;
   total_size_bytes: number;
@@ -47,6 +48,10 @@ export interface JobRun {
   databases_dumped: number;
   databases_failed: number;
   total_size_bytes: number;
+  /** Human-readable summary for failed and partial runs. */
+  error_message?: string | null;
+  job_name?: string | null;
+  job_type?: 'full' | 'db_dump' | 'flash' | null;
 }
 
 // ── Snapshots ──

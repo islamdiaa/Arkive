@@ -5,9 +5,9 @@
  * - Breadcrumb with "Back to Backups" link
  * - Run header with status badge, job name, trigger type
  * - Metadata grid: started, completed, duration, total size
- * - Phase progress indicator (Pre-flight, DB Dumps, Flash, Upload, Retention, Notify)
- * - Results section: databases, files, storage targets
- * - Error details for failed runs
+ * - Results section: databases, flash drive, storage targets
+ * - Per-target and per-database results (status + error) from run.targets[] / run.databases[]
+ * - Error details (error_message) for failed AND partial runs
  * - Log viewer with streaming support
  */
 
@@ -18,92 +18,117 @@ import { mockSetupComplete } from './fixtures/api-mocks';
 // Mock data
 // ---------------------------------------------------------------------------
 
+// Mirrors GET /api/jobs/runs/{run_id} (backend/app/api/jobs.py get_run).
 interface MockRun {
   id: string;
   job_id: string;
   job_name: string;
+  job_type: string;
   status: string;
   trigger: string;
   started_at: string;
   completed_at: string | null;
   duration_seconds: number | null;
   total_size_bytes: number | null;
-  current_phase: number;
   databases_discovered: number;
   databases_dumped: number;
   databases_failed: number;
-  files_new: number;
-  files_changed: number;
-  files_unmodified: number;
-  target_count: number;
-  snapshots_created: number;
+  flash_backed_up: number;
+  flash_size_bytes: number;
   error_message: string | null;
+  databases: Array<Record<string, unknown>>;
+  targets: Array<Record<string, unknown>>;
 }
 
 const MOCK_RUN_SUCCESS: MockRun = {
   id: 'run-abc12345',
   job_id: 'j1',
   job_name: 'Nightly Full Backup',
+  job_type: 'full',
   status: 'success',
   trigger: 'scheduled',
   started_at: '2024-06-15T02:00:00Z',
   completed_at: '2024-06-15T02:05:30Z',
   duration_seconds: 330,
   total_size_bytes: 1073741824,
-  current_phase: 5,
   databases_discovered: 4,
   databases_dumped: 4,
   databases_failed: 0,
-  files_new: 42,
-  files_changed: 18,
-  files_unmodified: 1200,
-  target_count: 2,
-  snapshots_created: 2,
+  flash_backed_up: 1,
+  flash_size_bytes: 52428800,
   error_message: null,
+  databases: [],
+  targets: [],
+};
+
+const MOCK_RUN_PARTIAL: MockRun = {
+  id: 'run-part54321',
+  job_id: 'j2',
+  job_name: 'DB Dumps',
+  job_type: 'db_dump',
+  status: 'partial',
+  trigger: 'scheduled',
+  started_at: '2024-06-15T06:00:00Z',
+  completed_at: '2024-06-15T06:02:00Z',
+  duration_seconds: 120,
+  total_size_bytes: 524288000,
+  databases_discovered: 2,
+  databases_dumped: 1,
+  databases_failed: 0,
+  flash_backed_up: 0,
+  flash_size_bytes: 0,
+  error_message: 'Backup completed with problems (1 database skipped)',
+  databases: [
+    { id: 1, container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', dump_size_bytes: 1048576, integrity_check: 'ok', status: 'success', host_path: null, error: null },
+    { id: 2, container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', dump_size_bytes: 0, integrity_check: 'skipped', status: 'skipped', host_path: null, error: 'Container paperless-db is not running' },
+  ],
+  targets: [
+    { id: 1, target_id: 't1', status: 'success', snapshot_id: 'abcd1234', upload_bytes: 524288000, duration_seconds: 60, error: null, target_name: 'Local NAS', target_provider: 'local' },
+  ],
 };
 
 const MOCK_RUN_FAILED: MockRun = {
   id: 'run-fail98765',
   job_id: 'j1',
   job_name: 'Cloud Sync',
+  job_type: 'full',
   status: 'failed',
   trigger: 'manual',
   started_at: '2024-06-14T10:00:00Z',
   completed_at: '2024-06-14T10:01:15Z',
   duration_seconds: 75,
   total_size_bytes: 0,
-  current_phase: 2,
   databases_discovered: 2,
   databases_dumped: 1,
   databases_failed: 1,
-  files_new: 0,
-  files_changed: 0,
-  files_unmodified: 0,
-  target_count: 1,
-  snapshots_created: 0,
+  flash_backed_up: 0,
+  flash_size_bytes: 0,
   error_message: 'restic: connection to remote target timed out after 60s',
+  databases: [],
+  targets: [
+    { id: 1, target_id: 't9', status: 'failed', snapshot_id: '', upload_bytes: 0, duration_seconds: null, error: 'dial tcp: i/o timeout', target_name: 'Offsite B2', target_provider: 'b2' },
+  ],
 };
 
 const MOCK_RUN_RUNNING: MockRun = {
   id: 'run-running123',
   job_id: 'j2',
   job_name: 'DB Dumps',
+  job_type: 'db_dump',
   status: 'running',
   trigger: 'manual',
   started_at: new Date().toISOString(),
   completed_at: null,
   duration_seconds: null,
   total_size_bytes: null,
-  current_phase: 3,
   databases_discovered: 3,
   databases_dumped: 2,
   databases_failed: 0,
-  files_new: 5,
-  files_changed: 0,
-  files_unmodified: 0,
-  target_count: 1,
-  snapshots_created: 0,
+  flash_backed_up: 0,
+  flash_size_bytes: 0,
   error_message: null,
+  databases: [],
+  targets: [],
 };
 
 const MOCK_LOGS = [
@@ -264,19 +289,14 @@ test.describe('Backup Run Detail — Successful Run', () => {
     await expect(page.getByText('Total Size', { exact: true }).first()).toBeVisible();
   });
 
-  test('phase progress section is rendered', async ({ page }) => {
-    await page.goto('/backups/run-abc12345', { waitUntil: 'networkidle' });
-
-    await expect(page.getByText('Phase Progress')).toBeVisible();
-  });
-
-  test('results section displays database/file/target stats', async ({ page }) => {
+  test('results section displays database/flash/target stats', async ({ page }) => {
     await page.goto('/backups/run-abc12345', { waitUntil: 'networkidle' });
 
     await expect(page.getByText('Results', { exact: true })).toBeVisible();
-    await expect(page.locator('[class*="results"], [data-testid="results"]').getByText('Databases').or(page.locator('span').filter({ hasText: /^Databases$/ }))).toBeVisible();
-    await expect(page.getByText('Files Backed Up')).toBeVisible();
-    await expect(page.getByText('Storage Targets', { exact: true })).toBeVisible();
+    const results = page.locator('[data-testid="results"]');
+    await expect(results.getByText('Databases', { exact: true })).toBeVisible();
+    await expect(results.getByText('Flash Drive', { exact: true })).toBeVisible();
+    await expect(results.getByText('Storage Targets', { exact: true })).toBeVisible();
   });
 
   test('log viewer section is present', async ({ page }) => {
@@ -317,11 +337,37 @@ test.describe('Backup Run Detail — Failed Run', () => {
     ).toBeVisible();
   });
 
+  test('failed run shows the per-target error', async ({ page }) => {
+    await page.goto('/backups/run-fail98765', { waitUntil: 'networkidle' });
+
+    await expect(page.getByText('Offsite B2')).toBeVisible();
+    await expect(page.getByText('dial tcp: i/o timeout')).toBeVisible();
+  });
+
   test('failed run shows databases_failed count', async ({ page }) => {
     await page.goto('/backups/run-fail98765', { waitUntil: 'networkidle' });
 
     // The databases section should show "Failed: 1"
     await expect(page.getByText('Failed', { exact: true })).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — Partial Run
+// ---------------------------------------------------------------------------
+
+test.describe('Backup Run Detail — Partial Run', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockRunDetailRoutes(page, MOCK_RUN_PARTIAL);
+  });
+
+  test('partial run shows its error summary and per-database skip reason', async ({ page }) => {
+    await page.goto('/backups/run-part54321', { waitUntil: 'networkidle' });
+
+    await expect(page.getByText('Completed with problems', { exact: false }).first()).toBeVisible();
+    await expect(page.getByText('1 database skipped', { exact: false })).toBeVisible();
+    await expect(page.getByText('Container paperless-db is not running')).toBeVisible();
+    await expect(page.getByText('Local NAS')).toBeVisible();
   });
 });
 

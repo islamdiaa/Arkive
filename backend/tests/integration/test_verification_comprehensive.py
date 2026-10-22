@@ -442,7 +442,7 @@ class TestApiVerificationContract:
 
         await _insert_verification_run(db_path, "vr-shape", target_id, "passed", 88)
 
-        resp = await client.get("/api/status")
+        resp = await client.get("/api/status", headers=auth_headers(api_key))
         body = resp.json()
         vs = body["verification_status"]
 
@@ -483,6 +483,11 @@ class TestApiVerificationContract:
         api_key = data["api_key"]
         await _create_target(client, api_key, tmp_path)
 
+        from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+        _engine = _MagicMock()
+        _engine.is_backup_running = _MagicMock(return_value=False)
+        _engine.verify_all_targets = _AsyncMock(return_value={"status": "completed", "targets": []})
+        client._transport.app.state.verify_engine = _engine
         resp = await client.post(
             "/api/verification/run", headers=auth_headers(api_key)
         )
@@ -505,7 +510,7 @@ class TestApiVerificationContract:
             db_path, "vr-fail", target_id, "failed", 20,
         )
 
-        resp = await client.get("/api/status")
+        resp = await client.get("/api/status", headers=auth_headers(api_key))
         body = resp.json()
         assert body["trust_score"] == 20
         assert body["verification_status"]["verification_passing"] is False

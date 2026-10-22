@@ -116,7 +116,7 @@ async def test_setup_with_custom_schedules(client):
     for job in jobs:
         if job["name"] == "DB Dumps":
             assert job["schedule"] == "30 1 * * *"
-        elif job["name"] == "Cloud Sync":
+        elif job["name"] == "Full Backup":
             assert job["schedule"] == "0 5 * * *"
 
 
@@ -142,7 +142,7 @@ async def test_setup_with_target_ids(client, tmp_path):
     # The Cloud Sync job should have the target linked
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     jobs = resp.json()["items"]
-    cloud_sync = next(j for j in jobs if j["name"] == "Cloud Sync")
+    cloud_sync = next(j for j in jobs if j["name"] == "Full Backup")
     assert target_id in cloud_sync["targets"]
 
 
@@ -188,7 +188,7 @@ async def test_setup_with_storage_config_creates_target_and_links_cloud_sync_job
     jobs_resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     assert jobs_resp.status_code == 200
     jobs = jobs_resp.json()["items"]
-    cloud_sync = next(j for j in jobs if j["name"] == "Cloud Sync")
+    cloud_sync = next(j for j in jobs if j["name"] == "Full Backup")
     assert cloud_sync["targets"] == [targets[0]["id"]]
 
 

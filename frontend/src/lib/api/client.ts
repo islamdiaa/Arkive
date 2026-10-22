@@ -1,4 +1,5 @@
 import { mockApi } from './mock';
+import { handleUnauthorized } from './session';
 
 const BASE_URL = '/api';
 
@@ -26,6 +27,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 	if (!res.ok) {
 		const error = await res.json().catch(() => ({ message: res.statusText }));
+		// Expired/invalidated browser session on an authenticated endpoint:
+		// send the user back to login instead of leaving every page erroring.
+		// /auth/* endpoints (login, session, setup) handle 401 themselves.
+		if (res.status === 401 && !path.startsWith('/auth/')) {
+			handleUnauthorized();
+		}
 		throw new ApiError(res.status, error.message || res.statusText);
 	}
 
@@ -72,8 +79,8 @@ const realApi = {
 	deleteJob: (id: string) => request<any>(`/jobs/${id}`, { method: 'DELETE' }),
 	triggerJob: (id: string) => request<any>(`/jobs/${id}/run`, { method: 'POST' }),
 	listRuns: (jobId: string) => request<any>(`/jobs/${jobId}/history`),
-	getRun: (jobId: string, runId: string) => request<any>(`/jobs/${jobId}/runs/${runId}`),
-	cancelRun: (jobId: string, runId: string) => request<any>(`/jobs/${jobId}/runs/${runId}`, { method: 'DELETE' }),
+	getRun: (_jobId: string, runId: string) => request<any>(`/jobs/runs/${runId}`),
+	cancelRun: (jobId: string, _runId?: string) => request<any>(`/jobs/${jobId}/run`, { method: 'DELETE' }),
 
 	listTargets: () => request<any>('/targets'),
 	getTarget: (id: string) => request<any>(`/targets/${id}`),

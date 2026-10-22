@@ -47,6 +47,8 @@ class RestoreRequest(BaseModel):
         # Must be absolute path
         if not v.startswith("/"):
             raise ValueError("restore_to must be an absolute path")
+        if re.search(r"[\x00-\x1f\x7f]", v):
+            raise ValueError("restore_to must not contain control characters")
         # Block path traversal
         import os
         normalized = os.path.normpath(v)
@@ -64,8 +66,8 @@ class RestoreRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_restore_mode(self) -> "RestoreRequest":
-        if not self.dry_run and not self.restore_to:
-            raise ValueError("restore_to is required for non-dry-run restores")
+        # restore_to may be omitted: the API then restores into a fresh
+        # directory under the config dir's restores/ folder (a safe root).
         return self
 
     @field_validator("paths")
@@ -75,6 +77,8 @@ class RestoreRequest(BaseModel):
             # Block path traversal sequences in restore paths
             if ".." in p:
                 raise ValueError("Path traversal (..) not allowed in restore paths")
+            if re.search(r"[\x00-\x1f\x7f]", p):
+                raise ValueError("Restore paths must not contain control characters")
         return v
 
 

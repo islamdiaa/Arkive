@@ -98,7 +98,7 @@ class TestOrchestratorStatusClassification:
 
         with patch.object(orch_mod, "LOCK_FILE", backup_lock), \
              patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"):
-            result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="sched-1")
+            result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="sched-1", lock_wait_seconds=0)
 
         assert result["status"] == "conflict"
 
@@ -166,7 +166,7 @@ class TestOrchestratorStatusClassification:
 
         with patch.object(orch_mod, "LOCK_FILE", backup_lock), \
              patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"):
-            await orchestrator.run_backup("job-1", trigger="scheduled", run_id="event-test-1")
+            await orchestrator.run_backup("job-1", trigger="scheduled", run_id="event-test-1", lock_wait_seconds=0)
 
         assert event_bus.publish.called
         call_args = event_bus.publish.call_args

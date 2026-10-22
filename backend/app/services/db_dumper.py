@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import hashlib
 import io
 import logging
 import os
@@ -10,9 +11,12 @@ import shlex
 import shutil
 import tarfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+import docker
 
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
@@ -20,6 +24,110 @@ from app.utils.subprocess_runner import run_command
 from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.db_dumper")
+
+# Trailers written by the dump tools as their very last output. A dump that
+# lacks its trailer was cut short (connection drop, OOM kill, timeout).
+PG_DUMP_TRAILER = b"PostgreSQL database dump complete"
+MYSQL_DUMP_TRAILER = b"-- Dump completed"
+_TAIL_BYTES = 4096
+
+# SQLite integrity-check errors that mean "this stock sqlite3 binary can't
+# evaluate the schema" (app-specific collations/extensions such as Plex's
+# icu_root), not that the database is corrupt.
+_SQLITE_UNVERIFIABLE_MARKERS = (
+    "no such collation sequence",
+    "no such module",
+    "no such function",
+    "no such tokenizer",
+)
+
+# Files in the dump directory that are not per-database dumps and are managed
+# elsewhere (flash backup retention, Arkive self-backup).
+_NON_DUMP_PREFIXES = ("flash_",)
+_NON_DUMP_FILES = {"arkive_self.db"}
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_DUMP_TS_PATTERN = re.compile(r"^(.+?)_(\d{8}_\d{6})\.")
+
+
+@dataclass
+class StreamResult:
+    exit_code: int | None
+    bytes_written: int
+    stderr: str
+    tail: bytes
+
+
+def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7) -> int:
+    """Prune the database dump directory.
+
+    Keeps the newest ``keep_last`` dumps per container/database and removes
+    any dump older than ``max_age_days`` (dumps of containers that no longer
+    exist would otherwise be re-uploaded in every snapshot forever). Orphaned
+    SQLite ``-wal``/``-shm``/``-journal`` sidecars are removed with their base
+    file. Flash archives and the Arkive self-backup are left alone.
+
+    Returns the number of files removed.
+    """
+    if not dump_dir.is_dir():
+        return 0
+    keep_last = max(keep_last, 1)
+    cutoff = time.time() - max_age_days * 86400 if max_age_days else None
+
+    groups: dict[str, list[Path]] = {}
+    sidecars: list[Path] = []
+    for path in dump_dir.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        if name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
+            continue
+        if name.endswith(_SQLITE_SIDECAR_SUFFIXES):
+            sidecars.append(path)
+            continue
+        match = _DUMP_TS_PATTERN.match(name)
+        prefix = match.group(1) if match else name
+        groups.setdefault(prefix, []).append(path)
+
+    to_remove: list[Path] = []
+    for files in groups.values():
+        # Timestamps in the name sort chronologically; newest first.
+        files.sort(key=lambda p: p.name, reverse=True)
+        for index, path in enumerate(files):
+            if index >= keep_last:
+                to_remove.append(path)
+            elif cutoff is not None:
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        to_remove.append(path)
+                except OSError:
+                    continue
+
+    removed = 0
+    removed_names = {p.name for p in to_remove}
+    for path in to_remove:
+        try:
+            path.unlink()
+            removed += 1
+            logger.info("Removed old dump: %s", path)
+        except OSError as e:
+            logger.warning("Failed to remove old dump %s: %s", path, e)
+
+    for sidecar in sidecars:
+        base = sidecar.name
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        if base in removed_names or not (dump_dir / base).exists():
+            try:
+                sidecar.unlink()
+                removed += 1
+            except OSError as e:
+                logger.warning("Failed to remove dump sidecar %s: %s", sidecar, e)
+
+    if removed:
+        logger.info("Dump cleanup: removed %d old dump files", removed)
+    return removed
 
 
 @dataclass
@@ -43,16 +151,149 @@ class DBDumper:
         self.config = config
         self.dump_dir = config.dump_dir
         self.dump_dir.mkdir(parents=True, exist_ok=True)
+        # (container, db_name) pairs shared by several distinct databases,
+        # e.g. two SQLite files both named credentials.db in one container.
+        self._name_collisions: set[tuple[str, str]] = set()
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
+    @staticmethod
+    def _safe(value: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9_.\-]', '_', value)
+
+    def _dump_path(self, db: DiscoveredDatabase, ts: str, ext: str, db_label: str | None = None) -> str:
+        """Build a unique dump file path for a database."""
+        label = self._safe(db_label or db.db_name)
+        if (db.container_name, db.db_name) in self._name_collisions and db.host_path:
+            # Same basename in one container — disambiguate by source path so
+            # the dumps don't overwrite each other within the same second.
+            label = f"{label}-{hashlib.sha1(db.host_path.encode()).hexdigest()[:8]}"  # nosec B324
+        return str(self.dump_dir / f"{self._safe(db.container_name)}_{label}_{ts}{ext}")
+
+    @staticmethod
+    def dedupe(databases: list[DiscoveredDatabase]) -> list[DiscoveredDatabase]:
+        """Drop exact duplicates (a companion DB discovered via both the app
+        container's profile and the DB container itself)."""
+        seen: set[tuple[str, str, str, str | None]] = set()
+        unique = []
+        for db in databases:
+            key = (db.container_name, db.db_type, db.db_name, db.host_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(db)
+        return unique
+
+    def _exec_stream_to_gzip(
+        self, container, cmd: list[str], dump_path: str, environment: dict | None = None,
+    ) -> StreamResult:
+        """Run ``cmd`` in ``container`` and stream stdout into a gzip file.
+
+        docker-py's ``exec_run(stream=True)`` always reports ``exit_code=None``,
+        which hid failed dumps. With a real Docker API client we use the
+        low-level exec API so the exit code can be inspected after the stream
+        ends; other clients fall back to ``exec_run``.
+        """
+        api = getattr(getattr(container, "client", None), "api", None)
+        exec_id = None
+        if isinstance(api, docker.APIClient):
+            exec_id = api.exec_create(
+                container.id, cmd, stdout=True, stderr=True, environment=environment or None,
+            )["Id"]
+            output = api.exec_start(exec_id, stream=True, demux=True)
+            exit_code = None
+        else:
+            kwargs = {"environment": environment} if environment else {}
+            exit_code, output = container.exec_run(cmd, demux=True, stream=True, **kwargs)
+
+        bytes_written = 0
+        tail = b""
+        stderr_chunks: list[bytes] = []
+        with gzip.open(dump_path, "wb") as f:
+            for chunk in output:
+                if isinstance(chunk, tuple):
+                    stdout_data, stderr_data = chunk
+                else:
+                    stdout_data, stderr_data = chunk, None
+                if stdout_data:
+                    f.write(stdout_data)
+                    bytes_written += len(stdout_data)
+                    tail = (tail + stdout_data)[-_TAIL_BYTES:]
+                if stderr_data:
+                    stderr_chunks.append(stderr_data)
+
+        if exec_id is not None:
+            try:
+                exit_code = api.exec_inspect(exec_id).get("ExitCode")
+            except Exception as e:
+                logger.warning("Could not read exit code for %s: %s", cmd[0], e)
+
+        return StreamResult(
+            exit_code=exit_code,
+            bytes_written=bytes_written,
+            stderr=b"".join(stderr_chunks).decode(errors="replace").strip(),
+            tail=tail,
+        )
+
+    def _streamed_dump_result(
+        self, db: DiscoveredDatabase, db_type: str, tool: str, dump_path: str,
+        stream: StreamResult, trailer: bytes | None,
+    ) -> DumpResult:
+        """Turn a streamed dump into a DumpResult, detecting failure and truncation."""
+        def failed(error: str) -> DumpResult:
+            return DumpResult(
+                container_name=db.container_name, db_type=db_type,
+                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
+                integrity_check="failed" if stream.bytes_written else "skipped",
+                status="failed", error=redact_credentials(error),
+            )
+
+        if stream.exit_code is not None and stream.exit_code != 0:
+            logger.error("%s for %s/%s failed (exit %s): %s", tool, db.container_name, db.db_name,
+                         stream.exit_code, redact_credentials(stream.stderr[:500]))
+            return failed(f"{tool} exited with code {stream.exit_code}: {stream.stderr[:500] or 'no output'}")
+
+        if stream.bytes_written == 0:
+            return failed(stream.stderr[:500] or "Empty dump file")
+
+        integrity = "skipped"
+        if trailer is not None:
+            if trailer in stream.tail:
+                integrity = "ok"
+            else:
+                logger.error("%s output for %s/%s is truncated (no completion trailer)",
+                             tool, db.container_name, db.db_name)
+                return failed(f"{tool} output is incomplete (missing completion trailer): "
+                              f"{stream.stderr[:300] or 'dump was cut short'}")
+
+        if stream.bytes_written < 100:
+            logger.warning("%s for %s/%s produced suspiciously small output (%d bytes)",
+                           tool, db.container_name, db.db_name, stream.bytes_written)
+        if stream.stderr and (db_type != "mongodb" or "error" in stream.stderr.lower()):
+            logger.warning("%s stderr for %s/%s: %s", tool, db.container_name, db.db_name,
+                           redact_credentials(stream.stderr[:500]))
+
+        size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
+        return DumpResult(
+            container_name=db.container_name, db_type=db_type,
+            db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
+            integrity_check=integrity, status="success",
+        )
+
     async def dump_all(self, databases: list[DiscoveredDatabase]) -> list[DumpResult]:
         """Dump all discovered databases. Continue on failure."""
+        databases = self.dedupe(databases)
+        name_counts = Counter((db.container_name, db.db_name) for db in databases)
+        self._name_collisions = {key for key, count in name_counts.items() if count > 1}
         results = []
         for db in databases:
             try:
                 result = await self._dump_one(db)
+                if result.status != "success":
+                    # A failed/truncated dump must not shadow the previous
+                    # good dump (cleanup keeps only the newest file).
+                    self._remove_dump_file(result.dump_path)
                 results.append(result)
             except Exception as e:
                 error_str = str(e)
@@ -69,6 +310,18 @@ class DBDumper:
                     error=redacted_error,
                 ))
         return results
+
+    @staticmethod
+    def _remove_dump_file(path: str) -> None:
+        if not path:
+            return
+        for candidate in (path, *(path + suffix for suffix in _SQLITE_SIDECAR_SUFFIXES)):
+            try:
+                os.remove(candidate)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning("Could not remove failed dump %s: %s", candidate, e)
 
     async def _dump_one(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump a single database."""
@@ -115,7 +368,7 @@ class DBDumper:
         Raises ValueError if the value contains disallowed characters.
         """
         if not value or not re.match(r'^[a-zA-Z0-9_.\-]+$', value):
-            raise ValueError(f"Invalid identifier: contains disallowed characters")
+            raise ValueError("Invalid identifier: contains disallowed characters")
         return value
 
     @staticmethod
@@ -152,10 +405,7 @@ class DBDumper:
 
     def _dump_postgres_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Postgres via docker exec with streaming."""
-        ts = self._timestamp()
-        safe_container = re.sub(r'[^a-zA-Z0-9_.\-]', '_', db.container_name)
-        safe_dbname = re.sub(r'[^a-zA-Z0-9_.\-]', '_', db.db_name)
-        dump_path = str(self.dump_dir / f"{safe_container}_{safe_dbname}_{ts}.sql.gz")
+        dump_path = self._dump_path(db, self._timestamp(), ".sql.gz")
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -183,75 +433,18 @@ class DBDumper:
                 "-d",
                 db_name,
             ]
-            exit_code, output = container.exec_run(exec_cmd, demux=True, stream=True)
-
-            bytes_written = 0
-            stderr_chunks: list[bytes] = []
-            with gzip.open(dump_path, "wb") as f:
-                for chunk in output:
-                    if isinstance(chunk, tuple):
-                        stdout_data, stderr_data = chunk
-                        if stdout_data:
-                            f.write(stdout_data)
-                            bytes_written += len(stdout_data)
-                        if stderr_data:
-                            stderr_chunks.append(stderr_data)
-                    elif chunk:
-                        f.write(chunk)
-                        bytes_written += len(chunk)
-
-            stderr_text = b"".join(stderr_chunks).decode(errors="replace").strip()
-
-            if exit_code is not None and exit_code != 0:
-                error_msg = stderr_text if stderr_text else f"pg_dump exited with code {exit_code}"
-                redacted_error = redact_credentials(stderr_text[:500])
-                logger.error("pg_dump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, redacted_error)
-                return DumpResult(
-                    container_name=db.container_name, db_type="postgres",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
-                    error=f"pg_dump exited with code {exit_code}: {redact_credentials(error_msg)}",
-                )
-
-            if bytes_written == 0:
-                error_msg = stderr_text if stderr_text else "Empty dump file"
-                return DumpResult(
-                    container_name=db.container_name, db_type="postgres",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed", error=error_msg,
-                )
-
-            if bytes_written < 100:
-                logger.warning("pg_dump for %s/%s produced suspiciously small output (%d bytes)",
-                               db.container_name, db.db_name, bytes_written)
-
-            # Log stderr warnings even on success (pg_dump may emit warnings)
-            if stderr_text:
-                redacted_stderr = redact_credentials(stderr_text[:500])
-                logger.warning("pg_dump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, redacted_stderr)
-
-            size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-            return DumpResult(
-                container_name=db.container_name, db_type="postgres",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-                integrity_check="skipped", status="success",
-            )
+            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path)
+            return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="postgres",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=str(e),
+                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
 
     async def _dump_sqlite(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump SQLite using HOST sqlite3 binary on bind-mounted path."""
-        ts = self._timestamp()
-        # Sanitize container_name and db_name for safe filename construction
-        safe_container = re.sub(r'[^a-zA-Z0-9_.\-]', '_', db.container_name)
-        safe_dbname = re.sub(r'[^a-zA-Z0-9_.\-]', '_', db.db_name)
-        dump_path = str(self.dump_dir / f"{safe_container}_{safe_dbname}_{ts}.sqlite3")
+        dump_path = self._dump_path(db, self._timestamp(), ".sqlite3")
 
         if not db.host_path:
             return DumpResult(
@@ -302,13 +495,25 @@ class DBDumper:
                 integrity_check="failed", status="failed", error=result.stderr,
             )
 
+        # .backup preserves the source's WAL journal mode; switch the copy to a
+        # rollback journal so it is a single self-contained file and opening it
+        # (integrity check, restore) doesn't leave -wal/-shm sidecars behind.
+        await run_command(["sqlite3", dump_path, "PRAGMA journal_mode=DELETE;"])
+
         # Integrity check
         integrity = "skipped"
         check_result = await run_command(["sqlite3", dump_path, "PRAGMA integrity_check"])
-        if check_result.returncode == 0 and "ok" in check_result.stdout.lower():
+        check_output = f"{check_result.stdout}\n{check_result.stderr}".lower()
+        if any(marker in check_output for marker in _SQLITE_UNVERIFIABLE_MARKERS):
+            # App-specific collation/extension (e.g. Plex icu_root) — the
+            # stock sqlite3 binary cannot evaluate it, which is not corruption.
+            integrity = "skipped"
+        elif check_result.returncode == 0 and check_result.stdout.strip().lower() == "ok":
             integrity = "ok"
-        elif check_result.returncode != 0:
+        else:
             integrity = "failed"
+            logger.warning("SQLite integrity check failed for %s/%s: %s", db.container_name, db.db_name,
+                           (check_result.stdout or check_result.stderr)[:300].strip())
 
         size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
         return DumpResult(
@@ -319,8 +524,7 @@ class DBDumper:
 
     def _dump_mariadb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MariaDB/MySQL via docker exec with streaming."""
-        ts = self._timestamp()
-        dump_path = str(self.dump_dir / f"{db.container_name}_{db.db_name}_{ts}.sql.gz")
+        dump_path = self._dump_path(db, self._timestamp(), ".sql.gz")
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -350,76 +554,24 @@ class DBDumper:
             # Use list form to avoid shell interpretation;
             # pass password via environment variable to avoid it appearing in process list
             exec_env = {}
-            exec_cmd = [dump_binary, "-u", mysql_user]
+            # --single-transaction gives a consistent InnoDB snapshot without
+            # locking tables for the whole dump.
+            exec_cmd = [dump_binary, "-u", mysql_user, "--single-transaction"]
             if mysql_password:
                 exec_env["MYSQL_PWD"] = mysql_password
             exec_cmd.extend(["--databases", db_name])
-            exit_code, output = container.exec_run(exec_cmd, demux=True, stream=True, environment=exec_env)
-
-            bytes_written = 0
-            stderr_chunks: list[bytes] = []
-            with gzip.open(dump_path, "wb") as f:
-                for chunk in output:
-                    if isinstance(chunk, tuple):
-                        stdout_data, stderr_data = chunk
-                        if stdout_data:
-                            f.write(stdout_data)
-                            bytes_written += len(stdout_data)
-                        if stderr_data:
-                            stderr_chunks.append(stderr_data)
-                    elif chunk:
-                        f.write(chunk)
-                        bytes_written += len(chunk)
-
-            stderr_text = b"".join(stderr_chunks).decode(errors="replace").strip()
-
-            if exit_code is not None and exit_code != 0:
-                error_msg = stderr_text if stderr_text else f"mysqldump exited with code {exit_code}"
-                redacted_error = redact_credentials(stderr_text[:500])
-                logger.error("mysqldump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, redacted_error)
-                return DumpResult(
-                    container_name=db.container_name, db_type="mariadb",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
-                    error=f"mysqldump exited with code {exit_code}: {redact_credentials(error_msg)}",
-                )
-
-            if bytes_written == 0:
-                error_msg = stderr_text if stderr_text else "Empty dump file"
-                return DumpResult(
-                    container_name=db.container_name, db_type="mariadb",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed", error=error_msg,
-                )
-
-            if bytes_written < 100:
-                logger.warning("mysqldump for %s/%s produced suspiciously small output (%d bytes)",
-                               db.container_name, db.db_name, bytes_written)
-
-            # Log stderr warnings even on success (mysqldump may emit warnings)
-            if stderr_text:
-                redacted_stderr = redact_credentials(stderr_text[:500])
-                logger.warning("mysqldump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, redacted_stderr)
-
-            size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-            return DumpResult(
-                container_name=db.container_name, db_type="mariadb",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-                integrity_check="skipped", status="success",
-            )
+            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path, environment=exec_env)
+            return self._streamed_dump_result(db, "mariadb", dump_binary, dump_path, stream, MYSQL_DUMP_TRAILER)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="mariadb",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=str(e),
+                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
 
     def _dump_mongodb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MongoDB via docker exec with authentication support."""
-        ts = self._timestamp()
-        dump_path = str(self.dump_dir / f"{db.container_name}_{db.db_name}_{ts}.archive.gz")
+        dump_path = self._dump_path(db, self._timestamp(), ".archive.gz")
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -436,66 +588,13 @@ class DBDumper:
                     "--authenticationDatabase", "admin",
                 ])
 
-            exit_code, output = container.exec_run(exec_cmd, demux=True, stream=True)
-
-            bytes_written = 0
-            stderr_chunks: list[bytes] = []
-            with gzip.open(dump_path, "wb") as f:
-                for chunk in output:
-                    if isinstance(chunk, tuple):
-                        stdout_data, stderr_data = chunk
-                        if stdout_data:
-                            f.write(stdout_data)
-                            bytes_written += len(stdout_data)
-                        if stderr_data:
-                            stderr_chunks.append(stderr_data)
-                    elif chunk:
-                        f.write(chunk)
-                        bytes_written += len(chunk)
-
-            stderr_text = b"".join(stderr_chunks).decode(errors="replace").strip()
-
-            if exit_code is not None and exit_code != 0:
-                error_msg = stderr_text if stderr_text else f"mongodump exited with code {exit_code}"
-                redacted_error = redact_credentials(stderr_text[:500])
-                logger.error("mongodump for %s/%s failed (exit %s): %s",
-                             db.container_name, db.db_name, exit_code, redacted_error)
-                return DumpResult(
-                    container_name=db.container_name, db_type="mongodb",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
-                    error=f"mongodump exited with code {exit_code}: {redact_credentials(error_msg)}",
-                )
-
-            if bytes_written == 0:
-                error_msg = stderr_text if stderr_text else "Empty dump file"
-                return DumpResult(
-                    container_name=db.container_name, db_type="mongodb",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed", error=error_msg,
-                )
-
-            if bytes_written < 100:
-                logger.warning("mongodump for %s/%s produced suspiciously small output (%d bytes)",
-                               db.container_name, db.db_name, bytes_written)
-
-            # Log stderr warnings even on success (mongodump writes progress to stderr)
-            if stderr_text and "error" in stderr_text.lower():
-                redacted_stderr = redact_credentials(stderr_text[:500])
-                logger.warning("mongodump stderr for %s/%s: %s",
-                               db.container_name, db.db_name, redacted_stderr)
-
-            size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-            return DumpResult(
-                container_name=db.container_name, db_type="mongodb",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-                integrity_check="skipped", status="success",
-            )
+            stream = self._exec_stream_to_gzip(container, exec_cmd, dump_path)
+            return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="mongodb",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=str(e),
+                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
 
     def _dump_redis_blocking(self, db: DiscoveredDatabase) -> DumpResult:
@@ -648,50 +747,9 @@ class DBDumper:
                 integrity_check="skipped", status="failed", error=str(e),
             )
 
-    def cleanup_old_dumps(self, keep_last: int = 3) -> int:
-        """Remove old dump files, keeping only the last N per container/db combo.
-
-        Returns the number of files removed. This prevents unbounded growth
-        of the dump directory across successive backup runs.
-        """
-        import glob
-        import re
-        from collections import defaultdict
-
-        if keep_last < 1:
-            keep_last = 1
-
-        removed = 0
-        # Group dump files by their container_db prefix (everything before the timestamp)
-        # Filenames: {container}_{dbname}_{YYYYMMDD}_{HHMMSS}.ext
-        ts_pattern = re.compile(r'^(.+?)_(\d{8}_\d{6})\.')
-        dump_files: dict[str, list[str]] = defaultdict(list)
-
-        all_files = sorted(glob.glob(str(self.dump_dir / "*")), reverse=True)
-        for fpath in all_files:
-            if not os.path.isfile(fpath):
-                continue
-            basename = os.path.basename(fpath)
-            match = ts_pattern.match(basename)
-            if match:
-                prefix = match.group(1)
-            else:
-                prefix = basename
-            dump_files[prefix].append(fpath)
-
-        for prefix, files in dump_files.items():
-            # Files are already sorted newest-first (reverse glob on path)
-            for old_file in files[keep_last:]:
-                try:
-                    os.remove(old_file)
-                    removed += 1
-                    logger.info("Removed old dump: %s", old_file)
-                except OSError as e:
-                    logger.warning("Failed to remove old dump %s: %s", old_file, e)
-
-        if removed:
-            logger.info("Dump cleanup: removed %d old dump files", removed)
-        return removed
+    def cleanup_old_dumps(self, keep_last: int = 1, max_age_days: int | None = 7) -> int:
+        """Prune the dump directory. See ``cleanup_dump_dir``."""
+        return cleanup_dump_dir(self.dump_dir, keep_last=keep_last, max_age_days=max_age_days)
 
     async def dump_single(self, container_name: str, db_name: str, db_type: str,
                           host_path: str | None = None, verify_integrity: bool = True) -> DumpResult:

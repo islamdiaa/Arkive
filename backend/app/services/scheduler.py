@@ -1,8 +1,8 @@
 """APScheduler-based job scheduler — no cron dependency."""
 
-import json
+import asyncio
 import logging
-from datetime import datetime
+import time
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,6 +13,8 @@ from app.core.activity import log_activity
 from app.services.discovery_persistence import persist_discovery_results
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.lock_manager import BackupLockManager
+from app.services.retention import read_retention_settings
 
 logger = logging.getLogger("arkive.scheduler")
 
@@ -23,6 +25,9 @@ SYSTEM_JOB_HEALTH = "system_health_check"
 SYSTEM_JOB_LOG_PRUNE = "system_activity_log_prune"
 SYSTEM_JOB_INTEGRITY_CHECK = "system_integrity_check"
 SYSTEM_JOB_INTEGRITY_VERIFY = "system_integrity_verify"
+
+# Target status values written by the health check and the targets API.
+_HEALTHY_STATES = {"online", "ok", "healthy"}
 
 
 class ArkiveScheduler:
@@ -47,6 +52,8 @@ class ArkiveScheduler:
             }
         )
         self._job_map: dict[str, str] = {}  # backup_job_id -> apscheduler_job_id
+        self._background_tasks: set[asyncio.Task] = set()
+        self._target_status: dict[str, str] = {}  # last health-check status per target
 
     async def start(self) -> None:
         """Load all enabled jobs from DB, register system jobs, and start scheduler."""
@@ -205,30 +212,18 @@ class ArkiveScheduler:
         if not self.backup_engine:
             logger.debug("Backup engine not available, skipping retention cleanup")
             return
+        # Prune takes an exclusive restic lock and can run for a long time, so
+        # hold the backup lock: scheduled backups queue behind it instead of
+        # failing on "repository is already locked".
+        lock_held = await self._acquire_backup_lock("system-retention")
+        if not lock_held:
+            logger.warning("System job: retention cleanup skipped — backup/restore still running")
+            return
         try:
             logger.info("System job: starting retention cleanup")
 
-            # Read retention settings from DB (same logic as orchestrator)
-            keep_daily = 7
-            keep_weekly = 4
-            keep_monthly = 6
             async with aiosqlite.connect(self.config.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT key, value FROM settings WHERE key IN ('keep_daily', 'keep_weekly', 'keep_monthly')"
-                )
-                for row in await cursor.fetchall():
-                    try:
-                        val = int(row["value"])
-                        if val >= 1:  # Prevent accidental deletion of all snapshots
-                            if row["key"] == "keep_daily":
-                                keep_daily = val
-                            elif row["key"] == "keep_weekly":
-                                keep_weekly = val
-                            elif row["key"] == "keep_monthly":
-                                keep_monthly = val
-                    except (ValueError, TypeError):
-                        pass
+                keep_daily, keep_weekly, keep_monthly = await read_retention_settings(db)
 
             logger.info("Retention settings: daily=%d, weekly=%d, monthly=%d",
                         keep_daily, keep_weekly, keep_monthly)
@@ -283,6 +278,8 @@ class ArkiveScheduler:
             logger.info("System job: retention cleanup complete — %d targets processed", len(targets))
         except Exception as e:
             logger.error("System job: retention cleanup failed: %s", e)
+        finally:
+            self._release_backup_lock()
 
     async def _run_health_check(self) -> None:
         """System job: test connectivity for all enabled storage targets."""
@@ -290,7 +287,7 @@ class ArkiveScheduler:
             logger.debug("Cloud manager not available, skipping health check")
             return
         try:
-            logger.info("System job: starting health check")
+            logger.debug("System job: starting health check")
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
@@ -299,10 +296,12 @@ class ArkiveScheduler:
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
-                logger.info("System job: no enabled targets, skipping health check")
+                logger.debug("System job: no enabled targets, skipping health check")
                 return
 
+            changes: list[dict] = []
             for target in targets:
+                previous_status = self._target_status.get(target["id"], target.get("status"))
                 try:
                     # Decrypt the config for the connectivity test
                     target["config"] = decrypt_config(
@@ -321,11 +320,12 @@ class ArkiveScheduler:
                             (new_status, target["id"]),
                         )
                         await db.commit()
-                    logger.info(
+                    logger.debug(
                         "Health check for target %s (%s): %s",
                         target["id"], target.get("name"), new_status,
                     )
                 except Exception as e:
+                    new_status = "error"
                     logger.error("Health check failed for target %s: %s", target["id"], e)
                     # Mark as error on exception
                     try:
@@ -341,13 +341,38 @@ class ArkiveScheduler:
                     except Exception:
                         pass
 
-            async with aiosqlite.connect(self.config.db_path) as db:
-                await log_activity(
-                    db, "system", "health_check",
-                    f"Health check completed for {len(targets)} targets",
-                    {"target_count": len(targets)},
-                )
-            logger.info("System job: health check complete — %d targets checked", len(targets))
+                self._target_status[target["id"]] = new_status
+                was_healthy = previous_status in _HEALTHY_STATES
+                is_healthy = new_status in _HEALTHY_STATES
+                first_check = previous_status in (None, "", "unknown")
+                if was_healthy != is_healthy and not (first_check and is_healthy):
+                    changes.append({
+                        "target_id": target["id"], "name": target.get("name"),
+                        "from": previous_status, "to": new_status,
+                    })
+
+            # Routine checks run every 5 minutes; only status changes are
+            # worth an activity entry (and a notification when a target fails).
+            for change in changes:
+                went_bad = change["to"] == "error"
+                message = (f"Storage target {change['name']} is "
+                           f"{'unreachable' if went_bad else 'reachable again'}")
+                if went_bad:
+                    logger.warning(message)
+                else:
+                    logger.info(message)
+                async with aiosqlite.connect(self.config.db_path) as db:
+                    await log_activity(
+                        db, "target", "health_changed", message, change,
+                        severity="warning" if went_bad else "info",
+                    )
+                if went_bad and self.notifier:
+                    try:
+                        await self.notifier.send("target.unreachable", "Storage Target Unreachable",
+                                                 message, severity="error")
+                    except Exception as notify_err:
+                        logger.warning("Failed to send target health notification: %s", notify_err)
+            logger.debug("System job: health check complete — %d targets checked", len(targets))
         except Exception as e:
             logger.error("System job: health check failed: %s", e)
 
@@ -457,6 +482,9 @@ class ArkiveScheduler:
             logger.debug("Verify engine not available, skipping integrity verify")
             return
         try:
+            if not await self._wait_until_idle(self.system_job_lock_wait_seconds):
+                logger.warning("System job: integrity verify skipped — backup/restore still running")
+                return
             logger.info("System job: starting integrity verify")
             result = await self.verify_engine.verify_all_targets()
             status = result.get("status", "unknown")
@@ -503,6 +531,47 @@ class ArkiveScheduler:
             )
         except Exception as e:
             logger.error("System job: integrity verify failed: %s", e)
+
+    # ---- Backup lock coordination for system jobs ----
+
+    # How long weekly maintenance waits for a running backup before skipping.
+    system_job_lock_wait_seconds: float = 3 * 3600
+    lock_poll_seconds: float = 15
+
+    def _lock_manager(self) -> BackupLockManager | None:
+        lock_manager = getattr(self.orchestrator, "lock_manager", None)
+        return lock_manager if isinstance(lock_manager, BackupLockManager) else None
+
+    async def _acquire_backup_lock(self, holder: str) -> bool:
+        lock_manager = self._lock_manager()
+        if lock_manager is None:
+            return True
+        deadline = time.monotonic() + self.system_job_lock_wait_seconds
+        while True:
+            if lock_manager.acquire_backup_lock(holder):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self.lock_poll_seconds)
+
+    def _release_backup_lock(self) -> None:
+        lock_manager = self._lock_manager()
+        if lock_manager is not None:
+            lock_manager.release_backup_lock()
+
+    async def _wait_until_idle(self, timeout: float) -> bool:
+        """Wait until no backup or restore holds the lock."""
+        lock_manager = self._lock_manager()
+        if lock_manager is None:
+            return True
+        deadline = time.monotonic() + timeout
+        while True:
+            lock_manager.cleanup_stale_backup_lock()
+            if not lock_manager.is_backup_running() and not lock_manager.is_restore_running():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self.lock_poll_seconds)
 
     # ---- User backup job management ----
 
@@ -590,9 +659,19 @@ class ArkiveScheduler:
         return result
 
     async def trigger_job(self, job_id: str) -> None:
-        """Immediately trigger a scheduled job."""
-        if job_id in self._job_map:
-            await self._run_job(job_id, "full")
+        """Start a job now in the background (used by setup's first backup)."""
+        if job_id not in self._job_map:
+            return
+
+        async def _run() -> None:
+            try:
+                await self.orchestrator.run_backup(job_id=job_id, trigger="manual")
+            except Exception as e:
+                logger.error("Triggered job %s failed: %s", job_id, e)
+
+        task = asyncio.create_task(_run())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def add_job(self, job: dict) -> None:
         """Register a new job with the scheduler."""

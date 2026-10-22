@@ -1,6 +1,6 @@
 """Container discovery engine using docker-py."""
 
-import json
+import asyncio
 import logging
 import os
 import re
@@ -276,7 +276,6 @@ class DiscoveryEngine:
         """Detect Postgres databases from env vars."""
         dbs = []
         db_name = env.get("POSTGRES_DB") or env.get("DB_DATABASE_NAME") or env.get("DB_NAME") or "postgres"
-        user = env.get("POSTGRES_USER") or env.get("DB_USERNAME") or "postgres"
         dbs.append(DiscoveredDatabase(
             container_name=container.name,
             db_type="postgres",
@@ -414,7 +413,6 @@ class DiscoveryEngine:
 
                 env_vars = db_def.get("env_vars", {})
                 db_name_keys = env_vars.get("db_name", ["POSTGRES_DB", "DB_DATABASE_NAME", "DB_NAME"])
-                user_keys = env_vars.get("db_user", ["POSTGRES_USER", "DB_USERNAME"])
 
                 db_name = None
                 for key in db_name_keys:
@@ -492,7 +490,14 @@ class DiscoveryEngine:
         return None
 
     async def scan(self) -> list[DiscoveredContainer]:
-        """Scan all Docker containers and detect databases."""
+        """Scan all Docker containers and detect databases.
+
+        docker-py calls and the SQLite filesystem walk are blocking, so the
+        scan runs in a worker thread to keep the API responsive.
+        """
+        return await asyncio.to_thread(self._scan_blocking)
+
+    def _scan_blocking(self) -> list[DiscoveredContainer]:
         start = time.monotonic()
         containers = self.docker.containers.list(all=True)
         all_containers = containers

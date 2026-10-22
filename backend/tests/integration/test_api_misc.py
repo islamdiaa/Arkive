@@ -34,22 +34,14 @@ async def misc_authed_client(tmp_path_factory):
         yield client, data["api_key"]
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def misc_status_client(tmp_path_factory):
-    """Reuse one pre-setup client for read-only status checks."""
-    config_dir = tmp_path_factory.mktemp("api-misc-status")
-    async with build_test_client(config_dir) as client:
-        yield client
-
-
 # ---------------------------------------------------------------------------
 # GET /api/status
 # ---------------------------------------------------------------------------
 
 
-async def test_status_returns_ok(misc_status_client):
+async def test_status_returns_ok(client):
     """Status endpoint should return ok when DB is connected."""
-    resp = await misc_status_client.get("/api/status")
+    resp = await client.get("/api/status")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] in ("ok", "degraded", "error")
@@ -59,9 +51,9 @@ async def test_status_returns_ok(misc_status_client):
     assert "uptime_seconds" in data
 
 
-async def test_status_databases_section(misc_status_client):
+async def test_status_databases_section(client):
     """Status should include databases and targets summary."""
-    resp = await misc_status_client.get("/api/status")
+    resp = await client.get("/api/status")
     data = resp.json()
     assert "databases" in data
     assert "targets" in data
@@ -75,7 +67,7 @@ async def test_status_databases_section(misc_status_client):
 
 async def test_status_reports_database_health_from_latest_dump_run(client):
     """Status should report discovered DB totals and healthy count from the latest DB-backed run."""
-    await do_setup(client)
+    setup_data = await do_setup(client)
 
     app = client._transport.app
     db_path = app.state.config.db_path
@@ -134,7 +126,7 @@ async def test_status_reports_database_health_from_latest_dump_run(client):
         )
         await db.commit()
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert resp.status_code == 200
     data = resp.json()
     assert data["databases"] == {"total": 2, "healthy": 1}
@@ -143,7 +135,7 @@ async def test_status_reports_database_health_from_latest_dump_run(client):
 
 async def test_status_counts_ok_targets_as_healthy(client):
     """Target status 'ok' should count as healthy in the public status summary."""
-    await do_setup(client)
+    setup_data = await do_setup(client)
 
     app = client._transport.app
     db_path = app.state.config.db_path
@@ -166,7 +158,7 @@ async def test_status_counts_ok_targets_as_healthy(client):
         )
         await db.commit()
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert resp.status_code == 200
     assert resp.json()["targets"] == {"total": 1, "healthy": 1}
 
@@ -189,9 +181,9 @@ async def test_status_no_auth_required(misc_authed_client):
     assert resp.status_code == 200
 
 
-async def test_status_includes_platform(misc_status_client):
+async def test_status_includes_platform(client):
     """Status should report the detected platform."""
-    resp = await misc_status_client.get("/api/status")
+    resp = await client.get("/api/status")
     data = resp.json()
     assert "platform" in data
     assert data["platform"] in ("unraid", "linux", "unknown")
@@ -199,9 +191,9 @@ async def test_status_includes_platform(misc_status_client):
 
 async def test_status_warns_when_no_watched_directories(client):
     """Coverage should warn when no filesystem paths are protected."""
-    await do_setup(client)
+    setup_data = await do_setup(client)
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert resp.status_code == 200
     coverage = resp.json()["coverage"]
     assert coverage["watched_directories"] == 0
@@ -209,9 +201,9 @@ async def test_status_warns_when_no_watched_directories(client):
     assert any("No watched directories" in warning for warning in coverage["warnings"])
 
 
-async def test_status_includes_uptime(misc_status_client):
+async def test_status_includes_uptime(client):
     """Status should report uptime_seconds."""
-    resp = await misc_status_client.get("/api/status")
+    resp = await client.get("/api/status")
     data = resp.json()
     assert "uptime_seconds" in data
     assert isinstance(data["uptime_seconds"], int)
@@ -242,9 +234,9 @@ async def test_spa_static_files_fall_back_to_index_for_frontend_routes(tmp_path)
 # ---------------------------------------------------------------------------
 
 
-async def test_status_includes_last_backup_fields(misc_status_client):
+async def test_status_includes_last_backup_fields(client):
     """Status should include backup timing fields."""
-    resp = await misc_status_client.get("/api/status")
+    resp = await client.get("/api/status")
     assert resp.status_code == 200
     data = resp.json()
     assert "last_backup" in data

@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Arkive</Name>
-  <Repository>ghcr.io/islamdiaa/arkive:latest</Repository>
-  <Registry>https://github.com/kemetlabs/Arkive/pkgs/container/arkive</Registry>
+  <Repository>islamdiaa/arkive:latest</Repository>
+  <Registry>https://hub.docker.com/r/islamdiaa/arkive</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
@@ -12,7 +12,7 @@
     Open-source backup and disaster recovery for Unraid servers. Arkive discovers Docker containers, captures application-aware database dumps, backs up flash config, and stores encrypted snapshots in local or remote storage.
 
     Features:
-    - Zero-config container discovery with 50+ app profiles
+    - Zero-config container discovery with built-in app profiles plus generic database detection
     - Application-aware database dumps with integrity verification
     - Encrypted, deduplicated backups via restic
     - Multi-target cloud sync (B2, S3, SFTP, local)
@@ -32,5 +32,7 @@
   <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Docker socket for container discovery" Type="Path" Display="always" Required="true" Mask="false"/>
   <Config Name="App Data" Target="/mnt/user/appdata" Default="/mnt/user/appdata" Mode="ro" Description="Unraid appdata directory (read-only)" Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="Flash Drive" Target="/boot-config" Default="/boot/config" Mode="ro" Description="Unraid flash config directory for backup (mount /boot/config read-only)" Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Local Backups" Target="/mnt/user/backups" Default="/mnt/user/backups" Mode="rw" Description="Destination for a local storage target. Local target paths must be mapped to the host, or backups are lost when the container is re-created." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Restic Cache" Target="/cache" Default="/mnt/user/appdata/arkive/cache" Mode="rw" Description="restic metadata cache (speeds up cloud backups; safe to delete)" Type="Path" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="false" Mask="false"/>
 </Container>

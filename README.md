@@ -30,14 +30,14 @@ Arkive is under active development. Core backup, snapshot, restore, and cloud-ta
 ## Features
 
 ### Core Backup Engine
-- **Zero-config container discovery** — Automatically detects running containers with 50+ built-in app profiles (Nextcloud, Immich, Plex, Home Assistant, Vaultwarden, and more)
+- **Zero-config container discovery** — Detects database containers by image, scans app bind mounts for SQLite files, and uses built-in profiles for common apps (Immich, Paperless-ngx, Vaultwarden, Plex, Authelia, the *arr stack, and more)
 - **Application-aware database dumps** — PostgreSQL, MariaDB/MySQL, MongoDB, SQLite, Redis, InfluxDB with per-engine integrity verification
 - **Encrypted, deduplicated backups** — Powered by [restic](https://restic.net/) with AES-256-CTR encryption and content-defined chunking
 - **Multi-target cloud sync** — Backblaze B2, AWS S3, SFTP, or local storage via [rclone](https://rclone.org/)
 - **Flash drive backup** — Backs up your Unraid USB flash configuration automatically
 
 ### Operations & Reliability
-- **Flexible scheduling** — Cron-based schedules for DB dumps, cloud sync, and flash backups with APScheduler (no system cron dependency)
+- **Flexible scheduling** — Cron-based schedules with APScheduler (no system cron dependency). Job types choose what gets refreshed before each snapshot: **Full** (database dumps + flash archive), **Database Dump**, or **Flash Backup**. Every snapshot covers the dump directory plus watched directories, so each one is a complete restore point. Scheduled jobs that fire while another backup is running wait for it instead of being skipped.
 - **Retention policies** — Configurable keep-daily, keep-weekly, keep-monthly, keep-yearly per storage target
 - **Notifications** — Discord, Slack, and [ntfy](https://ntfy.sh/) alerts for backup success, failure, and system events
 - **Activity log** — Full audit trail of every backup run, discovery, and configuration change
@@ -67,7 +67,7 @@ Arkive is designed to run as a long-lived container on your Unraid server or ano
 ```yaml
 services:
   arkive:
-    image: ghcr.io/islamdiaa/arkive:latest
+    image: islamdiaa/arkive:latest
     container_name: arkive
     # On Unraid, run as root for flash backup and app-owned SQLite host reads.
     user: "0:0"
@@ -78,6 +78,9 @@ services:
       - /mnt/user/appdata/arkive:/config
       - /mnt/user/appdata:/mnt/user/appdata:ro
       - /boot/config:/boot-config:ro
+      # Destination for a local storage target (must be a host path)
+      - /mnt/user/backups:/mnt/user/backups
+      - /mnt/user/appdata/arkive/cache:/cache
     environment:
       - TZ=America/New_York
     restart: unless-stopped
@@ -100,7 +103,9 @@ docker run -d \
   -v /mnt/user/appdata/arkive:/config \
   -v /mnt/user/appdata:/mnt/user/appdata:ro \
   -v /boot/config:/boot-config:ro \
-  ghcr.io/islamdiaa/arkive:latest
+  -v /mnt/user/backups:/mnt/user/backups \
+  -v /mnt/user/appdata/arkive/cache:/cache \
+  islamdiaa/arkive:latest
 ```
 
 ### First Boot
@@ -149,7 +154,7 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 │                    Arkive Pipeline                       │
 │                                                         │
 │  1. DISCOVER     Docker socket → detect containers      │
-│                  Match against 50+ app profiles         │
+│                  Match against built-in app profiles    │
 │                                                         │
 │  2. DUMP         Application-aware database dumps       │
 │                  pg_dump, mysqldump, mongodump, etc.    │
@@ -198,11 +203,15 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 | Mount | Purpose | Required |
 |-------|---------|----------|
 | `/var/run/docker.sock:/var/run/docker.sock:ro` | Container discovery | Yes |
-| `/config` | Database, logs, cache | Yes |
+| `/config` | Database, logs, dumps | Yes |
+| `/cache` | restic metadata cache | Recommended |
+| `/mnt/user/backups` (or any host path) | Destination for a local storage target | If you use a local target |
 | `/mnt/user/appdata:/mnt/user/appdata:ro` | App data to back up | Recommended |
 | `/boot/config:/boot-config:ro` | Unraid flash config backup | Optional |
 
 Mount any additional host paths you plan to protect as read-only volumes. The quick-start example only mounts `/mnt/user/appdata`.
+
+A local storage target must point at a path that is mapped to the host. Arkive refuses local target paths that live inside the container's own filesystem or an anonymous Docker volume, because those are deleted when the container is re-created (for example on an image update). A local target on the same array is also not off-site protection; add a cloud or SFTP target for real disaster recovery.
 
 For Unraid, full host coverage assumes the container runs as `root`. Running as a non-root UID is still supported, but expect `partial` backups when flash backup or host SQLite reads are denied.
 
@@ -308,7 +317,7 @@ arkive/
 │   │   ├── lib/              Components, stores, utilities
 │   │   └── routes/           SvelteKit file-based routing
 │   └── tests/e2e/            Playwright E2E tests
-├── profiles/                 50+ YAML container profiles
+├── profiles/                 YAML container profiles
 ├── Dockerfile                Multi-stage build (Node + Python)
 ├── docker-compose.yml        Production deployment
 └── docs/                     Documentation + screenshots

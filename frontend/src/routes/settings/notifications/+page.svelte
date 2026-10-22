@@ -27,7 +27,8 @@
 	let newUrl = '';
 	let newEvents: string[] = ['backup.success', 'backup.failed'];
 
-	const channelTypes = ['discord', 'slack', 'ntfy', 'gotify', 'pushover', 'email', 'apprise'];
+	// Must match NotificationChannelCreate.type in backend/app/models/notifications.py
+	const channelTypes = ['discord', 'slack', 'telegram', 'email', 'ntfy', 'gotify', 'pushover', 'webhook', 'uptimekuma'];
 	const eventOptions = ['backup.success', 'backup.failed', 'backup.started', 'restore.completed', 'system.error', 'system.warning'];
 
 	function getChannelIcon(type: string) {
@@ -66,8 +67,16 @@
 	async function testChannel(id: string) {
 		testing = id;
 		try {
-			await api.testChannel(id);
-			addToast({ type: 'success', message: 'Test notification sent' });
+			// Backend returns HTTP 200 with { status: 'ok' | 'failed', error? }.
+			const result = await api.testChannel(id);
+			if (result?.status === 'ok') {
+				addToast({ type: 'success', message: 'Test notification sent' });
+			} else {
+				addToast({
+					type: 'error',
+					message: `Test notification failed${result?.error ? `: ${result.error}` : ' — check the channel URL'}`,
+				});
+			}
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message });
 		}

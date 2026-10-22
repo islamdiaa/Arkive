@@ -4,7 +4,7 @@ import json
 import uuid
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import get_db, get_notifier, require_auth
 from app.core.security import decrypt_value, encrypt_value
@@ -22,8 +22,8 @@ router = APIRouter(
 
 @router.get("")
 async def list_channels(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all notification channels with redacted URLs."""
@@ -39,13 +39,26 @@ async def list_channels(
     channels = []
     for row in rows:
         ch = dict(row)
-        ch["events"] = json.loads(ch.get("events") or "[]")
-        config_data = json.loads(ch.get("config") or "{}")
+        try:
+            ch["events"] = json.loads(ch.get("events") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            ch["events"] = []
+        try:
+            config_data = json.loads(ch.get("config") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            config_data = {}
+        if not isinstance(config_data, dict):
+            config_data = {}
         ch["enabled"] = bool(ch["enabled"])
 
-        # Decrypt URL then redact for list response
+        # Decrypt URL then redact for list response. A URL encrypted with a
+        # different key (e.g. imported from another instance) must not 500 the list.
         if "url" in config_data:
-            decrypted_url = decrypt_value(config_data["url"])
+            try:
+                decrypted_url = decrypt_value(config_data["url"] or "")
+            except Exception:
+                decrypted_url = ""
+                ch["url_error"] = "Stored URL cannot be decrypted; re-enter it"
             config_data["url"] = "••••••" if decrypted_url else ""
         ch["config"] = config_data
         channels.append(ch)
@@ -151,7 +164,15 @@ async def test_channel(
     if not row:
         raise HTTPException(status_code=404, detail="Channel not found")
 
-    config = json.loads(dict(row).get("config") or "{}")
-    url = decrypt_value(config.get("url", ""))
+    try:
+        config = json.loads(dict(row).get("config") or "{}")
+        url = decrypt_value(config.get("url", ""))
+    except Exception:
+        raise HTTPException(
+            status_code=422,
+            detail="Channel URL cannot be decrypted (encrypted with a different key); re-enter it",
+        )
+    if notifier is None:
+        raise HTTPException(status_code=503, detail="Notifier unavailable")
     result = await notifier.test_channel(url)
     return result

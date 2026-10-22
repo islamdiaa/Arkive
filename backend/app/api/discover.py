@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import get_db, get_discovery, require_auth
 from app.services.discovery_persistence import persist_discovery_results
@@ -52,8 +52,8 @@ async def run_scan(
 
 @router.get("/containers")
 async def list_discovered_containers(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List previously discovered containers."""
@@ -84,8 +84,8 @@ async def list_discovered_containers(
 
 @router.get("/databases")
 async def list_discovered_databases(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all discovered databases across all containers."""

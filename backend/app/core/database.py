@@ -228,6 +228,20 @@ MIGRATIONS: dict[int, list[str]] = {
         """CREATE INDEX IF NOT EXISTS idx_verification_runs_target_started
             ON verification_runs(target_id, started_at DESC)""",
     ],
+    4: [
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_target_id ON snapshots(target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_log_type ON activity_log(type, timestamp DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_job_runs_job_started ON job_runs(job_id, started_at DESC)",
+        # The 5-minute target health check used to write an activity entry on
+        # every run (~290/day), drowning real events. It now only records
+        # status changes; drop the routine entries.
+        "DELETE FROM activity_log WHERE type = 'system' AND action = 'health_check'",
+        # Foreign keys were never enabled on runtime connections, so deleting a
+        # job or target left orphans behind. Cascades work now; clean up old ones.
+        "DELETE FROM job_run_targets WHERE run_id NOT IN (SELECT id FROM job_runs)",
+        "DELETE FROM job_run_databases WHERE run_id NOT IN (SELECT id FROM job_runs)",
+        "DELETE FROM verification_runs WHERE target_id NOT IN (SELECT id FROM storage_targets)",
+    ],
 }
 
 async def run_migrations(db_path: str | Path) -> int:

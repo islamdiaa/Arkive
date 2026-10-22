@@ -1,6 +1,6 @@
 [project]
 name = "arkive"
-version = "0.1.0"
+version = "0.3.0"
 description = "Automated disaster recovery for Unraid servers"
 requires-python = ">=3.12"
 
@@ -51,4 +51,5 @@ markers = [
     "docker: tests that exercise Docker-backed flows or integration harnesses",
     "provider: tests that exercise cloud/storage provider matrices",
     "live: tests intended for live/runtime QA harnesses rather than normal CI",
+    "integration: tests that exercise multiple components together",
 ]

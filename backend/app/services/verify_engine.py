@@ -9,8 +9,9 @@ Runs a multi-step verification pipeline per storage target:
 Results are stored in the verification_runs table for historical tracking.
 """
 
+import asyncio
+import gzip
 import hashlib
-import json
 import logging
 import os
 import random
@@ -18,11 +19,11 @@ import shutil
 import tempfile
 import time
 import uuid
+import zlib
 from datetime import datetime, timezone
 
 import aiosqlite
 
-from app.core.activity import log_activity
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 from app.services.lock_manager import BackupLockManager
@@ -34,6 +35,10 @@ logger = logging.getLogger("arkive.verify_engine")
 WEIGHT_RECENCY = 0.30
 WEIGHT_FILE_INTEGRITY = 0.40
 WEIGHT_DB_INTEGRITY = 0.30
+
+# Restore-test files above this size are skipped: a random multi-GB pick would
+# fill the disk and tie up a worker hashing it.
+MAX_RESTORE_TEST_BYTES = 256 * 1024 * 1024
 
 # Recency thresholds (hours since last successful backup)
 RECENCY_EXCELLENT = 24      # < 24h = 100%
@@ -99,10 +104,12 @@ class VerifyEngine:
         """
         if self.is_backup_running():
             logger.warning("Skipping verification: backup/restore in progress")
+            await self._mark_runs(run_ids, "skipped", "Skipped: a backup or restore was in progress")
             return {"status": "skipped", "reason": "backup_in_progress"}
 
         if not self.backup_engine:
             logger.warning("Verification skipped: backup engine not available")
+            await self._mark_runs(run_ids, "skipped", "Skipped: backup engine not available")
             return {"status": "skipped", "reason": "no_backup_engine"}
 
         async with aiosqlite.connect(self.config.db_path) as db:
@@ -114,6 +121,7 @@ class VerifyEngine:
 
         if not targets:
             logger.info("No enabled targets for verification")
+            await self._mark_runs(run_ids, "skipped", "Skipped: no enabled storage targets")
             return {"status": "skipped", "reason": "no_targets"}
 
         # If no run_ids provided, check for pending 'running' rows in the DB
@@ -135,6 +143,9 @@ class VerifyEngine:
                     "Verification failed for target %s: %s",
                     target.get("name", target["id"]), e,
                 )
+                failed_run_id = run_ids.get(target["id"]) if run_ids else None
+                if failed_run_id:
+                    await self._mark_runs({target["id"]: failed_run_id}, "failed", f"Verification error: {e}")
                 results.append({
                     "target_id": target["id"],
                     "target_name": target.get("name", ""),
@@ -154,6 +165,31 @@ class VerifyEngine:
             "overall_trust_score": overall_score,
             "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+
+    async def _mark_runs(self, run_ids: dict[str, str] | None, status: str, reason: str) -> None:
+        """Close out pre-created 'running' verification rows that won't be processed.
+
+        Without this, rows inserted by the API trigger stay 'running' forever when
+        the engine skips (backup in progress, no targets, ...) or errors.
+        """
+        if not run_ids:
+            return
+        ids = [rid for rid in run_ids.values() if rid]
+        if not ids:
+            return
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        placeholders = ", ".join("?" for _ in ids)  # nosec B608 - placeholders only
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                await db.execute(
+                    f"""UPDATE verification_runs
+                        SET status = ?, completed_at = ?, error_message = ?
+                        WHERE status = 'running' AND id IN ({placeholders})""",  # nosec B608
+                    (status, now, reason[:500], *ids),
+                )
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to mark verification runs %s: %s", status, exc)
 
     async def _find_pending_run_ids(self, targets: list[dict]) -> dict[str, str]:
         """Find existing 'running' verification_runs rows for the given targets.
@@ -302,7 +338,10 @@ class VerifyEngine:
             # List files in snapshot — try root first, then walk into subdirs
             # restic uses "file"/"directory" types (not "dir")
             def _is_file(e):
-                return e.get("type") in ("file",)
+                if e.get("type") not in ("file",):
+                    return False
+                size = e.get("size")
+                return not (isinstance(size, int) and size > MAX_RESTORE_TEST_BYTES)
 
             def _is_dir(e):
                 return e.get("type") in ("dir", "directory")
@@ -340,8 +379,11 @@ class VerifyEngine:
             chosen = random.choice(files)  # nosec B311
             file_path = found_dir + "/" + chosen["name"]
 
-            # Restore to temp directory
-            tmpdir = tempfile.mkdtemp(prefix="arkive-verify-")
+            # Restore into the persistent restores/ dir — the container's /tmp lives
+            # in docker.img on Unraid and must not absorb restored data.
+            restore_root = str(self.config.restore_dir)
+            await asyncio.to_thread(os.makedirs, restore_root, exist_ok=True)
+            tmpdir = tempfile.mkdtemp(prefix="arkive-verify-", dir=restore_root)
             result = await self.backup_engine.restore(
                 target=target,
                 snapshot_id=snapshot_id,
@@ -355,23 +397,11 @@ class VerifyEngine:
                     "error": result.get("error") or "Restore returned non-success",
                 }
 
-            # Find restored file -- must match the expected filename exactly
             expected_name = os.path.basename(file_path)
-            restored_file = None
-            for dirpath, _, filenames in os.walk(tmpdir):
-                for fname in filenames:
-                    if fname == expected_name:
-                        restored_file = os.path.join(dirpath, fname)
-                        break
-                if restored_file:
-                    break
-
+            restored_file, digest, file_size, found_files = await asyncio.to_thread(
+                self._find_and_hash, tmpdir, expected_name
+            )
             if not restored_file:
-                # Log what was actually found for debugging
-                found_files = []
-                for dirpath, _, filenames in os.walk(tmpdir):
-                    for fname in filenames:
-                        found_files.append(os.path.join(dirpath, fname))
                 logger.warning(
                     "Expected restored file %r but found: %s",
                     expected_name, found_files or "(empty)",
@@ -381,21 +411,10 @@ class VerifyEngine:
                     "error": f"Expected file {expected_name!r} not found after restore",
                 }
 
-            # Compute SHA-256
-            sha256 = hashlib.sha256()
-            file_size = 0
-            with open(restored_file, "rb") as f:
-                while True:
-                    chunk = f.read(65536)
-                    if not chunk:
-                        break
-                    sha256.update(chunk)
-                    file_size += len(chunk)
-
             return {
                 "status": "success",
                 "file": file_path,
-                "sha256": sha256.hexdigest(),
+                "sha256": digest,
                 "size_bytes": file_size,
                 "snapshot_id": snapshot_id,
             }
@@ -405,7 +424,28 @@ class VerifyEngine:
             return {"status": "failed", "error": str(e)}
         finally:
             if tmpdir and os.path.exists(tmpdir):
-                shutil.rmtree(tmpdir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, tmpdir, True)
+
+    @staticmethod
+    def _find_and_hash(tmpdir: str, expected_name: str) -> tuple[str | None, str, int, list[str]]:
+        """Locate the restored file (exact basename match) and SHA-256 it. Blocking."""
+        found_files: list[str] = []
+        restored_file = None
+        for dirpath, _, filenames in os.walk(tmpdir):
+            for fname in filenames:
+                path = os.path.join(dirpath, fname)
+                found_files.append(path)
+                if fname == expected_name and restored_file is None:
+                    restored_file = path
+        if not restored_file:
+            return None, "", 0, found_files
+        sha256 = hashlib.sha256()
+        file_size = 0
+        with open(restored_file, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                sha256.update(chunk)
+                file_size += len(chunk)
+        return restored_file, sha256.hexdigest(), file_size, found_files
 
     async def _validate_db_dumps(self) -> dict:
         """Validate database dump files in the dump directory.
@@ -440,6 +480,14 @@ class VerifyEngine:
                 if check["status"] == "success":
                     passed += 1
 
+            elif fname.endswith(".sql.gz"):
+                # Postgres / MySQL logical dumps written by DBDumper.
+                total += 1
+                check = await asyncio.to_thread(self._check_gzip_sql_dump, fpath)
+                results.append(check)
+                if check["status"] == "success":
+                    passed += 1
+
         if total == 0:
             return {"status": "skipped", "reason": "no_dumps_found", "score": 1.0, "files": []}
 
@@ -460,7 +508,9 @@ class VerifyEngine:
                 ["sqlite3", fpath, "PRAGMA integrity_check;"],
                 timeout=60,
             )
-            ok = result.returncode == 0 and "ok" in result.stdout.lower()
+            # integrity_check prints exactly "ok" for a healthy DB; error rows can
+            # contain "ok" as a substring (e.g. index "idx_bookmarks").
+            ok = result.returncode == 0 and result.stdout.strip().lower() == "ok"
             return {
                 "file": os.path.basename(fpath),
                 "type": "sqlite",
@@ -475,6 +525,24 @@ class VerifyEngine:
                 "status": "failed",
                 "error": str(e),
             }
+
+    @staticmethod
+    def _check_gzip_sql_dump(fpath: str) -> dict:
+        """Validate a gzipped SQL dump: the gzip stream must be intact and the
+        dump must end with the tool's completion trailer (pg_dump/mysqldump)."""
+        name = os.path.basename(fpath)
+        tail = b""
+        try:
+            with gzip.open(fpath, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    tail = (tail + chunk)[-4096:]
+        except (OSError, EOFError, zlib.error) as e:
+            return {"file": name, "type": "sql", "status": "failed", "error": f"Corrupt gzip stream: {e}"}
+        if b"PostgreSQL database dump complete" in tail:
+            return {"file": name, "type": "postgres", "status": "success", "output": "Dump trailer present"}
+        if b"-- Dump completed" in tail:
+            return {"file": name, "type": "mariadb", "status": "success", "output": "Dump trailer present"}
+        return {"file": name, "type": "sql", "status": "failed", "error": "Dump is truncated (no completion trailer)"}
 
     async def _check_postgres_dump(self, fpath: str) -> dict:
         """Validate a Postgres dump by checking its structure with pg_restore --list."""

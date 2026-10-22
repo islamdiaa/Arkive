@@ -6,15 +6,18 @@
 	import Header from '$lib/components/layout/Header.svelte';
 	import BackupProgressPanel from '$lib/components/shared/BackupProgressPanel.svelte';
 	import TrustScoreBadge from '$lib/components/shared/TrustScoreBadge.svelte';
+	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import CommandStrip from '$lib/components/dashboard/CommandStrip.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
-	import { api } from '$lib/api/client';
+	import { api, ApiError } from '$lib/api/client';
 	import { systemStatus, addToast, backupRunning } from '$lib/stores/app';
 	import { subscribe as sseSubscribe } from '$lib/stores/sse';
 	import { formatBytes } from '$lib/utils/format';
 	import { timeAgo } from '$lib/utils/date';
 	import { describeCron } from '$lib/utils/schedule';
+	import { healthDisplay, isConflictTerminalEvent, resolveTrustScore } from '$lib/utils/run-status';
+	import { jobTypeLabel, pickPrimaryJob } from '$lib/utils/job-types';
 	import { onMount, onDestroy } from 'svelte';
 
 	let data: DashboardData | null = null;
@@ -23,22 +26,54 @@
 	let verifying = false;
 	let trustScore: number | null = null;
 	let lastVerifiedAt: string | null = null;
+	let refreshing = false;
+	let refreshQueued = false;
 
-	const unsubCompleted = sseSubscribe('backup:completed', () => {
-		backupRunning.set(false);
-	});
-	const unsubFailed = sseSubscribe('backup:failed', () => {
-		backupRunning.set(false);
-	});
-	const unsubCancelled = sseSubscribe('backup:cancelled', () => {
-		backupRunning.set(false);
-	});
+	function applyDashboard(d: DashboardData) {
+		data = d;
+		if (d.status) {
+			systemStatus.set(d.status);
+			trustScore = resolveTrustScore(d.status);
+			lastVerifiedAt = d.status.last_verified_at ?? d.status.verification_status?.last_verified_at ?? null;
+		}
+	}
+
+	/** Re-fetch dashboard data in place (no skeleton) after a run ends. */
+	async function refreshDashboard() {
+		if (refreshing) {
+			refreshQueued = true;
+			return;
+		}
+		refreshing = true;
+		try {
+			applyDashboard(await loadDashboard());
+		} catch (e) {
+			console.error('Dashboard refresh error:', e);
+		} finally {
+			refreshing = false;
+			if (refreshQueued) {
+				refreshQueued = false;
+				refreshDashboard();
+			}
+		}
+	}
+
+	function onRunEnded(event: { data: Record<string, unknown> }) {
+		// Conflict-skips of other runs don't change what the dashboard shows
+		// much, but refreshing is cheap and keeps "Last Backup" honest.
+		if (isConflictTerminalEvent(event.data) && $backupRunning) return;
+		refreshDashboard();
+	}
+
+	const unsubCompleted = sseSubscribe('backup:completed', onRunEnded);
+	const unsubFailed = sseSubscribe('backup:failed', onRunEnded);
+	const unsubCancelled = sseSubscribe('backup:cancelled', onRunEnded);
 	const unsubVerifyStarted = sseSubscribe('verification:started', () => {
 		verifying = true;
 	});
 	const unsubVerifyCompleted = sseSubscribe('verification:completed', (event) => {
 		verifying = false;
-		if (event.data.trust_score !== undefined) trustScore = event.data.trust_score as number;
+		if (typeof event.data.trust_score === 'number') trustScore = event.data.trust_score as number;
 		if (event.data.last_verified_at) lastVerifiedAt = event.data.last_verified_at as string;
 	});
 	const unsubVerifyFailed = sseSubscribe('verification:failed', () => {
@@ -57,12 +92,7 @@
 
 	onMount(() => {
 		loadDashboard().then((d) => {
-			data = d;
-			if (d.status) {
-				systemStatus.set(d.status);
-				trustScore = d.status.trust_score ?? d.status.verification_status?.trust_score ?? null;
-				lastVerifiedAt = d.status.last_verified_at ?? d.status.verification_status?.last_verified_at ?? null;
-			}
+			applyDashboard(d);
 			loading = false;
 		}).catch((e) => {
 			console.error('Dashboard load error:', e);
@@ -85,14 +115,6 @@
 		return null;
 	}
 
-	function getContainersDiscovered(status: any): number {
-		return status?.containers_discovered ?? status?.databases?.total ?? 0;
-	}
-
-	function getDatabasesFound(status: any): number {
-		return status?.databases_found ?? status?.databases?.total ?? 0;
-	}
-
 	function getStorageUsed(status: any): number {
 		return status?.storage_used_bytes ?? status?.storage?.total_bytes ?? 0;
 	}
@@ -102,16 +124,22 @@
 	}
 
 	function handleBackup() {
-		if (!data?.jobs?.length) {
+		if (data?.jobsError) {
+			addToast({ type: 'error', message: `Could not load backup jobs: ${data.jobsError}` });
+			return;
+		}
+		const job = pickPrimaryJob(data?.jobs ?? []);
+		if (!job) {
 			addToast({ type: 'warning', message: 'No backup jobs configured' });
 			return;
 		}
 		backupRunning.set(true);
-		api.triggerJob(data.jobs[0].id).then((result: any) => {
-			addToast({ type: 'success', message: `Backup started (run: ${result.run_id})` });
+		api.triggerJob(job.id).then((result: any) => {
+			addToast({ type: 'success', message: `${job.name} started (run: ${result.run_id})` });
 		}).catch((e: any) => {
 			addToast({ type: 'error', message: e.message || 'Failed to trigger backup' });
-			backupRunning.set(false);
+			// 409 means another backup is already running, so keep the flag set.
+			backupRunning.set(e instanceof ApiError && e.status === 409);
 		});
 	}
 
@@ -125,8 +153,17 @@
 		});
 	}
 
+	const activityDot: Record<string, string> = {
+		error: 'bg-danger',
+		critical: 'bg-danger',
+		warning: 'bg-warning',
+		warn: 'bg-warning',
+		success: 'bg-success',
+	};
+
 	$: hostname = data?.status?.hostname ?? '';
 	$: resolvedStatus = data?.status?.health ?? 'unknown';
+	$: system = healthDisplay(data?.status?.health);
 	$: coverageWarnings = data?.status?.coverage?.warnings ?? [];
 	$: lastBackupValue = getLastBackupTime(data?.status)
 		? timeAgo(getLastBackupTime(data?.status) ?? '')
@@ -167,10 +204,14 @@
 		<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
 			<StatCard
 				label="System"
-				value={data.status?.health ? data.status.health.charAt(0).toUpperCase() + data.status.health.slice(1) : 'Healthy'}
-				gradient="from-success to-info"
+				value={system.label}
+				gradient={system.gradient}
 			>
-				<p class="text-xs text-text-secondary mt-1">{data.status?.platform || 'unraid'} &middot; v{data.status?.version || '0.1.0'}</p>
+				{#if data.status}
+					<p class="text-xs text-text-secondary mt-1">{data.status.platform || 'unknown'} &middot; v{data.status.version || '?'}</p>
+				{:else}
+					<p class="text-xs text-danger mt-1">Status unavailable</p>
+				{/if}
 			</StatCard>
 
 			<StatCard
@@ -180,9 +221,7 @@
 			>
 				{#if getLastBackupStatus(data.status)}
 					<p class="text-xs mt-1">
-						<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-success/20 text-success">
-							{getLastBackupStatus(data.status)}
-						</span>
+						<StatusBadge status={getLastBackupStatus(data.status) ?? 'unknown'} size="sm" />
 					</p>
 				{:else}
 					<p class="text-xs text-text-secondary mt-1">Next: {data.status?.next_backup ? timeAgo(data.status.next_backup) : 'N/A'}</p>
@@ -270,7 +309,9 @@
 					<h3 class="font-semibold text-text">Backup Jobs</h3>
 					<a href="/settings/jobs" class="text-xs text-primary hover:text-primary-hover">Manage</a>
 				</div>
-				{#if data.jobs.length === 0}
+				{#if data.jobsError}
+					<p class="text-sm text-danger">Could not load backup jobs: {data.jobsError}</p>
+				{:else if data.jobs.length === 0}
 					<p class="text-sm text-text-secondary">No backup jobs configured.</p>
 				{:else}
 					<div class="space-y-3">
@@ -278,22 +319,12 @@
 							<div class="flex items-center justify-between py-2 border-b border-border last:border-0">
 								<div>
 									<p class="text-sm font-medium text-text">{job.name}</p>
-									<p class="text-xs text-text-secondary">{describeCron(job.schedule)}</p>
+									<p class="text-xs text-text-secondary">{jobTypeLabel(job.type)} &middot; {describeCron(job.schedule)}</p>
 									<p class="text-[11px] text-text-muted font-mono mt-0.5">{job.schedule}</p>
 								</div>
 								<div class="flex items-center gap-2">
 									{#if job.last_run?.status}
-										<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-											{job.last_run.status === 'success' ? 'bg-success/20 text-success' :
-											 job.last_run.status === 'failed' ? 'bg-danger/20 text-danger' :
-											 job.last_run.status === 'running' ? 'bg-primary/20 text-primary' :
-											 'bg-warning/20 text-warning'}">{job.last_run.status}</span>
-									{:else if job.last_status}
-										<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-											{job.last_status === 'success' ? 'bg-success/20 text-success' :
-											 job.last_status === 'failed' ? 'bg-danger/20 text-danger' :
-											 job.last_status === 'running' ? 'bg-primary/20 text-primary' :
-											 'bg-warning/20 text-warning'}">{job.last_status}</span>
+										<StatusBadge status={job.last_run.status} size="sm" />
 									{/if}
 									<span class="text-xs {job.enabled ? 'text-success' : 'text-text-secondary line-through'}">{job.enabled ? 'Active' : 'Paused'}</span>
 								</div>
@@ -308,7 +339,9 @@
 					<h3 class="font-semibold text-text">Recent Activity</h3>
 					<a href="/activity" class="text-xs text-primary hover:text-primary-hover">View All</a>
 				</div>
-				{#if data.activity.length === 0}
+				{#if data.activityError}
+					<p class="text-sm text-danger">Could not load activity: {data.activityError}</p>
+				{:else if data.activity.length === 0}
 					<div class="rounded-lg border border-dashed border-border-muted bg-bg-elevated/50 p-4">
 						<p class="text-sm text-text-secondary">No activity yet.</p>
 						<p class="text-xs text-text-muted mt-1">Run your first backup or test a target to populate the activity feed.</p>
@@ -317,11 +350,7 @@
 					<div class="space-y-3">
 						{#each data.activity as entry}
 							<div class="flex items-start gap-3 py-2 border-b border-border last:border-0">
-								<div class="w-1.5 h-1.5 rounded-full mt-2 shrink-0 {
-									entry.level === 'error' ? 'bg-danger' :
-									entry.level === 'warning' ? 'bg-warning' :
-									entry.level === 'success' ? 'bg-success' : 'bg-primary'
-								}"></div>
+								<div class="w-1.5 h-1.5 rounded-full mt-2 shrink-0 {activityDot[String(entry.severity ?? entry.level ?? '').toLowerCase()] ?? 'bg-primary'}"></div>
 								<div class="min-w-0">
 									<p class="text-sm text-text truncate">{entry.message}</p>
 									<p class="text-xs text-text-secondary">{timeAgo(entry.timestamp)}</p>

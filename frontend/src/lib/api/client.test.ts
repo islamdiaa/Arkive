@@ -94,6 +94,49 @@ describe('api client', () => {
 		await expect(api.getStatus()).rejects.toEqual(new ApiError(401, 'Nope'));
 	});
 
+	it('redirects to login with a next parameter when an authenticated session gets a 401', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ message: 'Missing API key' }), {
+				status: 401,
+				headers: { 'Content-Type': 'application/json' },
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { api, ApiError } = await loadClientModule();
+		const auth = await import('$lib/stores/auth');
+		const session = await import('./session');
+		const assign = vi.spyOn(session.navigation, 'assign').mockImplementation(() => {});
+		auth.applySession({ setup_required: false, authenticated: true });
+		window.history.pushState({}, '', '/backups?tab=1');
+
+		await expect(api.listJobs()).rejects.toEqual(new ApiError(401, 'Missing API key'));
+
+		expect(assign).toHaveBeenCalledWith('/login?next=%2Fbackups%3Ftab%3D1');
+		const { get } = await import('svelte/store');
+		expect(get(auth.authenticated)).toBe(false);
+		window.history.pushState({}, '', '/');
+	});
+
+	it('does not redirect on a 401 from the login endpoint', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ message: 'Invalid API key' }), {
+				status: 401,
+				headers: { 'Content-Type': 'application/json' },
+			})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { api } = await loadClientModule();
+		const auth = await import('$lib/stores/auth');
+		const session = await import('./session');
+		const assign = vi.spyOn(session.navigation, 'assign').mockImplementation(() => {});
+		auth.applySession({ setup_required: false, authenticated: true });
+
+		await expect(api.login('bad')).rejects.toThrow('Invalid API key');
+		expect(assign).not.toHaveBeenCalled();
+	});
+
 	it('falls back to the HTTP status text when the error body is not JSON', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			new Response('bad gateway', {

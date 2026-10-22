@@ -3,6 +3,7 @@
 </svelte:head>
 
 <script lang="ts">
+  import Header from '$lib/components/layout/Header.svelte';
   import { api } from '$lib/api/client';
   import { addToast } from '$lib/stores/app';
   import { onMount } from 'svelte';
@@ -88,6 +89,8 @@
     saving = false;
   }
 </script>
+
+<Header title="General Settings" />
 
 <div class="p-6 space-y-6">
   <div>

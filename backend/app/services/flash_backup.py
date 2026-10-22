@@ -30,7 +30,13 @@ class FlashBackup:
         self.dump_dir = config.dump_dir
 
     async def backup(self) -> FlashBackupResult:
-        """Create a tar.gz backup of /boot-config."""
+        """Create a tar archive of /boot-config.
+
+        Deliberately uncompressed: the flash config is mostly already-compressed
+        plugin packages, gzip saves little, and a gzip stream changes entirely
+        when any file changes — defeating restic's deduplication. restic
+        compresses the data itself, so an unchanged plugin costs nothing per run.
+        """
         if self.platform != Platform.UNRAID:
             return FlashBackupResult(status="skipped", error="Not running on Unraid")
 
@@ -43,17 +49,17 @@ class FlashBackup:
 
         self.dump_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        output_path = str(self.dump_dir / f"flash_{timestamp}.tar.gz")
+        output_path = str(self.dump_dir / f"flash_{timestamp}.tar")
 
         result = await run_command([
-            "tar", "-czf", output_path, "-C", str(boot_config), "."
+            "tar", "-cf", output_path, "-C", str(boot_config), "."
         ])
 
         if result.returncode != 0:
             return FlashBackupResult(status="failed", error=result.stderr)
 
         # Verify archive
-        verify = await run_command(["tar", "-tzf", output_path])
+        verify = await run_command(["tar", "-tf", output_path])
         if verify.returncode != 0:
             return FlashBackupResult(status="failed", path=output_path, error="Archive verification failed")
 
@@ -66,8 +72,9 @@ class FlashBackup:
 
     def _cleanup_old_backups(self) -> None:
         """Remove old flash backups beyond retention limit."""
-        pattern = str(self.dump_dir / "flash_*.tar.gz")
-        files = sorted(glob.glob(pattern), reverse=True)
+        # Include legacy compressed archives from older versions.
+        files = glob.glob(str(self.dump_dir / "flash_*.tar")) + glob.glob(str(self.dump_dir / "flash_*.tar.gz"))
+        files.sort(key=os.path.basename, reverse=True)
         for old_file in files[self.config.flash_retention:]:
             try:
                 os.remove(old_file)

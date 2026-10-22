@@ -55,10 +55,10 @@ const DEMO_STATUS = {
 const DEMO_JOBS = {
   jobs: [
     {
-      id: 'job-daily-full',
-      name: 'Daily Full Backup',
+      id: 'job-full',
+      name: 'Full Backup',
       type: 'full',
-      schedule: '0 3 * * *',
+      schedule: '0 7 * * *',
       enabled: true,
       targets: ['target-b2-main'],
       directories: ['/mnt/user/appdata', '/mnt/user/domains'],
@@ -71,22 +71,71 @@ const DEMO_JOBS = {
       updated_at: '2026-02-20T08:00:00Z',
     },
     {
-      id: 'job-hourly-db',
-      name: 'Hourly DB Snapshots',
+      id: 'job-db-dumps',
+      name: 'DB Dumps',
       type: 'db_dump',
-      schedule: '0 * * * *',
+      schedule: '0 6,18 * * *',
       enabled: true,
-      targets: ['target-b2-main'],
-      directories: [],
+      targets: [],
+      directories: ['/mnt/user/appdata', '/mnt/user/domains'],
       exclude_patterns: [],
       include_databases: true,
-      include_flash: false,
-      last_run: { started_at: new Date(Date.now() - 3600000).toISOString(), status: 'success' },
+      include_flash: true,
+      last_run: { started_at: new Date(Date.now() - 3600000).toISOString(), status: 'partial' },
       next_run: new Date(Date.now() + 600000).toISOString(),
       created_at: '2026-01-15T10:00:00Z',
       updated_at: '2026-02-20T08:00:00Z',
     },
+    {
+      id: 'job-flash',
+      name: 'Flash Backup',
+      type: 'flash',
+      schedule: '0 5 * * *',
+      enabled: true,
+      targets: [],
+      directories: ['/mnt/user/appdata', '/mnt/user/domains'],
+      exclude_patterns: [],
+      include_databases: true,
+      include_flash: true,
+      last_run: { started_at: new Date(Date.now() - 7200000).toISOString(), status: 'success' },
+      next_run: new Date(Date.now() + 3600000).toISOString(),
+      created_at: '2026-01-15T10:00:00Z',
+      updated_at: '2026-02-20T08:00:00Z',
+    },
   ],
+};
+
+const DEMO_RUN_DETAIL = {
+  id: 'run-demo-1',
+  job_id: 'job-db-dumps',
+  job_name: 'DB Dumps',
+  job_type: 'db_dump',
+  status: 'partial',
+  trigger: 'scheduled',
+  started_at: new Date(Date.now() - 3600000).toISOString(),
+  completed_at: new Date(Date.now() - 3500000).toISOString(),
+  duration_seconds: 100,
+  databases_discovered: 3,
+  databases_dumped: 2,
+  databases_failed: 0,
+  flash_backed_up: 0,
+  flash_size_bytes: 0,
+  total_size_bytes: 3221225472,
+  error_message: 'Backup completed with problems (1 database skipped: paperless-db is not running)',
+  databases: [
+    { id: 1, container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', dump_size_bytes: 2147483648, integrity_check: 'ok', status: 'success', host_path: null, error: null },
+    { id: 2, container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', dump_size_bytes: 52428800, integrity_check: 'ok', status: 'success', host_path: null, error: null },
+    { id: 3, container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', dump_size_bytes: 0, integrity_check: 'skipped', status: 'skipped', host_path: null, error: 'Container paperless-db is not running' },
+  ],
+  targets: [
+    { id: 1, target_id: 'target-b2-main', status: 'success', snapshot_id: 'abc12345', upload_bytes: 3221225472, duration_seconds: 80, error: null, target_name: 'Backblaze B2 — Primary', target_provider: 'b2' },
+  ],
+};
+
+const DEMO_RUNS = {
+  items: [DEMO_RUN_DETAIL],
+  runs: [DEMO_RUN_DETAIL],
+  total: 1,
 };
 
 const DEMO_TARGETS = {
@@ -94,36 +143,40 @@ const DEMO_TARGETS = {
     {
       id: 'target-b2-main',
       name: 'Backblaze B2 — Primary',
-      provider: 'b2',
-      bucket: 'arkive-tower-backups',
-      healthy: true,
-      last_check: new Date(Date.now() - 300000).toISOString(),
-      used_bytes: 12884901888,
-      total_bytes: 107374182400,
+      type: 'b2',
+      enabled: 1,
+      config: { key_id: '***', app_key: '***', bucket: 'arkive-tower-backups' },
+      status: 'ok',
+      last_tested: new Date(Date.now() - 300000).toISOString(),
+      snapshot_count: 35,
+      total_size_bytes: 12884901888,
       created_at: '2026-01-15T10:00:00Z',
+      updated_at: '2026-01-15T10:00:00Z',
     },
     {
       id: 'target-sftp-nas',
-      name: 'SFTP — TrueNAS',
-      provider: 'sftp',
-      host: '192.168.1.50',
-      healthy: true,
-      last_check: new Date(Date.now() - 600000).toISOString(),
-      used_bytes: 8589934592,
-      total_bytes: 53687091200,
+      name: 'SFTP — NAS',
+      type: 'sftp',
+      enabled: 1,
+      config: { host: '192.168.1.100', username: 'test-user', password: '***', remote_path: '/backups/arkive' },
+      status: 'unknown',
+      last_tested: null,
+      snapshot_count: 12,
+      total_size_bytes: 8589934592,
       created_at: '2026-01-20T14:00:00Z',
+      updated_at: '2026-01-20T14:00:00Z',
     },
   ],
 };
 
 const DEMO_DATABASES = {
   databases: [
-    { container: 'immich-postgres', engine: 'postgres', name: 'immich', size_bytes: 2147483648, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
-    { container: 'vaultwarden-db', engine: 'postgres', name: 'vaultwarden', size_bytes: 52428800, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
-    { container: 'paperless-db', engine: 'postgres', name: 'paperless', size_bytes: 1073741824, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
-    { container: 'nextcloud-mariadb', engine: 'mariadb', name: 'nextcloud', size_bytes: 3221225472, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
-    { container: 'authelia-redis', engine: 'redis', name: 'authelia', size_bytes: 10485760, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
-    { container: 'home-assistant-influx', engine: 'influxdb', name: 'homeassistant', size_bytes: 5368709120, last_dump: new Date(Date.now() - 720000).toISOString(), status: 'healthy' },
+    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null },
+    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null },
+    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null },
+    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null },
+    { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null },
+    { container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db' },
   ],
 };
 
@@ -152,9 +205,9 @@ const DEMO_STORAGE = {
 
 const DEMO_SNAPSHOTS = {
   snapshots: [
-    { id: 'snap-001', target_id: 'target-b2-main', target_name: 'Backblaze B2', created_at: new Date(Date.now() - 720000).toISOString(), size_bytes: 2147483648, databases: ['immich', 'vaultwarden', 'paperless', 'nextcloud', 'authelia', 'homeassistant'], directories: ['/mnt/user/appdata', '/boot'], type: 'full' },
-    { id: 'snap-002', target_id: 'target-b2-main', target_name: 'Backblaze B2', created_at: new Date(Date.now() - 86400000).toISOString(), size_bytes: 1073741824, databases: ['immich', 'vaultwarden', 'paperless', 'nextcloud', 'authelia', 'homeassistant'], directories: ['/mnt/user/appdata', '/boot'], type: 'full' },
-    { id: 'snap-003', target_id: 'target-sftp-nas', target_name: 'SFTP — TrueNAS', created_at: new Date(Date.now() - 172800000).toISOString(), size_bytes: 2147483648, databases: ['immich', 'vaultwarden', 'paperless', 'nextcloud', 'authelia', 'homeassistant'], directories: ['/mnt/user/appdata'], type: 'full' },
+    { id: 'abc12345', full_id: 'abc12345' + '0'.repeat(56), target_id: 'target-b2-main', time: new Date(Date.now() - 720000).toISOString(), hostname: 'tower', paths: ['/config/dumps', '/mnt/user/appdata', '/mnt/user/domains'], tags: ['job:job-full'], size_bytes: 2147483648 },
+    { id: 'def67890', full_id: 'def67890' + '0'.repeat(56), target_id: 'target-b2-main', time: new Date(Date.now() - 86400000).toISOString(), hostname: 'tower', paths: ['/config/dumps', '/mnt/user/appdata', '/mnt/user/domains'], tags: ['job:job-full'], size_bytes: 1073741824 },
+    { id: '0a1b2c3d', full_id: '0a1b2c3d' + '0'.repeat(56), target_id: 'target-sftp-nas', time: new Date(Date.now() - 172800000).toISOString(), hostname: 'tower', paths: ['/config/dumps', '/mnt/user/appdata'], tags: ['job:job-db-dumps'], size_bytes: 2147483648 },
   ],
 };
 
@@ -241,14 +294,13 @@ async function _mockGet(path: string): Promise<any> {
   if (clean === '/jobs') return DEMO_JOBS;
   if (clean.startsWith('/jobs/')) {
     const parts = clean.split('/').filter(Boolean);
-    if (parts[1] === 'runs' && parts[2]) {
-      return {
-        id: parts[2],
-        status: 'success',
-        started_at: new Date(Date.now() - 720000).toISOString(),
-        finished_at: new Date(Date.now() - 378000).toISOString()
-      };
+    if (parts[1] === 'runs' && parts[2] && parts[3] === 'logs') return { items: [], total: 0, run_id: parts[2] };
+    if (parts[1] === 'runs' && parts[2]) return { ...DEMO_RUN_DETAIL, id: parts[2] };
+    if (parts[1] === 'runs') {
+      // The progress panel asks for running runs; demo mode has none.
+      return path.includes('status=running') ? { items: [], runs: [], total: 0 } : DEMO_RUNS;
     }
+    if (parts[2] === 'runs' || parts[2] === 'history') return DEMO_RUNS;
     if (parts[1]) return DEMO_JOBS.jobs.find(j => j.id === parts[1]) || DEMO_JOBS.jobs[0];
   }
   if (clean === '/targets') return DEMO_TARGETS;
@@ -291,19 +343,34 @@ async function _mockPost(path: string, data?: any): Promise<any> {
 
   if (clean === '/auth/login') return { setup_required: false, authenticated: true, setup_completed_at: new Date().toISOString() };
   if (clean === '/auth/logout') return { authenticated: false, message: 'Logged out' };
-  if (clean === '/auth/setup') return { success: true, api_key: 'demo-api-key-12345' };
+  if (clean === '/auth/setup') return { api_key: 'demo-api-key-12345', target_created: true, target_errors: [] };
   if (clean === '/auth/rotate-key') return { api_key: 'demo-new-key-67890' };
   if (clean === '/jobs') return { ...data, id: `job-new-${Date.now()}` };
   if (clean.endsWith('/run')) return { run_id: `run-demo-${Date.now()}` };
   if (clean === '/targets') return { ...data, id: `target-new-${Date.now()}` };
-  if (clean.endsWith('/test')) return { success: true };
-  if (clean === '/restore') return { success: true, restore_id: `restore-${Date.now()}` };
+  if (clean.startsWith('/notifications/') && clean.endsWith('/test')) return { status: 'ok' };
+  if (clean.endsWith('/test')) return { success: true, message: 'Connection OK (demo)', tested_at: new Date().toISOString() };
+  if (clean === '/restore') return _mockRestore(data);
   if (clean === '/discover/scan') return DEMO_CONTAINERS;
   if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: DEMO_DIR_SUGGESTIONS, platform: 'unraid' };
   if (clean === '/directories') return { ...data, id: `dir-new-${Date.now()}` };
   if (clean === '/verification/run') return { run_id: `vr-demo-${Date.now()}`, status: 'started' };
 
   return { success: true };
+}
+
+function _mockRestore(data?: any): any {
+  if (data?.dry_run) {
+    return {
+      restore_id: `restore-${Date.now()}`,
+      status: 'dry_run',
+      snapshot_id: data?.snapshot_id,
+      message: 'Dry run: 3 entries would be restored',
+      entries: [{ name: 'appdata', type: 'dir' }, { name: 'domains', type: 'dir' }, { name: 'dumps', type: 'dir' }],
+      dry_run: true,
+    };
+  }
+  return { restore_id: `restore-${Date.now()}`, status: 'success', snapshot_id: data?.snapshot_id, message: '' };
 }
 
 async function _mockPut(_path: string, data?: any): Promise<any> {
@@ -324,7 +391,7 @@ export const mockApi = {
   getSession: async () => { await delay(); return { setup_required: false, authenticated: true, setup_completed_at: new Date().toISOString() }; },
   login: async (_apiKey: string) => { await delay(); return { setup_required: false, authenticated: true, setup_completed_at: new Date().toISOString() }; },
   logout: async () => { await delay(); return { authenticated: false, message: 'Logged out' }; },
-  completeSetup: async (_data: any) => { await delay(500); return { success: true, api_key: 'demo-api-key-12345', setup_completed_at: new Date().toISOString() }; },
+  completeSetup: async (_data: any) => { await delay(500); return { api_key: 'demo-api-key-12345', setup_completed_at: new Date().toISOString(), target_created: true, target_errors: [] as string[] }; },
   rotateKey: async () => { await delay(); return { api_key: 'demo-new-key-67890' }; },
 
   listJobs: async () => { await delay(); return DEMO_JOBS; },
@@ -332,9 +399,9 @@ export const mockApi = {
   createJob: async (data: any) => { await delay(500); return { ...data, id: 'job-new-' + Date.now() }; },
   updateJob: async (_id: string, data: any) => { await delay(); return data; },
   deleteJob: async (_id: string) => { await delay(); return { success: true }; },
-  triggerJob: async (_id: string) => { await delay(300); return { run_id: 'run-demo-' + Date.now() }; },
-  listRuns: async (_jobId: string) => { await delay(); return { runs: [{ id: 'run-1', job_id: _jobId, status: 'success', started_at: new Date(Date.now() - 720000).toISOString(), finished_at: new Date(Date.now() - 378000).toISOString(), duration_seconds: 342 }] }; },
-  getRun: async (_jobId: string, _runId: string) => { await delay(); return { id: _runId, job_id: _jobId, status: 'success', started_at: new Date(Date.now() - 720000).toISOString(), finished_at: new Date(Date.now() - 378000).toISOString(), duration_seconds: 342, phases: ['discovery', 'db_dump', 'snapshot', 'sync', 'notify'] }; },
+  triggerJob: async (_id: string) => { await delay(300); return { run_id: 'run-demo-' + Date.now(), status: 'running' }; },
+  listRuns: async (_jobId: string) => { await delay(); return DEMO_RUNS; },
+  getRun: async (_jobId: string, runId: string) => { await delay(); return { ...DEMO_RUN_DETAIL, id: runId }; },
   cancelRun: async () => { await delay(); return { success: true }; },
 
   listTargets: async () => { await delay(); return DEMO_TARGETS; },
@@ -342,13 +409,13 @@ export const mockApi = {
   createTarget: async (data: any) => { await delay(500); return { ...data, id: 'target-new-' + Date.now() }; },
   updateTarget: async (_id: string, data: any) => { await delay(); return data; },
   deleteTarget: async (_id: string) => { await delay(); return { success: true }; },
-  testTarget: async (_id: string) => { await delay(1000); return { healthy: true, latency_ms: 45 }; },
+  testTarget: async (_id: string) => { await delay(1000); return { success: true, message: 'Connection OK (demo)', tested_at: new Date().toISOString() }; },
 
   listSnapshots: async () => { await delay(); return DEMO_SNAPSHOTS; },
   refreshSnapshots: async () => { await delay(1000); return DEMO_SNAPSHOTS; },
   browseSnapshot: async (_id: string, _path: string = '/') => { await delay(); return { path: _path, entries: [{ name: 'appdata', type: 'dir', size: 0 }, { name: 'boot', type: 'dir', size: 0 }, { name: 'db-dumps', type: 'dir', size: 0 }] }; },
 
-  restore: async (_data: any) => { await delay(500); return { success: true, restore_id: 'restore-' + Date.now() }; },
+  restore: async (data: any) => { await delay(500); return _mockRestore(data); },
   downloadRestorePlan: () => '#',
 
   getSettings: async () => { await delay(); return DEMO_SETTINGS; },
@@ -358,7 +425,7 @@ export const mockApi = {
   createChannel: async (data: any) => { await delay(500); return { ...data, id: 'ch-new-' + Date.now() }; },
   updateChannel: async (_id: string, data: any) => { await delay(); return data; },
   deleteChannel: async (_id: string) => { await delay(); return { success: true }; },
-  testChannel: async (_id: string) => { await delay(1000); return { success: true }; },
+  testChannel: async (_id: string) => { await delay(1000); return { status: 'ok' }; },
 
   listActivity: async (_limit?: number, _offset?: number) => { await delay(); return DEMO_ACTIVITY; },
 
@@ -368,7 +435,7 @@ export const mockApi = {
   listContainers: async () => { await delay(); return DEMO_CONTAINERS; },
 
   listDatabases: async () => { await delay(); return DEMO_DATABASES; },
-  dumpDatabase: async () => { await delay(1000); return { success: true }; },
+  dumpDatabase: async (container: string, dbName: string) => { await delay(1000); return { container_name: container, db_name: dbName, db_type: 'postgres', dump_size_bytes: 52428800, integrity_check: 'ok', dump_path: `/config/dumps/${dbName}.sql`, duration_seconds: 2, status: 'success', error: null }; },
 
   listDirectories: async () => { await delay(); return DEMO_DIRECTORIES; },
   addDirectory: async (data: any) => { await delay(500); return { ...data, id: 'dir-new-' + Date.now() }; },

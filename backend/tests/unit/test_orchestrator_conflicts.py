@@ -130,7 +130,7 @@ async def test_run_backup_marks_scheduled_conflict_as_skipped(orchestrator_confi
     with patch.object(orchestrator_module, "LOCK_FILE", backup_lock), patch.object(
         orchestrator_module, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"
     ):
-        result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="run-sched")
+        result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="run-sched", lock_wait_seconds=0)
 
     assert result["status"] == "conflict"
     assert result["message"] == "Another backup is already running"

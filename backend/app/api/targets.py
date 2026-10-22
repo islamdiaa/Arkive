@@ -4,6 +4,7 @@ CRUD operations for backup storage destinations.
 Includes test-connection, OAuth flows, and usage reporting.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.config import ArkiveConfig
 from app.core.dependencies import (
@@ -26,6 +27,7 @@ from app.core.dependencies import (
 )
 from app.core.security import decrypt_config, encrypt_config
 from app.models.targets import TargetCreate, TargetUpdate
+from app.utils.mounts import ephemeral_path_reason
 
 logger = logging.getLogger("arkive.api.targets")
 router = APIRouter(prefix="/targets", tags=["targets"], dependencies=[Depends(require_auth)])
@@ -74,17 +76,82 @@ def _validate_target_id(target_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid target ID format")
 
 
+# Control characters (CR/LF above all) in a config value would let it start a new
+# line in rclone.conf and inject arbitrary directives (e.g. sftp ``ssh = <cmd>``).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_WHITESPACE_RE = re.compile(r"\s")
+# Hostname, IPv4, or bracketed/bare IPv6 (with optional zone id).
+_HOST_RE = re.compile(r"^[A-Za-z0-9._\-:\[\]%]{1,253}$")
+# Fields that never legitimately contain whitespace.
+_NO_WHITESPACE_FIELDS = ("bucket", "region", "key_id", "access_key", "username", "user", "endpoint", "client_id")
+
+
 def _sanitize_name(name: str) -> str:
-    """Strip HTML tags from a target name."""
-    return re.sub(r"<[^>]+>", "", name).strip()
+    """Strip HTML tags and control characters from a target name."""
+    return _CONTROL_CHARS_RE.sub("", re.sub(r"<[^>]+>", "", name)).strip()
 
 
 def _normalize_config(config: dict | None) -> dict:
     """Normalize provider config before validation and persistence."""
     normalized: dict = {}
     for key, value in (config or {}).items():
-        normalized[key] = value.strip() if isinstance(value, str) else value
+        if isinstance(value, str):
+            value = value.strip()
+            if key == "token" and value.startswith("{"):
+                # Pasted OAuth token JSON may be pretty-printed; store it compact
+                # so it fits on a single rclone.conf line.
+                try:
+                    value = json.dumps(json.loads(value), separators=(",", ":"))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+        normalized[key] = value
     return normalized
+
+
+def _control_char_errors(config: dict | None, prefix: str = "") -> list[str]:
+    """Return errors for any key or (nested) string value containing control characters."""
+    errors: list[str] = []
+    for key, value in (config or {}).items():
+        key_text = str(key)
+        if _CONTROL_CHARS_RE.search(key_text):
+            errors.append("Config keys must not contain control characters")
+            continue
+        name = f"{prefix}{key_text}"
+        if isinstance(value, str):
+            if _CONTROL_CHARS_RE.search(value):
+                errors.append(f"'{name}' must not contain control characters (such as newlines)")
+        elif isinstance(value, dict):
+            errors.extend(_control_char_errors(value, f"{name}."))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and _CONTROL_CHARS_RE.search(item):
+                    errors.append(f"'{name}' must not contain control characters (such as newlines)")
+                    break
+                if isinstance(item, dict):
+                    errors.extend(_control_char_errors(item, f"{name}."))
+    return errors
+
+
+def _field_format_errors(provider: str, config: dict) -> list[str]:
+    """Cheap per-field format checks for values that end up in rclone.conf / repo paths."""
+    errors: list[str] = []
+    for field in _NO_WHITESPACE_FIELDS:
+        value = config.get(field)
+        if isinstance(value, str) and _WHITESPACE_RE.search(value):
+            errors.append(f"'{field}' must not contain whitespace")
+    if provider == "sftp":
+        host = config.get("host")
+        if isinstance(host, str) and host and not _HOST_RE.match(host):
+            errors.append("Host must be a hostname or IP address")
+        port = config.get("port")
+        if port not in (None, ""):
+            try:
+                port_num = int(str(port))
+            except (TypeError, ValueError):
+                port_num = 0
+            if not 1 <= port_num <= 65535:
+                errors.append("Port must be an integer between 1 and 65535")
+    return errors
 
 
 def _validate_local_path(config: dict) -> list[str]:
@@ -112,6 +179,14 @@ def _validate_local_path(config: dict) -> list[str]:
             errors.append(
                 f"Cannot use path resolving to system directory as backup target: {prefix}"
             )
+    if not errors:
+        reason = ephemeral_path_reason(normalized)
+        if reason:
+            errors.append(
+                f"Local path {normalized} is not persistent storage ({reason}); backups there are lost "
+                f"when the container is re-created. Map a host directory to it, e.g. "
+                f"-v /mnt/user/backups:/mnt/user/backups"
+            )
     config["path"] = normalized
     return errors
 
@@ -129,7 +204,10 @@ def _redact_config(config: dict) -> dict:
 
 def _validate_provider_config(provider: str, config: dict) -> list[str]:
     """Return a list of validation error messages for the given provider config."""
-    errors: list[str] = []
+    errors: list[str] = _control_char_errors(config)
+    if errors:
+        return errors
+    errors.extend(_field_format_errors(provider, config))
     if provider == "b2":
         if not config.get("key_id"):
             errors.append("Application Key ID is required")
@@ -170,6 +248,47 @@ def _validate_provider_config(provider: str, config: dict) -> list[str]:
     return errors
 
 
+async def _write_rclone_section(cloud_manager, target_id: str, target_type: str, config: dict) -> str | None:
+    """Write (or refresh) the rclone.conf section for a non-local target.
+
+    Returns an error string instead of raising so callers can report it without
+    failing the surrounding DB operation.
+    """
+    if cloud_manager is None or target_type == "local":
+        return None
+    try:
+        await cloud_manager.write_target_config({"id": target_id, "type": target_type, "config": config})
+    except Exception as exc:
+        logger.error("Failed to write rclone config for target %s: %s", target_id, exc)
+        return f"Failed to write rclone config: {exc}"
+    return None
+
+
+async def _remove_rclone_section(cloud_manager, target_id: str) -> None:
+    if cloud_manager is None:
+        return
+    try:
+        await cloud_manager.remove_target_config(target_id)
+    except Exception as exc:
+        logger.warning("Failed to remove rclone config section for %s: %s", target_id, exc)
+
+
+def _probe_local_write(path: str) -> tuple[bool, str]:
+    """Blocking local-target write probe (run in a worker thread)."""
+    if not path:
+        return False, "No path configured for local target"
+    if not os.path.isdir(path):
+        return False, f"Local path '{path}' does not exist or is not a directory"
+    test_file = os.path.join(path, ".arkive_test_write")
+    try:
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+    except OSError as exc:
+        return False, f"Local path '{path}' is not writable: {exc}"
+    return True, f"Local path '{path}' is accessible and writable"
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -177,8 +296,8 @@ def _validate_provider_config(provider: str, config: dict) -> list[str]:
 
 @router.get("")
 async def list_targets(
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
     config: ArkiveConfig = Depends(get_config),
 ):
@@ -215,6 +334,7 @@ async def create_target(
     body: TargetCreate,
     db: aiosqlite.Connection = Depends(get_db),
     config: ArkiveConfig = Depends(get_config),
+    cloud_manager=Depends(get_cloud_manager),
     event_bus=Depends(get_event_bus),
 ):
     """Create a new storage target."""
@@ -260,12 +380,14 @@ async def create_target(
     )
     await db.commit()
 
+    rclone_error = await _write_rclone_section(cloud_manager, target_id, body.type, body.config)
+
     if event_bus is not None:
         await event_bus.publish("target.created", {"target_id": target_id, "name": body.name})
 
     logger.info("Created storage target: %s (%s)", body.name, body.type)
 
-    return {
+    response = {
         "id": target_id,
         "name": body.name,
         "type": body.type,
@@ -275,6 +397,9 @@ async def create_target(
         "created_at": now,
         "updated_at": now,
     }
+    if rclone_error:
+        response["warning"] = rclone_error
+    return response
 
 
 @router.get("/{target_id}")
@@ -365,23 +490,24 @@ async def update_target(
     )
     await db.commit()
 
-    if new_config is not None and row["type"] != "local" and cloud_manager is not None:
-        await cloud_manager.write_target_config({
-            "id": target_id,
-            "type": row["type"],
-            "config": new_config,
-        })
+    rclone_error = None
+    if new_config is not None:
+        rclone_error = await _write_rclone_section(cloud_manager, target_id, row["type"], new_config)
 
     if event_bus is not None:
         await event_bus.publish("target.updated", {"target_id": target_id, "changed_fields": changed})
 
-    return await get_target(target_id, db, config)
+    updated = await get_target(target_id, db, config)
+    if rclone_error:
+        updated["warning"] = rclone_error
+    return updated
 
 
 @router.delete("/{target_id}")
 async def delete_target(
     target_id: str,
     db: aiosqlite.Connection = Depends(get_db),
+    cloud_manager=Depends(get_cloud_manager),
     event_bus=Depends(get_event_bus),
 ):
     """Delete a storage target. Remote data is preserved."""
@@ -423,6 +549,9 @@ async def delete_target(
     )
     await db.commit()
 
+    # Drop the rclone.conf section so deleted credentials don't linger on disk.
+    await _remove_rclone_section(cloud_manager, target_id)
+
     if event_bus is not None:
         await event_bus.publish("target.deleted", {"target_id": target_id, "name": target_name})
 
@@ -456,9 +585,8 @@ async def test_connection_inline(
         return {"success": False, "message": "; ".join(errors)}
 
     if body.type == "local":
-        import os
         path = body.config.get("path", "")
-        if os.path.isdir(path):
+        if await asyncio.to_thread(os.path.isdir, path):
             return {"success": True, "message": f"Local path '{path}' is accessible"}
         return {"success": False, "message": f"Local path '{path}' does not exist or is not a directory"}
 
@@ -508,22 +636,11 @@ async def test_target(
 
     try:
         if target_type == "local":
-            import os
-            path = target_config.get("path", "")
-            if not path:
-                message = "No path configured for local target"
-            elif not os.path.isdir(path):
-                message = f"Local path '{path}' does not exist or is not a directory"
-            else:
-                test_file = os.path.join(path, ".arkive_test_write")
-                try:
-                    with open(test_file, "w") as f:
-                        f.write("test")
-                    os.remove(test_file)
-                    success = True
-                    message = f"Local path '{path}' is accessible and writable"
-                except OSError as exc:
-                    message = f"Local path '{path}' is not writable: {exc}"
+            # Filesystem probes on /mnt/user can block for seconds (disk spin-up),
+            # so keep them off the event loop.
+            success, message = await asyncio.to_thread(
+                _probe_local_write, target_config.get("path", "")
+            )
 
         elif target_type in ("b2", "s3", "sftp", "dropbox", "gdrive", "wasabi"):
             if cloud_manager is not None:
@@ -585,7 +702,7 @@ async def get_target_usage(
         import shutil
         path = target_config.get("path", "/backups")
         try:
-            usage = shutil.disk_usage(path)
+            usage = await asyncio.to_thread(shutil.disk_usage, path)
             return {"target_id": target_id, "type": target_type, "total": usage.total, "used": usage.used, "free": usage.free}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to get disk usage: {exc}")
@@ -733,12 +850,13 @@ async def oauth_complete(
     body: OAuthCompleteRequest,
     db: aiosqlite.Connection = Depends(get_db),
     config: ArkiveConfig = Depends(get_config),
+    cloud_manager=Depends(get_cloud_manager),
     event_bus=Depends(get_event_bus),
 ):
     """Complete an OAuth flow by exchanging authorization code for tokens."""
     provider = body.provider.lower()
     if provider not in OAUTH_PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unsupported OAuth provider.")
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider.")
 
     pending = _oauth_pending.get(body.state)
     if not pending:
@@ -798,9 +916,13 @@ async def oauth_complete(
         if client_secret:
             target_config_dict["client_secret"] = client_secret
 
+    config_errors = _control_char_errors(target_config_dict)
+    if config_errors:
+        raise HTTPException(status_code=422, detail={"errors": config_errors, "message": "Validation failed"})
+
     target_id = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    target_name = body.name or f"{provider.capitalize()} ({target_id})"
+    target_name = _sanitize_name(body.name or "") or f"{provider.capitalize()} ({target_id})"
     encrypted = encrypt_config(target_config_dict, str(config.config_dir))
 
     await db.execute(
@@ -820,6 +942,8 @@ async def oauth_complete(
     )
     await db.commit()
 
+    rclone_error = await _write_rclone_section(cloud_manager, target_id, provider, target_config_dict)
+
     if event_bus is not None:
         await event_bus.publish("target.created", {"target_id": target_id, "name": target_name, "method": "oauth"})
 
@@ -837,4 +961,5 @@ async def oauth_complete(
         "oauth_complete": True,
         "has_refresh_token": bool(tokens.get("refresh_token")),
         "needs_reauth": needs_reauth,
+        **({"warning": rclone_error} if rclone_error else {}),
     }

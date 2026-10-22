@@ -34,7 +34,7 @@ class SetupCompleteRequest(BaseModel):
     storage: dict[str, Any] = {}
     db_dump_schedule: str = "0 6,18 * * *"
     cloud_sync_schedule: str = "0 7 * * *"
-    flash_schedule: str = "0 6 * * *"
+    flash_schedule: str = "0 5 * * *"
     directories: list[str] = []
     run_first_backup: bool = False
     target_ids: list[str] = []

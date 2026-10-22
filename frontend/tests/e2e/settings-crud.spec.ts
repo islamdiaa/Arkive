@@ -109,7 +109,7 @@ async function mockNotificationsRoutes(page: Page) {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ success: true, message: 'Test notification sent' }),
+      body: JSON.stringify({ status: 'ok' }),
     })
   );
 

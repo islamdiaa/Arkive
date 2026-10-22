@@ -1,8 +1,8 @@
 """System status API routes — no auth required for healthcheck."""
 
+import asyncio
 import json
 import logging
-import os
 import shutil
 import time
 import sqlite3
@@ -11,7 +11,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, Request
 
 from app import __version__
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, request_has_valid_credentials
 from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
 from app.services.host_identity import resolve_hostname
@@ -123,15 +123,19 @@ async def compute_trust_score(db: aiosqlite.Connection) -> int:
     or 0 when no completed runs exist. Shared by status and verification APIs.
     """
     try:
+        # Latest *finished* run per target that still exists: an in-progress or
+        # skipped run must not hide the last real score, and runs of deleted
+        # targets must not drag the average down forever.
         cursor = await db.execute(
             """SELECT trust_score
                FROM verification_runs vr
                INNER JOIN (
                    SELECT target_id, MAX(rowid) AS latest_rowid
                    FROM verification_runs
+                   WHERE status NOT IN ('running', 'skipped')
                    GROUP BY target_id
                ) lpt ON vr.target_id = lpt.target_id AND vr.rowid = lpt.latest_rowid
-               WHERE vr.status != 'running'"""
+               WHERE vr.target_id IN (SELECT id FROM storage_targets)"""
         )
         scored_rows = await cursor.fetchall()
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
@@ -228,6 +232,10 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     - ok: all checks pass
     - degraded: non-critical checks failing (disk warning, targets unhealthy)
     - error: critical checks failing (DB down, scheduler stopped, disk critical)
+
+    Unauthenticated callers (Docker HEALTHCHECK, the login page) get a minimal
+    payload; the full dashboard data (paths, hostname, backup history, disk
+    usage) requires a valid API key or browser session — or setup mode.
     """
     checks = {}
     issues = []
@@ -271,6 +279,15 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     # Setup check
     api_key_hash = await _fetch_setting(db, "api_key_hash")
     setup_completed = api_key_hash is not None
+
+    if setup_completed and not request_has_valid_credentials(request, api_key_hash):
+        return {
+            "status": overall_status,
+            "health": _health_alias(overall_status),
+            "version": __version__,
+            "setup_completed": True,
+            "authenticated": False,
+        }
 
     # Platform
     runtime_platform = getattr(getattr(request.app, "state", None), "platform", None)
@@ -349,6 +366,8 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         cursor = await db.execute(
             """SELECT status, started_at, completed_at
                FROM verification_runs
+               WHERE status NOT IN ('running', 'skipped')
+                 AND target_id IN (SELECT id FROM storage_targets)
                ORDER BY started_at DESC
                LIMIT 1"""
         )
@@ -384,11 +403,19 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         containers_discovered = 0
 
+    # resolve_hostname may call the Docker API (blocking) — keep it off the loop.
+    try:
+        hostname = await asyncio.to_thread(
+            resolve_hostname, app=request.app, settings={"server_name": server_name or ""}
+        )
+    except Exception:
+        hostname = server_name or ""
+
     return StatusResponse(
         status=overall_status,
         health=_health_alias(overall_status),
         version=__version__,
-        hostname=resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
+        hostname=hostname,
         uptime_seconds=int(time.time() - _start_time),
         platform=platform,
         setup_completed=setup_completed,

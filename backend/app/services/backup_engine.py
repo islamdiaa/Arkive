@@ -34,6 +34,16 @@ _NON_TRANSIENT_AUTH_PATTERNS = [
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 5  # seconds
 
+# Wait for a competing restic lock (backup vs. prune/check/verify) instead of
+# failing immediately with "repository is already locked".
+RETRY_LOCK = "10m"
+# restic backup exit code: snapshot created, but some source files could not
+# be read (permission denied, vanished mid-backup).
+RESTIC_EXIT_INCOMPLETE = 3
+# Directories containing this file (Arkive's own repositories, restore scratch
+# space) are skipped when they appear inside a watched directory.
+EXCLUDE_MARKER = ".arkive-exclude"
+
 
 def _is_transient_error(stderr: str) -> bool:
     """Check if a restic error is likely transient and retryable."""
@@ -198,7 +208,10 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
-        cmd = ["restic", "backup", "-r", repo, "--json"]
+        cmd = [
+            "restic", "backup", "-r", repo, "--json", "--retry-lock", RETRY_LOCK,
+            "--exclude-caches", "--exclude-if-present", EXCLUDE_MARKER,
+        ]
         resolved_host = (hostname or "").strip()
         if not resolved_host:
             resolved_host = resolve_hostname(
@@ -228,9 +241,7 @@ class BackupEngine:
                 timeout=3600,
                 cancel_check=cancel_check,
             )
-            if last_result.returncode == 0:
-                break
-            if last_result.returncode == -2:
+            if last_result.returncode in (0, RESTIC_EXIT_INCOMPLETE, -2):
                 break
             if attempt < MAX_RETRIES and _is_transient_error(last_result.stderr):
                 wait_time = RETRY_BACKOFF_BASE * attempt
@@ -247,19 +258,40 @@ class BackupEngine:
         if result.returncode == -2:
             logger.warning("Backup cancelled for %s", target.get("name"))
             return {"status": "cancelled", "error": result.stderr}
-        if result.returncode != 0:
+        if result.returncode not in (0, RESTIC_EXIT_INCOMPLETE):
             logger.error("Backup failed for %s: %s", target.get("name"), result.stderr)
             return {"status": "failed", "error": result.stderr}
 
-        # Parse JSON output for snapshot summary
+        # Parse JSON output for snapshot summary and per-file errors
         snapshot_info = {}
+        file_errors: list[str] = []
         for line in result.stdout.strip().split("\n"):
             try:
                 data = json.loads(line)
-                if data.get("message_type") == "summary":
-                    snapshot_info = data
             except json.JSONDecodeError:
                 continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("message_type") == "summary":
+                snapshot_info = data
+            elif data.get("message_type") == "error" and len(file_errors) < 20:
+                err = data.get("error")
+                message = err.get("message") if isinstance(err, dict) else err
+                item = data.get("item") or ""
+                file_errors.append(f"{item}: {message}" if item else str(message))
+
+        if result.returncode == RESTIC_EXIT_INCOMPLETE:
+            detail = "; ".join(file_errors) or result.stderr.strip()[:500]
+            logger.warning("Backup for %s is incomplete — some files could not be read: %s",
+                           target.get("name"), detail)
+            return {
+                "status": "partial",
+                "error": f"Some files could not be read: {detail}",
+                "snapshot_id": snapshot_info.get("snapshot_id", ""),
+                "total_bytes_processed": snapshot_info.get("total_bytes_processed", 0),
+                "files_new": snapshot_info.get("files_new", 0),
+                "files_changed": snapshot_info.get("files_changed", 0),
+            }
 
         return {
             "status": "success",
@@ -270,8 +302,9 @@ class BackupEngine:
         }
 
     async def forget(self, target: dict, keep_daily: int = 7,
-                     keep_weekly: int = 4, keep_monthly: int = 6) -> dict:
-        """Run restic forget with retention policy and prune."""
+                     keep_weekly: int = 4, keep_monthly: int = 6,
+                     prune: bool = True) -> dict:
+        """Run restic forget with retention policy, optionally pruning unused data."""
         password = await self._get_password()
         if not password:
             logger.error("No encryption password configured — cannot run forget")
@@ -291,16 +324,20 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
-        result = await run_command([
-            "restic", "forget", "-r", repo,
+        cmd = [
+            "restic", "forget", "-r", repo, "--retry-lock", RETRY_LOCK,
             "--keep-daily", str(keep_daily),
             "--keep-weekly", str(keep_weekly),
             "--keep-monthly", str(keep_monthly),
-            "--prune", "--json",
-        ], env=env, timeout=3600)
+        ]
+        if prune:
+            cmd.append("--prune")
+        cmd.append("--json")
+        result = await run_command(cmd, env=env, timeout=3600 * 4 if prune else 900)
 
         return {"status": "success" if result.returncode == 0 else "failed",
-                "output": result.stdout[:500]}
+                "output": result.stdout[:500],
+                "error": result.stderr[:500] if result.returncode != 0 else None}
 
     async def snapshots(self, target: dict) -> list[dict]:
         """List snapshots for a target."""
@@ -394,8 +431,8 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
         result = await run_command(
-            ["restic", "check", "-r", repo, "--json"],
-            env=env, timeout=600,
+            ["restic", "check", "-r", repo, "--json", "--retry-lock", RETRY_LOCK],
+            env=env, timeout=3600,
         )
         return {
             "status": "success" if result.returncode == 0 else "failed",

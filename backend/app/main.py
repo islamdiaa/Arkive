@@ -29,7 +29,9 @@ from app.services.backup_engine import BackupEngine
 from app.services.cloud_manager import CloudManager
 from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
+from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
+from app.services.discovery_persistence import persist_discovery_results
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
 from app.services.restore_plan import RestorePlanGenerator
@@ -171,13 +173,20 @@ async def lifespan(app: FastAPI):
     # Initialize services
     event_bus = EventBus()
 
-    # Docker client (optional — may not be available in dev)
-    docker_client = None
-    try:
-        import docker
-        docker_client = docker.from_env()
-    except Exception as e:
-        logger.warning("Docker client not available: %s", e)
+    # Docker client — connects lazily and reconnects after failures, so a slow
+    # daemon at boot no longer disables discovery until the next restart.
+    # Only absent in dev mode when no socket is mounted.
+    docker_client = ResilientDockerClient() if docker_sock.exists() else None
+    if docker_client is not None:
+        # Connect in the background so a slow daemon doesn't delay serving the UI.
+        async def _warm_up_docker() -> None:
+            try:
+                await asyncio.to_thread(docker_client.get_client)
+            except DockerUnavailableError as e:
+                logger.warning("Docker daemon not reachable at startup, will retry on demand: %s", e)
+
+        # Keep a reference so the task isn't garbage-collected mid-flight.
+        app.state.docker_warmup = asyncio.create_task(_warm_up_docker())
 
     discovery = DiscoveryEngine(docker_client, config) if docker_client else None
     db_dumper = DBDumper(docker_client, config) if docker_client else None
@@ -237,6 +246,13 @@ async def lifespan(app: FastAPI):
                 config_json = t.get("config", "{}")
                 if config_json and config_json != "{}":
                     t["config"] = decrypt_config(config_json, str(config.config_dir))
+                if t.get("type") != "local":
+                    # Regenerate rclone.conf sections from the DB so cloud
+                    # targets work even if the file was lost or never written.
+                    try:
+                        await cloud_manager.write_target_config(t)
+                    except Exception as e:
+                        logger.warning("Could not write rclone config for target %s: %s", t.get("name", ""), e)
                 await backup_engine.unlock(t)
                 logger.info("Auto-unlocked target: %s", t.get("name", t.get("id", "unknown")))
             except Exception as e:
@@ -257,7 +273,8 @@ async def lifespan(app: FastAPI):
             if count == 0:
                 logger.info("First boot — running auto-discovery")
                 try:
-                    await discovery.scan()
+                    containers = await discovery.scan()
+                    await persist_discovery_results(db, containers)
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 

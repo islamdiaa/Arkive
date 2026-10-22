@@ -723,14 +723,18 @@ class TestOrchestratorDumpCleanup:
 
     @pytest.mark.asyncio
     async def test_dump_cleanup_called_after_backup(self, db_path, mock_config):
-        """After a successful backup, cleanup_old_dumps should be called."""
-        with patch("app.services.orchestrator.decrypt_config", return_value={}):
+        """Dumps are pruned to the newest generation before upload and again
+        in the finally block, independent of whether Docker is available."""
+        with patch("app.services.orchestrator.decrypt_config", return_value={}), \
+             patch("app.services.orchestrator.cleanup_dump_dir") as cleanup:
             orchestrator = make_orchestrator(mock_config, snapshots_return=[])
             orchestrator._self_backup = AsyncMock()
             await orchestrator.run_backup("job-1", trigger="manual",
                                           skip_databases=True, skip_flash=True)
 
-        orchestrator.db_dumper.cleanup_old_dumps.assert_called_once_with(keep_last=3)
+        assert cleanup.call_count == 2
+        for call in cleanup.call_args_list:
+            assert call.kwargs["keep_last"] == 1
 
 
 # ===========================================================================

@@ -81,8 +81,9 @@ async def test_run_migrations_applies_pending(db_path):
     ]
     try:
         count = await run_migrations(db_path)
-        # v2 (test SQL) and v3 (verification_runs) are both pending from v1 baseline
-        assert count == 2, f"Expected 2 migrations applied, got {count}"
+        # every migration after the v1 baseline is pending (v2 is the test SQL)
+        expected = len([v for v in db_module.MIGRATIONS if v > 1])
+        assert count == expected, f"Expected {expected} migrations applied, got {count}"
 
         # Verify the column was actually added
         async with aiosqlite.connect(db_path) as db:
@@ -159,8 +160,9 @@ async def test_run_migrations_multi_statement_version(db_path):
     ]
     try:
         count = await run_migrations(db_path)
-        # v2 (test SQL) and v3 (verification_runs) both applied from v1 baseline
-        assert count == 2, f"Expected 2 migrations applied, got {count}"
+        # every migration after the v1 baseline is applied (v2 is the test SQL)
+        expected = len([v for v in db_module.MIGRATIONS if v > 1])
+        assert count == expected, f"Expected {expected} migrations applied, got {count}"
 
         async with aiosqlite.connect(db_path) as db:
             cursor = await db.execute("PRAGMA table_info(settings)")

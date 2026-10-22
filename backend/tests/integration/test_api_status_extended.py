@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
-from tests.conftest import do_setup
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -107,7 +107,7 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
     """Coverage should become migration-ready when Unraid appdata and flash are protected."""
     import aiosqlite
 
-    await do_setup(client, directories=["/mnt/user/appdata"])
+    setup_data = await do_setup(client, directories=["/mnt/user/appdata"])
     transport = client._transport
     app = transport.app
     app.state.platform = "unraid"
@@ -159,7 +159,7 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
         )
         await db.commit()
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert resp.status_code == 200
     coverage = resp.json()["coverage"]
     assert coverage["appdata_protected"] is True

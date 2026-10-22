@@ -3,7 +3,7 @@
 import json
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.dependencies import get_db, get_db_dumper, require_auth
 
@@ -12,8 +12,8 @@ router = APIRouter(prefix="/databases", tags=["databases"], dependencies=[Depend
 
 @router.get("")
 async def list_databases(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all discovered databases across containers."""
@@ -21,7 +21,10 @@ async def list_databases(
     rows = await cursor.fetchall()
     all_dbs = []
     for row in rows:
-        dbs = json.loads(row["databases"]) if row["databases"] else []
+        try:
+            dbs = json.loads(row["databases"]) if row["databases"] else []
+        except (json.JSONDecodeError, TypeError):
+            dbs = []
         for d in dbs:
             if isinstance(d, dict):
                 d["container_name"] = d.get("container_name", row["name"])

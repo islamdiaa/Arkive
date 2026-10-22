@@ -147,8 +147,9 @@ async def test_size_history_total_size_calculated_correctly(db_path, mock_config
 
 
 @pytest.mark.asyncio
-async def test_size_history_zero_snapshots(db_path, mock_config):
-    """When there are no snapshots, size_history should record zeros."""
+async def test_size_history_not_zeroed_when_listing_is_empty(db_path, mock_config):
+    """An empty snapshot listing right after a successful backup means restic
+    failed to list (locked repo, network blip) — don't record zeros."""
     with patch("app.services.orchestrator.decrypt_config", return_value={}):
         orchestrator = make_orchestrator(mock_config, snapshots_return=[])
         orchestrator._self_backup = AsyncMock()
@@ -162,9 +163,7 @@ async def test_size_history_zero_snapshots(db_path, mock_config):
         )
         row = await cursor.fetchone()
 
-    assert row is not None
-    assert dict(row)["total_size_bytes"] == 0
-    assert dict(row)["snapshot_count"] == 0
+    assert row is None
 
 
 @pytest.mark.asyncio

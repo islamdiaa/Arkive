@@ -76,7 +76,7 @@ class TestPostgresExitCode:
         db = _make_db(db_type="postgres", db_name="mydb")
 
         # Produce enough bytes to pass the >0 check
-        fake_sql = b"-- PostgreSQL dump\n" + b"x" * 200
+        fake_sql = b"-- PostgreSQL dump\n" + b"x" * 200 + b"\n--\n-- PostgreSQL database dump complete\n--\n"
         container = MagicMock()
         container.attrs = {"Config": {"Env": ["POSTGRES_USER=postgres"]}}
         container.exec_run.return_value = _streaming_exec_run(
@@ -96,7 +96,7 @@ class TestPostgresExitCode:
         dumper = _make_dumper(tmp_path)
         db = _make_db(db_type="postgres", db_name="mydb")
 
-        fake_sql = b"-- PostgreSQL dump\n" + b"x" * 200
+        fake_sql = b"-- PostgreSQL dump\n" + b"x" * 200 + b"\n--\n-- PostgreSQL database dump complete\n--\n"
         container = MagicMock()
         container.attrs = {"Config": {"Env": ["POSTGRES_USER=postgres"]}}
         container.exec_run.return_value = _streaming_exec_run(
@@ -159,7 +159,7 @@ class TestMariaDBExitCode:
         dumper = _make_dumper(tmp_path)
         db = _make_db(db_type="mariadb", db_name="wordpress")
 
-        fake_sql = b"-- MariaDB dump\n" + b"y" * 200
+        fake_sql = b"-- MariaDB dump\n" + b"y" * 200 + b"\n-- Dump completed on 2026-01-01 00:00:00\n"
         container = MagicMock()
         container.attrs = {"Config": {"Env": [
             "MYSQL_ROOT_PASSWORD=secret",
@@ -280,6 +280,8 @@ class TestSQLiteInjection:
         async def fake_run(cmd, **kwargs):
             # Write a fake file at the dump path (3rd element is ".backup 'path'")
             dump_arg = cmd[2]
+            if not dump_arg.startswith(".backup "):
+                return mock_result  # PRAGMA calls on the finished dump
             # Extract path from .backup 'path'
             import shlex
             path = shlex.split(dump_arg.replace(".backup ", ""))[0]
@@ -312,8 +314,10 @@ class TestSQLiteInjection:
         calls = []
 
         async def fake_run(cmd, **kwargs):
-            calls.append(cmd)
             backup_arg = cmd[2]
+            if not backup_arg.startswith(".backup "):
+                return second  # PRAGMA calls on the finished dump
+            calls.append(cmd)
             path = shlex.split(backup_arg.replace(".backup ", ""))[0]
             if len(calls) == 2:
                 Path(path).write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
@@ -348,9 +352,11 @@ class TestSQLiteInjection:
         mock_result.stdout = "ok"
 
         async def fake_run(cmd, **kwargs):
+            backup_arg = cmd[2]
+            if not backup_arg.startswith(".backup "):
+                return mock_result  # PRAGMA calls on the finished dump
             captured_cmd.extend(cmd)
             # Write the dump file
-            backup_arg = cmd[2]
             path_part = backup_arg[len(".backup "):]
             path = shlex.split(path_part)[0]
             Path(path).write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)

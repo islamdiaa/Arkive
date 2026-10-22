@@ -24,6 +24,19 @@ async def _create_target(client, api_key, tmp_path, name="TestTarget"):
     return resp.json()["id"]
 
 
+def _install_verify_engine(client, result=None):
+    """Attach a fake verify engine (the trigger refuses with 503 without one)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    engine = MagicMock()
+    engine.is_backup_running = MagicMock(return_value=False)
+    engine.verify_all_targets = AsyncMock(
+        return_value=result or {"status": "completed", "targets": [], "overall_trust_score": 0.0}
+    )
+    client._transport.app.state.verify_engine = engine
+    return engine
+
+
 async def _get_db_path(client):
     """Extract DB path from the test client's app config."""
     transport = client._transport
@@ -171,6 +184,7 @@ async def test_verification_run_creates_runs(client, tmp_path):
     t1 = await _create_target(client, api_key, tmp_path, name="Target1")
     t2 = await _create_target(client, api_key, tmp_path, name="Target2")
 
+    _install_verify_engine(client)
     resp = await client.post(
         "/api/verification/run", headers=auth_headers(api_key)
     )
@@ -200,6 +214,7 @@ async def test_verification_run_creates_activity_log(client, tmp_path):
     api_key = data["api_key"]
     await _create_target(client, api_key, tmp_path)
 
+    _install_verify_engine(client)
     resp = await client.post(
         "/api/verification/run", headers=auth_headers(api_key)
     )
@@ -269,7 +284,7 @@ async def test_status_reflects_verification_results(client, tmp_path):
         )
         await db.commit()
 
-    resp = await client.get("/api/status")
+    resp = await client.get("/api/status", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 92

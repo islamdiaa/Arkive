@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from app.utils.redact import redact_credentials
+from app.utils.redact import redact_command, redact_credentials
 
 logger = logging.getLogger("arkive.subprocess")
 
@@ -55,8 +55,13 @@ async def run_command(
     cancel_check=None,
     cancel_poll_interval: float = 0.5,
 ) -> CommandResult:
-    """Run a subprocess command asynchronously with timeout."""
-    cmd_str = " ".join(cmd)
+    """Run a subprocess command asynchronously with timeout.
+
+    The rendered command string used for logging (and returned in
+    ``CommandResult.command``) has secret-bearing arguments masked; secrets
+    should still be passed via ``env`` or ``input_data`` rather than argv.
+    """
+    cmd_str = redact_command(cmd)
     logger.debug("Running: %s", cmd_str)
     start = time.monotonic()
 
@@ -146,7 +151,7 @@ async def run_command(
         )
     except Exception as e:
         duration = time.monotonic() - start
-        logger.error("Command error: %s — %s", cmd_str, str(e))
+        logger.error("Command error: %s — %s", cmd_str, redact_credentials(str(e)))
         return CommandResult(
             returncode=-1,
             stdout="",
