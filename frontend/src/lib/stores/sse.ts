@@ -1,6 +1,7 @@
 import { writable, get } from 'svelte/store';
 import type { SSEEvent, SSEEventType } from '$lib/types';
 import { handleUnauthorized } from '$lib/api/session';
+import { DEMO_MODE } from '$lib/api/client';
 
 export const connected = writable(false);
 export const lastEvent = writable<SSEEvent | null>(null);
@@ -97,6 +98,9 @@ function scheduleReconnect(customUrl?: string) {
 
 export async function connect(customUrl?: string) {
   stopped = false;
+  // Demo mode runs on the mock API: there is no backend session to stream from,
+  // and a 401 from the token endpoint would bounce the visitor to /login.
+  if (DEMO_MODE) return;
   if (eventSource || connecting) return;
 
   connecting = true;

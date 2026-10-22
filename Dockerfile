@@ -19,7 +19,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 ARG TARGETARCH
-ARG VERSION=0.3.0
+ARG VERSION=0.4.0
 
 # OCI image metadata
 LABEL org.opencontainers.image.title="Arkive" \

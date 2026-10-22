@@ -124,7 +124,8 @@ async function mockNotificationsRoutes(page: Page) {
         body: JSON.stringify({ message: 'Channel deleted' }),
       });
     }
-    return route.continue();
+    // Let earlier handlers (e.g. the shared /notifications/events mock) answer.
+    return route.fallback();
   });
 
   await page.route('**/api/events/**', (route) =>

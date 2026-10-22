@@ -26,6 +26,53 @@ export async function mockSetupComplete(page: Page, apiKey = 'ark_test1234') {
       body: JSON.stringify({ token: 'e2e-sse-token' }),
     })
   );
+  await mockBackgroundEndpoints(page);
+}
+
+/**
+ * Endpoints that components fetch on their own (drills panel, notification
+ * event picker, cron preview). Registered first, so a spec's own routes —
+ * added later — take precedence; anything unmocked would reach the real
+ * backend, get a 401 and bounce the page to /login.
+ */
+export async function mockBackgroundEndpoints(page: Page) {
+  // A regex, not '**/api/drills**': that glob also matches the dev server's
+  // module URL /src/lib/api/drills.ts and would serve JSON as JavaScript.
+  await page.route(/\/api\/drills(\/|\?|$)/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], total: 0 }),
+    })
+  );
+  await page.route('**/api/notifications/events', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        events: [
+          { value: 'backup.success', label: 'Backup succeeded', description: '' },
+          { value: 'backup.partial', label: 'Backup incomplete', description: '' },
+          { value: 'backup.failed', label: 'Backup failed', description: '' },
+          { value: 'backup.stale', label: 'Backups overdue', description: '' },
+          { value: 'verification.failed', label: 'Verification failed', description: '' },
+          { value: 'drill.failed', label: 'Restore drill failed', description: '' },
+          { value: 'target.error', label: 'Storage target unreachable', description: '' },
+          { value: 'system.startup', label: 'Arkive started', description: '' },
+          { value: 'system.shutdown', label: 'Arkive stopped', description: '' },
+        ],
+        defaults: ['backup.failed', 'backup.partial', 'backup.stale', 'verification.failed',
+          'drill.failed', 'target.error'],
+      }),
+    })
+  );
+  await page.route(/\/api\/settings\/cron-preview(\?|$)/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ next_runs: ['2026-03-08T07:00:00Z', '2026-03-15T07:00:00Z'] }),
+    })
+  );
 }
 
 /** Mock an empty dashboard state. */

@@ -87,13 +87,9 @@ test.describe('Navigation', () => {
 });
 
 test.describe('Navigation — demo mode without a backend session', () => {
-  // Known app bug, reproduced deliberately: the SSE store bypasses the demo-mode
-  // mock API and calls the real POST /api/auth/sse-token. A 401 there (no
-  // backend session) is treated as an expired session and redirects to /login,
-  // so ?demo=true cannot be browsed without logging in. test.fail() turns into
-  // a failure once the app is fixed, as a reminder to drop this annotation.
+  // Regression: the SSE store used to call the real POST /api/auth/sse-token in
+  // demo mode, and the 401 (no backend session) redirected to /login.
   test('demo page is not redirected to /login when the SSE token request is rejected', async ({ page }) => {
-    test.fail(true, 'frontend/src/lib/stores/sse.ts calls the real /api/auth/sse-token in demo mode');
     await page.route('/api/auth/sse-token', (route) =>
       route.fulfill({
         status: 401,

@@ -4,7 +4,7 @@ import { handleUnauthorized } from './session';
 const BASE_URL = '/api';
 
 // Enable demo mode only when explicitly requested via ?demo=true
-const DEMO_MODE = typeof window !== 'undefined' &&
+export const DEMO_MODE = typeof window !== 'undefined' &&
 	window.location.search.includes('demo=true');
 
 export interface BrowserSession {
