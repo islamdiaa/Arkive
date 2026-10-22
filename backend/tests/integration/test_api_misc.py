@@ -99,7 +99,9 @@ async def test_status_reports_database_health_from_latest_dump_run(client):
                 include_databases, include_flash, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                "job1", "DB Dumps", "db_dump", "0 0 * * *", 1, "[]", "[]", "[]",
+                # Disabled: the fixed past timestamps would otherwise (correctly)
+                # make the freshness watchdog report the job as overdue.
+                "job1", "DB Dumps", "db_dump", "0 0 * * *", 0, "[]", "[]", "[]",
                 1, 0, "2026-03-08T00:00:00Z", "2026-03-08T00:00:00Z",
             ),
         )

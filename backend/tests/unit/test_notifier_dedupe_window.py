@@ -238,6 +238,28 @@ class TestJobScopedThrottle:
         assert apprise_instance.async_notify.call_args.kwargs["title"] == "RECOVERED: ok"
 
     @pytest.mark.asyncio
+    async def test_success_after_partial_is_a_recovery(self, mock_config, mock_event_bus, mock_apprise):
+        """partial -> success -> partial: the success is a recovery and re-arms the partial alert."""
+        apprise_mod, apprise_instance = mock_apprise
+        channels = [_make_channel("ch1", ["backup.partial", "backup.success"])]
+        notifier = Notifier(mock_config, mock_event_bus)
+
+        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
+             patch.dict("sys.modules", {"apprise": apprise_mod}), \
+             patch("app.services.notifier.time") as mock_time:
+            mock_aiosqlite.Row = MagicMock()
+            mock_time.time.return_value = 1000.0
+            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning",
+                        job_id="j1")
+            mock_time.time.return_value = 1100.0
+            await _send(notifier, mock_aiosqlite, channels, "backup.success", "ok", "ok", "success", job_id="j1")
+            mock_time.time.return_value = 1200.0
+            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning",
+                        job_id="j1")
+
+        assert _sent_titles(apprise_instance) == ["Incomplete", "RECOVERED: ok", "Incomplete"]
+
+    @pytest.mark.asyncio
     async def test_recovery_is_scoped_to_the_failed_job(self, mock_config, mock_event_bus, mock_apprise):
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed", "backup.success"])]

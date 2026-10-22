@@ -344,8 +344,12 @@ class BackupEngine:
                 "error": result.stderr[:500] if result.returncode != 0 else None}
 
     async def current_hostname(self) -> str:
-        """Host name recorded in snapshots (stable across container re-creates)."""
-        return resolve_hostname(
+        """Host name recorded in snapshots (stable across container re-creates).
+
+        May query the Docker daemon, so it runs off the event loop.
+        """
+        return await asyncio.to_thread(
+            resolve_hostname,
             settings={"server_name": await self._get_server_name()},
             docker_client=self.docker_client,
         )
@@ -385,14 +389,17 @@ class BackupEngine:
         except ResticError:
             return []
 
-    async def normalize_legacy_hostnames(self, target: dict, marker_path: str) -> dict:
-        """Re-label Arkive snapshots recorded under a container ID as this host.
+    async def normalize_legacy_hostnames(self, target: dict, marker_path: str,
+                                         owned_snapshot_ids: set[str]) -> dict:
+        """Re-label this instance's snapshots recorded under a container ID.
 
         Older versions recorded the container hostname (its ID, which changes on
         every re-create), so each re-create started a new restic retention
-        group and old groups were never thinned out. Only snapshots that include
-        ``marker_path`` (Arkive's dump directory) are touched; the data is
-        unchanged, only snapshot metadata is rewritten.
+        group and old groups were never thinned out. A snapshot is only touched
+        when this instance's own run history recorded creating it
+        (``owned_snapshot_ids``, full or short IDs) — a container-ID host name
+        and Arkive's dump path don't prove ownership in a shared repository.
+        The data is unchanged; only snapshot metadata is rewritten.
         """
         host = (await self.current_hostname()).strip()
         if not host or _CONTAINER_ID_HOST_RE.match(host):
@@ -401,15 +408,24 @@ class BackupEngine:
             snapshots = await self.list_snapshots(target)
         except ResticError as exc:
             return {"status": "failed", "rewritten": 0, "error": str(exc)}
+        owned = {i for i in owned_snapshot_ids if i}
+
+        def _is_owned(snap_id: str) -> bool:
+            return snap_id in owned or snap_id[:8] in owned
+
         legacy = [
             snap["id"] for snap in snapshots
             if isinstance(snap, dict) and snap.get("id")
             and _CONTAINER_ID_HOST_RE.match(str(snap.get("hostname") or ""))
             and snap.get("hostname") != host
             and marker_path in (snap.get("paths") or [])
+            and _is_owned(str(snap["id"]))
         ]
         if not legacy:
             return {"status": "success", "rewritten": 0}
+        logger.info("Re-labelling %d of this instance's snapshots from container-ID host names to %s; "
+                    "the next retention pass then applies one policy to the merged history",
+                    len(legacy), host)
 
         password = await self._get_password()
         env = self._get_restic_env(password)

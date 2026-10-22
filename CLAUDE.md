@@ -393,6 +393,26 @@ Rules that follow from this:
 - new status signals that mean "backups are not happening" belong in
   `evaluate_freshness`, so the dashboard, notifications and heartbeat agree
 
+Adversarial review of v0.4.0 (two independent reviewers) found data-loss edge
+cases; the fixes are now invariants:
+- **Destructive repository operations need proof of ownership.** Snapshot
+  re-labelling only touches snapshot IDs this instance recorded in
+  `job_run_targets`; a host-name pattern or a shared path is not proof.
+- **Never write marker files into user-configured directories.** Arkive's own
+  storage is excluded with exact `--exclude` paths (`_internal_excludes`).
+- **Startup sweeps delete only what carries Arkive's ownership marker**
+  (drill dirs: `.arkive-drill` with the drill id), never by name prefix.
+- **Dump files:** names carry an identity hash (no two databases share a
+  cleanup group); writers publish via `.partial` + atomic rename; cleanup never
+  ages out the newest dump of a still-discovered database and skips age
+  deletion entirely when discovery was degraded; manual dumps take the backup
+  lock.
+- **A database that stops being backed up is a warning until it returns** (or
+  `database_loss_window_days` pass), and Postgres enumeration failures surface
+  as run warnings rather than silently shrinking coverage.
+- **Errors are not empty results.** Use `BackupEngine.list_snapshots()` (raises
+  `ResticError`) wherever "no snapshots" would lead to a skip or a deletion.
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.

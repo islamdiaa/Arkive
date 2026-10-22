@@ -39,6 +39,13 @@ RECOVERY_PAIRS = {
 }
 
 
+# Problem events that aren't named "*.failed" but that a success recovers
+# from, mapped to the failure event they are tracked as.
+PROBLEM_ALIASES = {
+    "backup.partial": "backup.failed",
+}
+
+
 def _failure_counterpart(event_type: str) -> str | None:
     """Return the failure event a success event recovers from, if any."""
     if event_type in RECOVERY_PAIRS:
@@ -138,13 +145,17 @@ class Notifier:
         scope = str(dedupe_key or job_id or "")
         failure_event = _failure_counterpart(event_type)
         is_success = failure_event is not None
-        is_failure = event_type.endswith(".failed") or "failed" in event_type.split(".")[-1]
+        is_failure = (event_type.endswith(".failed") or "failed" in event_type.split(".")[-1]
+                      or event_type in PROBLEM_ALIASES)
 
         # Check for recovery before processing channels
         is_recovery = self._check_recovery(event_type, scope)
         if is_success and failure_event:
             # A success always re-arms failure alerts for this scope.
             self._clear_failure_cooldown(failure_event, scope)
+            for problem, tracked_as in PROBLEM_ALIASES.items():
+                if tracked_as == failure_event:
+                    self._clear_failure_cooldown(problem, scope)
 
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -245,7 +256,7 @@ class Notifier:
         if is_success and failure_event:
             self._last_event_status[(failure_event, scope)] = "success"
         elif is_failure:
-            self._last_event_status[(event_type, scope)] = "failed"
+            self._last_event_status[(PROBLEM_ALIASES.get(event_type, event_type), scope)] = "failed"
 
         # Also publish to event bus for SSE
         await self.event_bus.publish("notification", {

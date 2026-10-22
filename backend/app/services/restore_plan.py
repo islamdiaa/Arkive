@@ -14,7 +14,7 @@ from jinja2 import Environment, select_autoescape
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
-from app.services.db_dumper import GLOBALS_DB_NAME, safe_name
+from app.services.db_dumper import GLOBALS_DB_NAME, dump_prefix, safe_name
 from app.services.repo_paths import build_repo_path
 
 logger = logging.getLogger("arkive.restore_plan")
@@ -206,7 +206,9 @@ class RestorePlanGenerator:
                             "restore_cmd": globals_cmd,
                             "full_restore_cmd": globals_full,
                         })
-                    restore_cmd, full_cmd = self._get_restore_commands(db_type, db_name, container_name)
+                    restore_cmd, full_cmd = self._get_restore_commands(
+                        db_type, db_name, container_name, d.get("host_path"),
+                    )
                     databases.append({
                         "container_name": container_name,
                         "db_type": db_type,
@@ -287,53 +289,71 @@ class RestorePlanGenerator:
         return build_repo_path(target)
 
     @staticmethod
-    def _dump_glob(container: str, db_name: str, ext: str) -> str:
-        """Glob for a dump file as DBDumper names it: <container>_<db>_<UTC timestamp><ext>."""
-        return f"{safe_name(container)}_{safe_name(db_name)}_[0-9]*{ext}"
+    def _dump_glob(container: str, db_type: str, db_name: str, ext: str,
+                   host_path: str | None = None, kind: str = "database") -> str:
+        """Glob for a dump as DBDumper names it: <dump_prefix>_<UTC timestamp><ext>."""
+        return f"{dump_prefix(container, db_type, db_name, host_path, kind=kind)}_[0-9]*{ext}"
 
-    @classmethod
-    def _plain_or_gzip(cls, container: str, db_name: str, ext: str, restore: str) -> str:
+    @staticmethod
+    def _legacy_note(container: str, label: str, ext: str) -> str:
+        """Where dumps written before file names carried an identity hash live."""
+        return f"\n# dumps from Arkive 0.3 and earlier: {safe_name(container)}_{safe_name(label)}_[0-9]*{ext}"
+
+    @staticmethod
+    def _plain_or_gzip(glob: str, ext: str, restore: str) -> str:
         """Restore instructions for a dump written plain (``ext``) or gzipped (``ext``.gz),
         depending on the dump_compression setting when it was taken."""
-        plain = cls._dump_glob(container, db_name, ext)
         return (
             f"# plain dump ({ext}):\n"
-            f"{restore} < {plain}\n"
+            f"{restore} < {glob}\n"
             f"# gzip dump ({ext}.gz):\n"
-            f"gunzip -c {plain}.gz | {restore}"
+            f"gunzip -c {glob}.gz | {restore}"
         )
 
     def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:
         """Restore commands for a Postgres cluster's roles (run before the database dumps)."""
         short = "psql -U postgres -d postgres < globals.sql  (restore before the databases)"
         restore = f"docker exec -i {container} psql -U postgres -d postgres"
-        return short, self._plain_or_gzip(container, GLOBALS_DB_NAME, ".sql", restore)
+        glob = self._dump_glob(container, "postgres", GLOBALS_DB_NAME, ".sql", kind="globals")
+        return short, self._plain_or_gzip(glob, ".sql", restore)
 
-    def _get_restore_commands(self, db_type: str, db_name: str, container: str) -> tuple[str, str]:
+    def _get_restore_commands(self, db_type: str, db_name: str, container: str,
+                              host_path: str | None = None) -> tuple[str, str]:
         """Get restore commands for a database type.
 
         Logical dumps are plain (``.sql``, ``.archive``) or gzipped (``.gz``)
-        depending on the dump_compression setting; both forms are shown.
+        depending on the dump_compression setting; both forms are shown, plus
+        the file name used before dump names carried an identity hash.
         """
         if db_type == "postgres":
             short = "psql -U postgres -d postgres < dump.sql  (gzip: gunzip -c dump.sql.gz | psql ...)"
             restore = f"docker exec -i {container} psql -U postgres -d postgres"
-            return short, self._plain_or_gzip(container, db_name, ".sql", restore)
+            glob = self._dump_glob(container, db_type, db_name, ".sql")
+            return short, (self._plain_or_gzip(glob, ".sql", restore)
+                           + self._legacy_note(container, db_name, ".sql.gz"))
         elif db_type == "sqlite":
             short = f"sqlite3 /path/to/{db_name} '.restore backup.sqlite3'"
-            full = f"cp {container}_{db_name}_*.sqlite3 /mnt/user/appdata/{container}/data/{db_name}"
+            glob = self._dump_glob(container, db_type, db_name, ".sqlite3", host_path)
+            full = (f"cp {glob} /mnt/user/appdata/{container}/data/{db_name}"
+                    + self._legacy_note(container, db_name, ".sqlite3"))
             return short, full
         elif db_type in ("mariadb", "mysql"):
             short = "mysql -u root < dump.sql  (gzip: gunzip -c dump.sql.gz | mysql -u root)"
             restore = f"docker exec -i {container} mysql -u root"
-            return short, self._plain_or_gzip(container, db_name, ".sql", restore)
+            glob = self._dump_glob(container, db_type, db_name, ".sql")
+            return short, (self._plain_or_gzip(glob, ".sql", restore)
+                           + self._legacy_note(container, db_name, ".sql.gz"))
         elif db_type == "mongodb":
             short = "mongorestore --archive < dump.archive  (gzip: gunzip -c dump.archive.gz | mongorestore --archive)"
             restore = f"docker exec -i {container} mongorestore --archive"
-            return short, self._plain_or_gzip(container, db_name, ".archive", restore)
+            glob = self._dump_glob(container, db_type, db_name, ".archive")
+            return short, (self._plain_or_gzip(glob, ".archive", restore)
+                           + self._legacy_note(container, db_name, ".archive.gz"))
         elif db_type == "redis":
             short = "cp dump.rdb /data/dump.rdb && redis-cli SHUTDOWN NOSAVE"
-            full = f"cp {container}_redis_*.rdb /mnt/user/appdata/{container}/data/dump.rdb"
+            glob = self._dump_glob(container, db_type, db_name or "redis", ".rdb")
+            full = (f"cp {glob} /mnt/user/appdata/{container}/data/dump.rdb"
+                    + self._legacy_note(container, "redis", ".rdb"))
             return short, full
         return "See documentation", "See documentation"
 

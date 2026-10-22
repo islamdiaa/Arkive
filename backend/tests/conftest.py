@@ -32,6 +32,37 @@ LIVE_PATH_MARKERS = {
 
 
 # ---------------------------------------------------------------------------
+# Stray files from mocked configs
+# ---------------------------------------------------------------------------
+
+_MOCK_ARTIFACT_PREFIX = "<MagicMock"
+_TRACE_ARTIFACTS = os.environ.get("ARKIVE_TRACE_MOCK_ARTIFACTS") == "1"
+
+
+def _mock_artifacts() -> set[str]:
+    return {p.name for p in Path.cwd().iterdir() if p.name.startswith(_MOCK_ARTIFACT_PREFIX)}
+
+
+_artifacts_at_start = _mock_artifacts()
+
+
+@pytest.fixture(autouse=True)
+def _trace_mock_path_artifacts():
+    """With ARKIVE_TRACE_MOCK_ARTIFACTS=1 (and no -n), fail the test that
+    creates a file named after a MagicMock — code under test opened
+    ``config.<path>`` on a mocked config with no real path. Off by default:
+    concurrent pytest processes share the working directory."""
+    if not _TRACE_ARTIFACTS:
+        yield
+        return
+    before = _mock_artifacts()
+    yield
+    created = sorted(_mock_artifacts() - before)
+    if created:
+        pytest.fail(f"test created files from mocked config paths: {created}")
+
+
+# ---------------------------------------------------------------------------
 # Local-target persistence check
 # ---------------------------------------------------------------------------
 
@@ -345,7 +376,19 @@ def pytest_sessionfinish(session, exitstatus):
     aiosqlite spawns a daemon thread per connection that blocks on
     SimpleQueue.get(). When connections are GC'd without explicit close(),
     the thread never receives the stop sentinel and blocks process exit.
+
+    Also fails the session when tests left files named after a MagicMock in
+    the working directory (rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 to find
+    the test).
     """
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        stray = sorted(_mock_artifacts() - _artifacts_at_start)
+        if stray:
+            print(f"\nTests created files from mocked config paths in {Path.cwd()}: {stray}\n"
+                  "Rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 (without -n) to find the test.")
+            if session.exitstatus == 0:
+                session.exitstatus = 1
+            exitstatus = session.exitstatus
     alive = [
         t for t in threading.enumerate()
         if t.is_alive() and t != threading.main_thread() and t.daemon

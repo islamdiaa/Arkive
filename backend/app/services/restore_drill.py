@@ -54,6 +54,10 @@ logger = logging.getLogger("arkive.restore_drill")
 DUMP_MANIFEST_NAME = "arkive-dumps-manifest.json"
 DRILL_LABEL = "arkive.drill"
 DRILL_DIR_PREFIX = "drill-"
+# Ownership marker written into every drill scratch dir; the startup sweep only
+# deletes directories that carry it (users may restore into restore_dir too).
+DRILL_MARKER = ".arkive-drill"
+_DRILL_DIR_RE = re.compile(r"^drill-([0-9a-f]{32})$")
 
 MIB = 1024 * 1024
 # Without a host path for the restore dir, the drill database lives in
@@ -75,13 +79,14 @@ _SQLITE_UNVERIFIABLE_MARKERS = (
     "no such tokenizer",
 )
 _SQLITE_EXTENSIONS = (".sqlite3", ".sqlite", ".db")
+# Dump *file* names are sanitised by the dumper (safe_name); restic --include
+# treats them as patterns, so anything else is refused.
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _UNSAFE_CHARS_RE = re.compile(r"[^a-zA-Z0-9_.\-]")
 _DUMP_NAME_RE = re.compile(r"^(?P<prefix>.+)_(?P<ts>\d{8}_\d{6})\.(?P<ext>[A-Za-z0-9.]+)$")
 _NON_DUMP_FILES = {DUMP_MANIFEST_NAME, "arkive_self.db"}
 _NON_DUMP_PREFIXES = ("flash_",)
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
-_PG_CONNECT_DBNAME_RE = re.compile(r"dbname='?([A-Za-z0-9_.\-]+)'?")
 
 # Paths inside the throwaway container (chosen here, never user-controlled).
 CONTAINER_DUMP_DIR = "/arkive-drill"
@@ -123,6 +128,105 @@ def _safe(value: str) -> str:
     return _UNSAFE_CHARS_RE.sub("_", value)
 
 
+def valid_pg_dbname(name: str | None) -> bool:
+    """Same rule as the dumper: names only ever reach psql as one argv element
+    or an env var, so the hazards are libpq reading them as a connection string
+    ("=", a URI with "/") or as an option (leading "-"), plus control characters.
+    Spaces, capitals and Unicode are fine."""
+    if not name or name.startswith("-") or "=" in name or "/" in name:
+        return False
+    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
+
+
+def _psql_token(text: str) -> str | None:
+    """First psql meta-command argument: a double-quoted token ("" is a literal
+    quote) or a bare word."""
+    text = text.strip()
+    if not text:
+        return None
+    if not text.startswith('"'):
+        return text.split()[0]
+    out: list[str] = []
+    i = 1
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            if text[i + 1:i + 2] == '"':
+                out.append('"')
+                i += 2
+                continue
+            return "".join(out)
+        out.append(ch)
+        i += 1
+    return None  # unterminated quote
+
+
+def _conninfo_value(conninfo: str, key: str) -> str | None:
+    """Value of ``key`` in a libpq "k=v k='quoted v'" string (backslash escapes;
+    doubled single quotes tolerated)."""
+    i, n = 0, len(conninfo)
+    while i < n:
+        while i < n and conninfo[i].isspace():
+            i += 1
+        start = i
+        while i < n and conninfo[i] != "=" and not conninfo[i].isspace():
+            i += 1
+        name = conninfo[start:i]
+        while i < n and conninfo[i].isspace():
+            i += 1
+        if i >= n or conninfo[i] != "=":
+            return None
+        i += 1
+        while i < n and conninfo[i].isspace():
+            i += 1
+        value: list[str] = []
+        if i < n and conninfo[i] == "'":
+            i += 1
+            while i < n:
+                ch = conninfo[i]
+                if ch == "\\" and i + 1 < n:
+                    value.append(conninfo[i + 1])
+                    i += 2
+                elif ch == "'" and conninfo[i + 1:i + 2] == "'":
+                    value.append("'")
+                    i += 2
+                elif ch == "'":
+                    i += 1
+                    break
+                else:
+                    value.append(ch)
+                    i += 1
+            else:
+                return None  # unterminated quote
+        else:
+            while i < n and not conninfo[i].isspace():
+                if conninfo[i] == "\\" and i + 1 < n:
+                    i += 1
+                value.append(conninfo[i])
+                i += 1
+        if name == key:
+            return "".join(value)
+    return None
+
+
+def parse_pg_connect(arg: str) -> str | None:
+    """Database name from the argument of a pg_dump ``\\connect`` line.
+
+    pg_dump writes ``\\connect appdb``, ``\\connect "MixedCase"`` or, for any
+    other name, ``\\connect -reuse-previous=on "dbname='my db'"``.
+    """
+    arg = arg.strip()
+    reuse_previous = arg.startswith("-reuse-previous=")
+    if reuse_previous:
+        arg = arg.partition(" ")[2]
+    token = _psql_token(arg)
+    if token is None:
+        return None
+    if reuse_previous or (token.startswith("dbname=") and not arg.startswith('"')):
+        return _conninfo_value(token, "dbname")
+    return token
+
+
 def _mb(size_bytes: int) -> int:
     return max(0, round(size_bytes / MIB))
 
@@ -143,6 +247,10 @@ class DrillSkip(Exception):
 
 class DrillFailure(Exception):
     """The dump itself is broken (corrupt, truncated, does not load)."""
+
+
+class DrillRepositoryError(Exception):
+    """The backup repository could not be read (listing or restore failed)."""
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +377,10 @@ def infer_candidates(files: dict[str, dict], known: list[dict],
 
     newest: dict[tuple[str, str, str, str], tuple[str, DumpCandidate]] = {}
     for name, listing in files.items():
-        if (name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES)
-                or name.endswith(_SIDECAR_SUFFIXES) or not _SAFE_NAME_RE.match(name)):
-            continue
+        if (name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES) or name.startswith(".")
+                or name.endswith(_SIDECAR_SUFFIXES) or ".partial" in name
+                or not _SAFE_NAME_RE.match(name)):
+            continue  # not a finished dump (temp file, sidecar, flash archive, ...)
         match = _DUMP_NAME_RE.match(name)
         if not match:
             continue
@@ -317,7 +426,7 @@ def select_candidates(
     history: dict[tuple[str, str], tuple[str, str]],
     max_databases: int,
     max_bytes: int,
-) -> tuple[list[DumpCandidate], list[tuple[DumpCandidate, str]]]:
+) -> tuple[list[DumpCandidate], list[tuple[DumpCandidate, str, str]]]:
     """Choose which dumps to drill.
 
     ``history`` maps (container, db_name) -> (last drilled at, last status).
@@ -325,23 +434,28 @@ def select_candidates(
     rather than rotated away), then never-drilled ones, then the least
     recently drilled. At least one SQL-server database is included when any
     exists, and with two or more slots at least one SQLite database too.
-    Returns (chosen, [(skipped candidate, reason)]).
+
+    Returns (chosen, [(candidate, status, reason)]) for everything not chosen
+    for a reason: a manifest entry missing from the snapshot is ``failed`` (a
+    dump that should be restorable is not there); intentional exclusions
+    (roles dump, untested type, over the size cap) are ``skipped``.
     """
-    skipped: list[tuple[DumpCandidate, str]] = []
+    excluded: list[tuple[DumpCandidate, str, str]] = []
     testable: list[DumpCandidate] = []
     limit_mb = max(1, max_bytes // MIB)
     for cand in candidates:
         if not cand.in_snapshot:
-            skipped.append((cand, "listed in the dump manifest but missing from the snapshot"))
+            excluded.append((cand, "failed",
+                             "listed in the snapshot's dump manifest but missing from the snapshot"))
         elif cand.kind == "globals":
-            skipped.append((cand, "roles/globals dump; not drill-tested"))
+            excluded.append((cand, "skipped", "roles/globals dump; not drill-tested"))
         elif cand.db_type in NOT_DRILLED_TYPES:
-            skipped.append((cand, f"{cand.db_type} dumps are not drill-tested"))
+            excluded.append((cand, "skipped", f"{cand.db_type} dumps are not drill-tested"))
         elif cand.db_type not in DRILLABLE_TYPES:
-            skipped.append((cand, "database type unknown (no manifest entry or discovery record); "
-                                  "not drill-tested"))
+            excluded.append((cand, "skipped", "database type unknown (no manifest entry or "
+                                              "discovery record); not drill-tested"))
         elif cand.size_bytes > max_bytes:
-            skipped.append((cand, f"dump is {_mb(cand.size_bytes)} MB; limit is {limit_mb} MB"))
+            excluded.append((cand, "skipped", f"dump is {_mb(cand.size_bytes)} MB; limit is {limit_mb} MB"))
         else:
             testable.append(cand)
 
@@ -370,7 +484,7 @@ def select_candidates(
         swap_in(lambda c: c.db_type == "sqlite",
                 lambda i: chosen[i].is_sql_server and sql_count() == 1)
     chosen.sort(key=order)
-    return chosen, skipped
+    return chosen, excluded
 
 
 # ---------------------------------------------------------------------------
@@ -482,12 +596,8 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
             elif postgres and line.startswith(b"COPY ") and line.rstrip().endswith(b"FROM stdin;"):
                 in_copy = True
             elif postgres and database is None and line.startswith(b"\\connect "):
-                arg = line[len(b"\\connect "):].strip().decode("utf-8", errors="replace")
-                if _SAFE_NAME_RE.match(arg):
-                    database = arg
-                else:
-                    m = _PG_CONNECT_DBNAME_RE.search(arg)
-                    database = m.group(1) if m else None
+                database = parse_pg_connect(
+                    line[len(b"\\connect "):].rstrip(b"\r\n").decode("utf-8", errors="replace"))
     except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
         raise DrillFailure(f"corrupt gzip stream: {exc}") from exc
     finally:
@@ -632,19 +742,23 @@ class RestoreDrillEngine:
         started = time.monotonic()
         drill_dir = Path(self.config.restore_dir) / f"{DRILL_DIR_PREFIX}{drill_id}"
         outcome = DrillOutcome()
+        created_dir = False
         try:
             await self._publish("drill:started", {"drill_id": drill_id})
             logger.info("Restore drill %s started (%s)", drill_id, trigger)
+            await asyncio.to_thread(self._create_drill_dir, drill_dir, drill_id)
+            created_dir = True
             outcome = await self._perform(drill_id, drill_dir)
         except Exception as exc:
             logger.exception("Restore drill %s aborted", drill_id)
             outcome.status = "failed"
             outcome.error_message = redact_credentials(f"Drill aborted: {exc}")[:1000]
         finally:
-            try:
-                await asyncio.to_thread(shutil.rmtree, drill_dir, True)
-            except Exception:
-                pass
+            if created_dir:
+                try:
+                    await asyncio.to_thread(shutil.rmtree, drill_dir, True)
+                except Exception:
+                    pass
             if self._current_drill_id == drill_id:
                 self._current_drill_id = None
 
@@ -679,7 +793,10 @@ class RestoreDrillEngine:
         targets = await self._load_targets()
         if not targets:
             return outcome.skip("no enabled storage targets")
-        found = await self._find_dump_snapshot(targets)
+        try:
+            found = await self._find_dump_snapshot(targets)
+        except DrillRepositoryError as exc:
+            return self._repository_failure(outcome, exc)
         if found is None:
             return outcome.skip("no snapshot contains database dumps")
         target, snapshot_id, short_id, entries = found
@@ -691,7 +808,10 @@ class RestoreDrillEngine:
         candidates: list[DumpCandidate] = []
         manifest = None
         if DUMP_MANIFEST_NAME in files:
-            manifest = await self._read_manifest(target, snapshot_id, drill_dir)
+            try:
+                manifest = await self._read_manifest(target, snapshot_id, short_id, drill_dir)
+            except DrillRepositoryError as exc:
+                return self._repository_failure(outcome, exc)
         if manifest is not None:
             candidates = candidates_from_manifest(manifest, files)
         else:
@@ -701,13 +821,10 @@ class RestoreDrillEngine:
             return outcome.skip(f"snapshot {short_id} contains no database dumps")
 
         history = await self._drill_history()
-        chosen, skipped = select_candidates(candidates, history, max_databases, max_dump_mb * MIB)
-        outcome.results.extend(DrillResult.for_candidate(c, "skipped", reason) for c, reason in skipped)
-        if not chosen:
-            return outcome.skip(f"snapshot {short_id} has no drill-testable database dumps "
-                                f"({len(skipped)} skipped)")
+        chosen, excluded = select_candidates(candidates, history, max_databases, max_dump_mb * MIB)
+        outcome.results.extend(DrillResult.for_candidate(c, status, reason) for c, status, reason in excluded)
 
-        host_restore_dir = await self._resolve_host_restore_dir()
+        host_restore_dir = await self._resolve_host_restore_dir() if chosen else None
         for index, cand in enumerate(chosen):
             result = await self._drill_one(drill_id, index, cand, target, snapshot_id,
                                            drill_dir, host_restore_dir)
@@ -720,11 +837,33 @@ class RestoreDrillEngine:
             outcome.error_message = f"{outcome.failed} database(s) did not restore: {names}"[:1000]
         elif outcome.passed:
             outcome.status = "passed"
+        elif not chosen:
+            outcome.skip(f"snapshot {short_id} has no drill-testable database dumps "
+                         f"({len(excluded)} skipped)")
         else:
-            first = next((r.detail for r in outcome.results
-                          if r.status == "skipped" and r.dump_file in {c.file for c in chosen}), "")
-            outcome.skip(f"no database could be tested: {first}"[:1000])
+            chosen_files = {c.file for c in chosen}
+            reasons = [f"{r.container_name}/{r.db_name or r.dump_file}: {r.detail}"
+                       for r in outcome.results if r.status == "skipped" and r.dump_file in chosen_files]
+            outcome.skip((f"no database could be tested ({len(reasons)} selected, none could be "
+                          f"started or restored for testing): " + "; ".join(reasons))[:1000])
         return outcome
+
+    @staticmethod
+    def _repository_failure(outcome: DrillOutcome, exc: Exception) -> DrillOutcome:
+        target = getattr(exc, "target", None)
+        if target:
+            outcome.target_id = target.get("id")
+            outcome.target_name = target.get("name") or target.get("id")
+        outcome.snapshot_id = getattr(exc, "snapshot_id", None) or outcome.snapshot_id
+        outcome.status = "failed"
+        outcome.error_message = redact_credentials(str(exc))[:1000]
+        return outcome
+
+    @staticmethod
+    def _create_drill_dir(drill_dir: Path, drill_id: str) -> None:
+        drill_dir.parent.mkdir(parents=True, exist_ok=True)
+        drill_dir.mkdir()  # never adopt an existing directory
+        (drill_dir / DRILL_MARKER).write_text(drill_id)
 
     async def _drill_one(self, drill_id: str, index: int, cand: DumpCandidate, target: dict,
                          snapshot_id: str, drill_dir: Path, host_restore_dir: str | None) -> DrillResult:
@@ -763,8 +902,10 @@ class RestoreDrillEngine:
             if type(exc).__name__ == "DockerUnavailableError":
                 status, detail = "skipped", f"Docker is not reachable: {exc}"
             else:
+                # An unexpected error means the dump was not (fully) tested; it
+                # is not evidence that the dump is broken.
                 logger.exception("Drill of %s/%s errored", cand.container_name, cand.db_name)
-                status, detail = "failed", f"drill error: {exc}"
+                status, detail = "skipped", f"drill error, dump not tested: {exc}"
         finally:
             await asyncio.to_thread(shutil.rmtree, work, True)
         log = logger.warning if status == "failed" else logger.info
@@ -834,20 +975,33 @@ class RestoreDrillEngine:
         for attempt, (entrypoint, command, label) in enumerate(attempts):
             container = None
             try:
-                container = self._create_container(
-                    docker, drill_id, index, attempt, spec, entrypoint, command, volumes,
-                )
-                if tar_path is not None:
-                    with open(tar_path, "rb") as fh:
-                        if not container.put_archive("/", fh):
-                            raise DrillSkip("could not copy the dump into the drill container")
-                container.start()
-                ready, why = self._wait_ready(container, spec)
+                # Until the server is ready nothing about the dump has been
+                # tested: start-up problems (s6 images, required env, resource
+                # limits, slow storage) are "skipped", never "failed".
+                try:
+                    container = self._create_container(
+                        docker, drill_id, index, attempt, spec, entrypoint, command, volumes,
+                    )
+                    if tar_path is not None:
+                        with open(tar_path, "rb") as fh:
+                            if not container.put_archive("/", fh):
+                                raise DrillSkip("could not copy the dump into the drill container")
+                    container.start()
+                    ready, why = self._wait_ready(container, spec)
+                except DrillSkip:
+                    raise
+                except Exception as exc:
+                    if type(exc).__name__ == "DockerUnavailableError":
+                        raise
+                    raise DrillSkip(f"could not start a throwaway {spec.db_type} server from {image}: "
+                                    f"{exc}; the dump was not tested") from exc
                 if not ready:
                     if why.startswith("container exited") and attempt + 1 < len(attempts):
                         notes.append(f"with the {label}: {why}")
                         continue
-                    raise DrillFailure(f"database server from {image} did not start: {why}")
+                    raise DrillSkip(f"database server from {image} did not start ({why}); "
+                                    "the dump was not tested")
+                # Server is up: from here on a problem is a real restore failure.
                 status, detail = self._load_and_check(container, spec, prepared, cand)
                 if notes:
                     detail += f" (retried with the {label}; {notes[0][:200]})"
@@ -858,7 +1012,7 @@ class RestoreDrillEngine:
                 if attempt + 1 < len(attempts):
                     shutil.rmtree(data_dir, ignore_errors=True)
                     data_dir.mkdir(parents=True, exist_ok=True)
-        raise DrillFailure("database server did not start")  # pragma: no cover - loop always returns
+        raise DrillSkip("database server did not start")  # pragma: no cover - loop always returns
 
     def _source_details(self, docker, cand: DumpCandidate) -> tuple[str | None, dict, Any, Any]:
         attrs: dict = {}
@@ -1049,8 +1203,11 @@ class RestoreDrillEngine:
         timeout = self._load_timeout(prepared.size_bytes)
         load_started = time.monotonic()
         if spec.is_postgres:
-            database = prepared.database or cand.db_name
-            if not database or not _SAFE_NAME_RE.match(database):
+            # The manifest / history name is authoritative; the dump's own
+            # \\connect line is the fallback.
+            database = next((name for name in (cand.db_name, prepared.database)
+                             if valid_pg_dbname(name)), None)
+            if database is None:
                 raise DrillFailure("could not determine which database the dump creates")
             maintenance_db = "template1" if database == "postgres" else "postgres"
             env = {"PGPASSWORD": spec.password, "ARKIVE_DRILL_USER": spec.pg_user,
@@ -1127,9 +1284,19 @@ class RestoreDrillEngine:
         if not root.is_dir():
             return
         for entry in root.iterdir():
-            if not entry.name.startswith(DRILL_DIR_PREFIX) or not entry.is_dir():
+            # Only directories this engine created: exact name format AND the
+            # ownership marker naming the same drill. A user restore into e.g.
+            # restore_dir/drill-recovery is never touched.
+            match = _DRILL_DIR_RE.match(entry.name)
+            if not match or entry.is_symlink() or not entry.is_dir():
                 continue
-            if self._current_drill_id and entry.name == f"{DRILL_DIR_PREFIX}{self._current_drill_id}":
+            if match.group(1) == self._current_drill_id:
+                continue
+            try:
+                owner = (entry / DRILL_MARKER).read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if owner != match.group(1):
                 continue
             shutil.rmtree(entry, ignore_errors=True)
             logger.info("Removed stale drill directory %s", entry)
@@ -1192,11 +1359,15 @@ class RestoreDrillEngine:
                     return True
             return False
 
+        errors: list[str] = []
         for target in targets:
+            name = target.get("name") or target.get("id")
             try:
-                snapshots = await self.backup_engine.snapshots(target)
+                snapshots = await self._list_snapshots(target)
             except Exception as exc:
-                logger.warning("Drill: listing snapshots on %s failed: %s", target.get("name"), exc)
+                # An unreachable/locked/corrupt repository is not an empty one.
+                logger.warning("Drill: listing snapshots on %s failed: %s", name, exc)
+                errors.append(f"{name}: {exc}")
                 continue
             matching = [s for s in snapshots or [] if isinstance(s, dict) and covers(s.get("paths"))]
             if not matching:
@@ -1207,12 +1378,43 @@ class RestoreDrillEngine:
                 continue
             short_id = str(snap.get("short_id") or snapshot_id[:8])
             entries = await self.backup_engine.ls(target, snapshot_id, dump_dir)
+            # restic ls of a directory always lists the directory itself, so an
+            # empty listing of a snapshot taken of that exact path means ls failed.
+            exact = any(os.path.normpath(str(p)) == dump_dir for p in snap.get("paths") or [])
+            if not entries and exact:
+                error = DrillRepositoryError(
+                    f"could not list {dump_dir} in snapshot {short_id} on {name} (restic ls failed)")
+                error.target, error.snapshot_id = target, short_id
+                raise error
             return target, snapshot_id, short_id, entries or []
+        if errors:
+            raise DrillRepositoryError("could not list snapshots: " + "; ".join(errors))
         return None
 
-    async def _read_manifest(self, target: dict, snapshot_id: str, drill_dir: Path) -> dict | None:
+    async def _list_snapshots(self, target: dict) -> list[dict]:
+        """Snapshots of ``target``; raises when restic fails (never [] on error)."""
+        lister = getattr(self.backup_engine, "list_snapshots", None)
+        if lister is None:
+            return await self.backup_engine.snapshots(target)
+        return await lister(target)
+
+    async def _read_manifest(self, target: dict, snapshot_id: str, short_id: str,
+                             drill_dir: Path) -> dict | None:
+        """The dump manifest stored in the snapshot.
+
+        Raises DrillRepositoryError when it cannot be restored or is corrupt
+        (the repository is what a drill tests). Returns None only for a
+        manifest in a format this version doesn't understand (inference is
+        used instead).
+        """
         dump_dir = str(self.config.dump_dir).rstrip("/")
         restore_to = drill_dir / "manifest"
+
+        def failure(message: str) -> DrillRepositoryError:
+            error = DrillRepositoryError(message)
+            error.target, error.snapshot_id = target, short_id
+            return error
+
         try:
             await asyncio.to_thread(restore_to.mkdir, parents=True, exist_ok=True)
             result = await self.backup_engine.restore(
@@ -1220,20 +1422,26 @@ class RestoreDrillEngine:
                 paths=[f"{dump_dir}/{DUMP_MANIFEST_NAME}"], restore_to=str(restore_to),
             )
             if result.get("status") != "success":
-                logger.warning("Drill: could not restore the dump manifest: %s", result.get("error"))
-                return None
+                raise failure(f"restoring the dump manifest from snapshot {short_id} failed: "
+                              f"{result.get('error') or 'restic returned an error'}")
             path = restore_to / dump_dir.lstrip("/") / DUMP_MANIFEST_NAME
 
             def _load() -> dict | None:
-                if not path.is_file() or path.stat().st_size > MAX_MANIFEST_BYTES:
+                if not path.is_file():
+                    raise failure(f"the dump manifest is missing after restoring it from snapshot {short_id}")
+                if path.stat().st_size > MAX_MANIFEST_BYTES:
+                    logger.warning("Drill: dump manifest is implausibly large; inferring from history")
                     return None
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return data if isinstance(data, dict) and isinstance(data.get("dumps"), list) else None
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise failure(f"the dump manifest in snapshot {short_id} is unreadable: {exc}") from exc
+                if isinstance(data, dict) and isinstance(data.get("dumps"), list):
+                    return data
+                logger.warning("Drill: unrecognised dump manifest format; inferring from history")
+                return None
 
             return await asyncio.to_thread(_load)
-        except Exception as exc:
-            logger.warning("Drill: unreadable dump manifest, inferring from history: %s", exc)
-            return None
         finally:
             await asyncio.to_thread(shutil.rmtree, restore_to, True)
 

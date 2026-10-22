@@ -335,8 +335,8 @@ class ArkiveScheduler:
                     # first, or retention never thins them out.
                     try:
                         relabel = await self.backup_engine.normalize_legacy_hostnames(
-                            target, str(self.config.dump_dir))
-                        if relabel.get("status") == "failed":
+                            target, str(self.config.dump_dir), await self._owned_snapshot_ids(target["id"]))
+                        if isinstance(relabel, dict) and relabel.get("status") == "failed":
                             logger.warning("Could not re-label legacy snapshots on target %s: %s",
                                            target["id"], relabel.get("error"))
                     except Exception as e:
@@ -374,6 +374,20 @@ class ArkiveScheduler:
             logger.error("System job: retention cleanup failed: %s", e)
         finally:
             self._release_backup_lock()
+
+    async def _owned_snapshot_ids(self, target_id: str) -> set[str]:
+        """Snapshot IDs this instance's own backup runs recorded for a target."""
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                cursor = await db.execute(
+                    "SELECT DISTINCT snapshot_id FROM job_run_targets "
+                    "WHERE target_id = ? AND snapshot_id IS NOT NULL AND snapshot_id != ''",
+                    (target_id,),
+                )
+                return {row[0] for row in await cursor.fetchall()}
+        except Exception as e:
+            logger.warning("Could not read snapshot history for target %s: %s", target_id, e)
+            return set()
 
     async def _run_health_check(self) -> None:
         """System job: test connectivity for all enabled storage targets."""

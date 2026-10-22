@@ -6,6 +6,12 @@ compresses with zstd and, unlike a gzip stream, a plain dump deduplicates
 between runs. ``dump_compression = "gzip"`` pipes the stream through
 ``gzip --rsyncable``, which still lets restic reuse unchanged regions.
 
+Dump files are named ``<dump_prefix(...)>_<UTC YYYYmmdd_HHMMSS><ext>``; the
+prefix carries a hash of the database identity so distinct databases never
+share a cleanup group. Dumps are written to ``<final>.<rand>.partial`` and
+renamed into place only after they were validated, so an interrupted dump can
+never become "the newest dump" that cleanup keeps.
+
 After every run the dump directory carries ``arkive-dumps-manifest.json``
 describing each dump file (source container/image, database, kind,
 compression, size, integrity), see ``write_dump_manifest``.
@@ -27,7 +33,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from collections import Counter
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,8 +82,12 @@ _NON_DUMP_PREFIXES = ("flash_",)
 _NON_DUMP_FILES = {"arkive_self.db", DUMP_MANIFEST_NAME}
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _DUMP_TS_PATTERN = re.compile(r"^(.+?)_(\d{8}_\d{6})\.")
+# New-style prefixes end in "-<8 hex identity hash>"; older dumps lack it.
+_HASHED_PREFIX = re.compile(r"^(?P<base>.+)-[0-9a-f]{8}$")
 _MANIFEST_TMP_PREFIX = f".{DUMP_MANIFEST_NAME}."
 _STALE_TMP_SECONDS = 3600
+PARTIAL_SUFFIX = ".partial"
+_STALE_PARTIAL_SECONDS = 6 * 3600
 
 _manifest_lock = threading.Lock()
 
@@ -92,15 +102,43 @@ def postgres_user_from_env(env: dict[str, str]) -> str:
     return env.get("POSTGRES_USER") or env.get("DB_USERNAME") or env.get("DB_USER") or "postgres"
 
 
+def dump_prefix(container_name: str, db_type: str, db_name: str, host_path: str | None = None,
+                kind: str = "database") -> str:
+    """Grouping prefix of a database's dump files: ``<safe container>_<safe label>-<hash8>``.
+
+    Dump files are ``<prefix>_<UTC timestamp><ext>`` and ``cleanup_dump_dir``
+    groups (and protects) by exactly this prefix. The hash covers the full
+    identity, so databases whose names collapse to the same file-safe form
+    (``sales data`` vs ``sales_data``; container ``a`` + db ``b_c`` vs ``a_b`` +
+    ``c``; same-basename SQLite files) never share a group, and the roles dump
+    (``kind="globals"``) never collides with a database named ``globals``.
+    ``mysql`` and ``mariadb`` are the same type here (dumps report ``mariadb``).
+    """
+    db_type = "mariadb" if db_type == "mysql" else db_type
+    identity = "\0".join([container_name, db_type, db_name, host_path or ""])
+    if kind != "database":
+        identity = f"{kind}\0{identity}"
+    digest = hashlib.sha1(identity.encode()).hexdigest()[:8]  # nosec B324 — file naming, not security
+    label = GLOBALS_DB_NAME if kind == "globals" else db_name
+    return f"{safe_name(container_name)}_{safe_name(label)}-{digest}"
+
+
+def _prefix_base(prefix: str) -> str | None:
+    """``<safe container>_<safe label>`` of a hashed prefix; None for an old-style prefix."""
+    match = _HASHED_PREFIX.match(prefix)
+    return match.group("base") if match else None
+
+
 def dump_compression_of(file_name: str) -> str:
     return "gzip" if file_name.endswith(".gz") else "none"
 
 
 def is_dump_file_name(name: str) -> bool:
-    """True for per-database dump files (not flash archives, sidecars, the manifest...)."""
+    """True for finished per-database dump files (not flash archives, sidecars,
+    in-progress ``.partial`` files, the manifest...)."""
     if name.startswith(".") or name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
         return False
-    return not name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+    return not name.endswith((PARTIAL_SUFFIX, *_SQLITE_SIDECAR_SUFFIXES))
 
 
 def is_arkive_dump_name(name: str) -> bool:
@@ -320,6 +358,8 @@ def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) ->
     name = path.name
     match = _DUMP_TS_PATTERN.match(name)
     prefix = match.group(1) if match else name.split(".", 1)[0]
+    # "<container>_<label>-<hash>" (current) or "<container>_<label>" (older).
+    prefix = _prefix_base(prefix) or prefix
     kind = "database"
     db_type = "unknown"
     if name.endswith((".sql", ".sql.gz")):
@@ -417,14 +457,36 @@ def _dump_sort_key(path: Path) -> str:
     return match.group(2) if match else path.name
 
 
-def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7) -> int:
+def _remove_stale(path: Path, max_age_seconds: float) -> bool:
+    try:
+        if path.stat().st_mtime < time.time() - max_age_seconds:
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7,
+                     protect_prefixes: set[str] | None = None) -> int:
     """Prune the database dump directory.
 
-    Keeps the newest ``keep_last`` dumps per container/database and removes
-    any dump older than ``max_age_days`` (dumps of containers that no longer
-    exist would otherwise be re-uploaded in every snapshot forever). A
-    database's dumps are grouped regardless of format, so switching between
-    ``.sql`` and ``.sql.gz`` leaves only the newest. Orphaned SQLite
+    Dumps are grouped by their ``dump_prefix`` (regardless of format, so
+    switching between ``.sql`` and ``.sql.gz`` leaves only the newest). Per
+    group the newest ``keep_last`` dumps are kept. Dumps older than
+    ``max_age_days`` are removed too (dumps of containers that no longer exist
+    would otherwise be re-uploaded in every snapshot forever), except the
+    newest dump of each group in ``protect_prefixes`` (databases that still
+    exist keep their last good dump however old it is). ``max_age_days=None``
+    disables age-based removal.
+
+    Older dumps named without the identity hash (``<container>_<label>_<ts>``)
+    still group by that legacy prefix; such a group is removed once a newer
+    hashed dump with the same ``<container>_<label>`` exists, and is protected
+    like the hashed prefix it corresponds to until then.
+
+    In-progress ``.partial`` files are never treated as dumps; ones older than
+    6 hours (left by a crash) are deleted. Orphaned SQLite
     ``-wal``/``-shm``/``-journal`` sidecars are removed with their base file.
     Flash archives, the Arkive self-backup and the dump manifest are left
     alone; the manifest is rewritten without the removed files.
@@ -435,20 +497,25 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
         return 0
     keep_last = max(keep_last, 1)
     cutoff = time.time() - max_age_days * 86400 if max_age_days else None
+    protected = set(protect_prefixes or ())
+    protected_bases = {base for base in map(_prefix_base, protected) if base}
 
     groups: dict[str, list[Path]] = {}
     sidecars: list[Path] = []
+    removed = 0
     for path in dump_dir.iterdir():
         if not path.is_file():
             continue
         name = path.name
         if name.startswith(_MANIFEST_TMP_PREFIX):
             # Left behind by a crash mid-write; never the live manifest.
-            try:
-                if path.stat().st_mtime < time.time() - _STALE_TMP_SECONDS:
-                    path.unlink()
-            except OSError:
-                pass
+            _remove_stale(path, _STALE_TMP_SECONDS)
+            continue
+        if name.endswith(PARTIAL_SUFFIX):
+            # A dump still being written (or abandoned by a crash).
+            if _remove_stale(path, _STALE_PARTIAL_SECONDS):
+                removed += 1
+                logger.info("Removed abandoned partial dump: %s", path)
             continue
         if name.startswith(".") or name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES):
             continue
@@ -459,21 +526,35 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
         prefix = match.group(1) if match else name
         groups.setdefault(prefix, []).append(path)
 
-    to_remove: list[Path] = []
     for files in groups.values():
         # Newest first by the timestamp in the name (extension-independent).
         files.sort(key=_dump_sort_key, reverse=True)
+
+    # Newest timestamp of the hashed groups per legacy-style base, to retire
+    # dumps written before file names carried the identity hash.
+    newest_hashed: dict[str, str] = {}
+    for prefix, files in groups.items():
+        base = _prefix_base(prefix)
+        if base is not None and _DUMP_TS_PATTERN.match(files[0].name):
+            newest_hashed[base] = max(newest_hashed.get(base, ""), _dump_sort_key(files[0]))
+
+    to_remove: list[Path] = []
+    for prefix, files in groups.items():
+        legacy = _prefix_base(prefix) is None and _DUMP_TS_PATTERN.match(files[0].name) is not None
+        if legacy and newest_hashed.get(prefix, "") > _dump_sort_key(files[0]):
+            to_remove.extend(files)
+            continue
+        is_protected = prefix in protected or (legacy and prefix in protected_bases)
         for index, path in enumerate(files):
             if index >= keep_last:
                 to_remove.append(path)
-            elif cutoff is not None:
+            elif cutoff is not None and not (is_protected and index == 0):
                 try:
                     if path.stat().st_mtime < cutoff:
                         to_remove.append(path)
                 except OSError:
                     continue
 
-    removed = 0
     removed_names = {p.name for p in to_remove}
     for path in to_remove:
         try:
@@ -533,9 +614,6 @@ class DBDumper:
         self.config = config
         self.dump_dir = config.dump_dir
         self.dump_dir.mkdir(parents=True, exist_ok=True)
-        # (container, db_name) pairs shared by several distinct databases,
-        # e.g. two SQLite files both named credentials.db in one container.
-        self._name_collisions: set[tuple[str, str]] = set()
         # Output format for logical dumps; refreshed from the dump_compression
         # setting at the start of every dump_all / dump_single.
         self.compression = SETTING_DEFAULTS.get("dump_compression", "none")
@@ -550,26 +628,40 @@ class DBDumper:
     def _sql_ext(self) -> str:
         return ".sql.gz" if self.compression == "gzip" else ".sql"
 
-    def _dump_path(self, db: DiscoveredDatabase, ts: str, ext: str, db_label: str | None = None) -> str:
-        """Build a unique dump file path for a database."""
-        label = self._safe(db_label or db.db_name)
-        if db.db_type == "postgres" and label == GLOBALS_DB_NAME:
-            # Keep a database literally named "globals" apart from the roles dump.
-            label = f"{label}-db"
-        if (db.container_name, db.db_name) in self._name_collisions and db.host_path:
-            # Same basename in one container — disambiguate by source path so
-            # the dumps don't overwrite each other within the same second.
-            label = f"{label}-{hashlib.sha1(db.host_path.encode()).hexdigest()[:8]}"  # nosec B324
-        return str(self.dump_dir / f"{self._safe(db.container_name)}_{label}_{ts}{ext}")
+    def _dump_path(self, db: DiscoveredDatabase, ts: str, ext: str, kind: str = "database") -> str:
+        """Final dump file path: ``<dump_prefix>_<ts><ext>`` (unique per database identity)."""
+        prefix = dump_prefix(db.container_name, db.db_type, db.db_name, db.host_path, kind=kind)
+        return str(self.dump_dir / f"{prefix}_{ts}{ext}")
+
+    @staticmethod
+    def _partial_path(final_path: str) -> str:
+        """Unique in-progress path next to ``final_path`` (renamed into place when valid)."""
+        return f"{final_path}.{uuid.uuid4().hex[:8]}{PARTIAL_SUFFIX}"
+
+    @staticmethod
+    def _discard(path: str) -> None:
+        """Remove an unfinished dump file (and SQLite sidecars); missing is fine."""
+        for candidate in (path, *(path + suffix for suffix in _SQLITE_SIDECAR_SUFFIXES)):
+            try:
+                os.remove(candidate)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning("Could not remove unfinished dump %s: %s", candidate, e)
 
     async def _load_compression(self) -> str:
         """Read the dump_compression setting; default on any problem."""
         default = SETTING_DEFAULTS.get("dump_compression", "none")
         db_path = getattr(self.config, "db_path", None)
         try:
-            if not isinstance(db_path, (str, os.PathLike)) or not os.path.isfile(db_path):
+            if not isinstance(db_path, (str, os.PathLike)):
                 return default
-            async with aiosqlite.connect(db_path) as db:
+            # Convert first: os.stat() would treat an object with __index__
+            # (e.g. a mocked config attribute) as a file descriptor.
+            db_file = os.fspath(db_path)
+            if not isinstance(db_file, str) or not os.path.isfile(db_file):
+                return default
+            async with aiosqlite.connect(db_file) as db:
                 value = await get_setting(db, "dump_compression", default)
         except Exception as e:
             logger.warning("Could not read dump_compression setting, using %r: %s", default, e)
@@ -597,7 +689,8 @@ class DBDumper:
     def _exec_stream_to_file(
         self, container, cmd: list[str], dump_path: str, environment: dict | None = None,
     ) -> StreamResult:
-        """Run ``cmd`` in ``container`` and stream stdout into ``dump_path``.
+        """Run ``cmd`` in ``container`` and stream stdout into ``dump_path``
+        (callers pass the ``.partial`` path and rename it once validated).
 
         The output is written chunk by chunk (never buffered whole) as plain
         bytes or through gzip, per ``self.compression``. The completion-trailer
@@ -656,9 +749,14 @@ class DBDumper:
 
     def _streamed_dump_result(
         self, db: DiscoveredDatabase, db_type: str, tool: str, dump_path: str,
-        stream: StreamResult, trailer: bytes | None,
+        stream: StreamResult, trailer: bytes | None, partial_path: str | None = None,
     ) -> DumpResult:
-        """Turn a streamed dump into a DumpResult, detecting failure and truncation."""
+        """Turn a streamed dump into a DumpResult, detecting failure and truncation.
+
+        The stream was written to ``partial_path``; only a dump that passed
+        every check is renamed to ``dump_path``. A failed one is left for the
+        caller to discard.
+        """
         def failed(error: str) -> DumpResult:
             return DumpResult(
                 container_name=db.container_name, db_type=db_type,
@@ -692,6 +790,8 @@ class DBDumper:
             logger.warning("%s stderr for %s/%s: %s", tool, db.container_name, db.db_name,
                            redact_credentials(stream.stderr[:500]))
 
+        if partial_path is not None:
+            os.replace(partial_path, dump_path)
         size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
         return DumpResult(
             container_name=db.container_name, db_type=db_type,
@@ -708,8 +808,6 @@ class DBDumper:
         """
         databases = self.dedupe(databases)
         self.compression = await self._load_compression()
-        name_counts = Counter((db.container_name, db.db_name) for db in databases)
-        self._name_collisions = {key for key, count in name_counts.items() if count > 1}
         results: list[DumpResult] = []
         host_paths: dict[int, str | None] = {}
         for db in databases:
@@ -932,6 +1030,7 @@ class DBDumper:
     def _dump_postgres_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Postgres via docker exec with streaming."""
         dump_path = self._dump_path(db, self._timestamp(), self._sql_ext())
+        partial = self._partial_path(dump_path)
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -953,14 +1052,16 @@ class DBDumper:
                 "-d",
                 db_name,
             ]
-            stream = self._exec_stream_to_file(container, exec_cmd, dump_path)
-            return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER)
+            stream = self._exec_stream_to_file(container, exec_cmd, partial)
+            return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER, partial)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="postgres",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
+        finally:
+            self._discard(partial)
 
     def _dump_postgres_globals_blocking(self, container_name: str, connect_db: str) -> DumpResult:
         """Dump a Postgres cluster's roles/tablespaces (pg_dumpall --globals-only).
@@ -970,13 +1071,14 @@ class DBDumper:
         failure is reported like a failed database dump.
         """
         pseudo_db = DiscoveredDatabase(container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME)
-        dump_path = str(self.dump_dir / f"{self._safe(container_name)}_{GLOBALS_DB_NAME}_{self._timestamp()}{self._sql_ext()}")
+        dump_path = self._dump_path(pseudo_db, self._timestamp(), self._sql_ext(), kind="globals")
+        partial = self._partial_path(dump_path)
         try:
             container = self.docker.containers.get(container_name)
             env = self._get_container_env(container)
             pg_user = self._sanitize_identifier(postgres_user_from_env(env))
             options = ["-U", pg_user, "-l", self._sanitize_pg_dbname(connect_db)]
-            stream = self._exec_stream_to_file(container, ["pg_dumpall", "--globals-only", *options], dump_path)
+            stream = self._exec_stream_to_file(container, ["pg_dumpall", "--globals-only", *options], partial)
             failed = (stream.exit_code not in (None, 0)) or PG_DUMPALL_TRAILER not in stream.tail
             if failed and "permission denied" in stream.stderr.lower():
                 logger.warning(
@@ -985,10 +1087,10 @@ class DBDumper:
                     container_name, pg_user,
                 )
                 stream = self._exec_stream_to_file(
-                    container, ["pg_dumpall", "--globals-only", "--no-role-passwords", *options], dump_path,
+                    container, ["pg_dumpall", "--globals-only", "--no-role-passwords", *options], partial,
                 )
             result = self._streamed_dump_result(
-                pseudo_db, "postgres", "pg_dumpall", dump_path, stream, PG_DUMPALL_TRAILER,
+                pseudo_db, "postgres", "pg_dumpall", dump_path, stream, PG_DUMPALL_TRAILER, partial,
             )
         except Exception as e:
             result = DumpResult(
@@ -996,95 +1098,99 @@ class DBDumper:
                 dump_path=dump_path, dump_size_bytes=0, integrity_check="skipped",
                 status="failed", error=redact_credentials(str(e)),
             )
+        finally:
+            self._discard(partial)
         result.kind = "globals"
         return result
 
     async def _dump_sqlite(self, db: DiscoveredDatabase) -> DumpResult:
-        """Dump SQLite using HOST sqlite3 binary on bind-mounted path."""
+        """Dump SQLite using HOST sqlite3 binary on bind-mounted path.
+
+        The copy is made into a ``.partial`` file and renamed into place only
+        when it passed ``PRAGMA integrity_check`` (or the check could not run
+        because of an app-specific collation/extension). A corrupt copy is a
+        failed dump, so the previous good dump is kept.
+        """
         dump_path = self._dump_path(db, self._timestamp(), ".sqlite3")
 
-        if not db.host_path:
+        def failed(error: str, integrity: str = "skipped", path: str = "") -> DumpResult:
             return DumpResult(
                 container_name=db.container_name, db_type="sqlite",
-                db_name=db.db_name, dump_path="", dump_size_bytes=0,
-                integrity_check="skipped", status="failed",
-                error="No host path available for SQLite backup",
+                db_name=db.db_name, dump_path=path, dump_size_bytes=0,
+                integrity_check=integrity, status="failed", error=error,
             )
+
+        if not db.host_path:
+            return failed("No host path available for SQLite backup")
 
         # Validate host_path is absolute and does not contain traversal
         host_path = os.path.normpath(db.host_path)
         if not os.path.isabs(host_path) or ".." in db.host_path:
-            return DumpResult(
-                container_name=db.container_name, db_type="sqlite",
-                db_name=db.db_name, dump_path="", dump_size_bytes=0,
-                integrity_check="skipped", status="failed",
-                error="Invalid host path: must be absolute with no traversal",
-            )
+            return failed("Invalid host path: must be absolute with no traversal")
 
-        # Use host sqlite3 binary — NEVER cp
-        # shlex.quote() prevents injection via dump_path containing spaces/special chars
-        async def _run_backup(source: str):
-            return await run_command(["sqlite3", source, f".backup {shlex.quote(dump_path)}"])
+        partial = self._partial_path(dump_path)
+        try:
+            # Use host sqlite3 binary — NEVER cp
+            # shlex.quote() prevents injection via dump_path containing spaces/special chars
+            async def _run_backup(source: str):
+                return await run_command(["sqlite3", source, f".backup {shlex.quote(partial)}"])
 
-        result = await _run_backup(host_path)
-        backup_error = (result.stderr or result.stdout or "").strip()
+            result = await _run_backup(host_path)
+            backup_error = (result.stderr or result.stdout or "").strip()
 
-        # Some live SQLite files mounted read-only into Arkive can fail to open
-        # unless we tell SQLite to treat the source as immutable.
-        if ("unable to open database file" in backup_error.lower()) or result.returncode != 0:
-            immutable_source = f"file:{host_path}?mode=ro&immutable=1"
-            retry = await _run_backup(immutable_source)
-            retry_error = (retry.stderr or retry.stdout or "").strip()
-            if retry.returncode == 0 and os.path.exists(dump_path) and os.path.getsize(dump_path) > 0:
-                result = retry
+            # Some live SQLite files mounted read-only into Arkive can fail to open
+            # unless we tell SQLite to treat the source as immutable.
+            if ("unable to open database file" in backup_error.lower()) or result.returncode != 0:
+                immutable_source = f"file:{host_path}?mode=ro&immutable=1"
+                retry = await _run_backup(immutable_source)
+                retry_error = (retry.stderr or retry.stdout or "").strip()
+                if retry.returncode == 0 and os.path.exists(partial) and os.path.getsize(partial) > 0:
+                    result = retry
+                else:
+                    return failed(retry_error or backup_error, "failed", dump_path)
+
+            if result.returncode != 0:
+                return failed(result.stderr, "failed", dump_path)
+
+            # .backup preserves the source's WAL journal mode; switch the copy to a
+            # rollback journal so it is a single self-contained file and opening it
+            # (integrity check, restore) doesn't leave -wal/-shm sidecars behind.
+            await run_command(["sqlite3", partial, "PRAGMA journal_mode=DELETE;"])
+
+            # Integrity check
+            integrity_detail = None
+            check_result = await run_command(["sqlite3", partial, "PRAGMA integrity_check"])
+            check_output = f"{check_result.stdout}\n{check_result.stderr}".lower()
+            if any(marker in check_output for marker in _SQLITE_UNVERIFIABLE_MARKERS):
+                # App-specific collation/extension (e.g. Plex icu_root) — the
+                # stock sqlite3 binary cannot evaluate it, which is not corruption.
+                integrity = "skipped"
+                integrity_detail = "unverifiable"
+            elif check_result.returncode == 0 and check_result.stdout.strip().lower() == "ok":
+                integrity = "ok"
             else:
-                combined = retry_error or backup_error
-                return DumpResult(
-                    container_name=db.container_name, db_type="sqlite",
-                    db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="failed", status="failed", error=combined,
-                )
+                detail = (check_result.stdout or check_result.stderr or "").strip()[:300]
+                logger.warning("SQLite integrity check failed for %s/%s: %s", db.container_name, db.db_name, detail)
+                return failed(f"SQLite integrity check failed on the copy: {detail or 'no output'}",
+                              "failed", dump_path)
 
-        if result.returncode != 0:
+            size = os.path.getsize(partial) if os.path.exists(partial) else 0
+            if size == 0:
+                return failed("SQLite backup produced an empty file", "failed", dump_path)
+            os.replace(partial, dump_path)
             return DumpResult(
                 container_name=db.container_name, db_type="sqlite",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="failed", status="failed", error=result.stderr,
+                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
+                integrity_check=integrity, status="success",
+                integrity_detail=integrity_detail,
             )
-
-        # .backup preserves the source's WAL journal mode; switch the copy to a
-        # rollback journal so it is a single self-contained file and opening it
-        # (integrity check, restore) doesn't leave -wal/-shm sidecars behind.
-        await run_command(["sqlite3", dump_path, "PRAGMA journal_mode=DELETE;"])
-
-        # Integrity check
-        integrity = "skipped"
-        integrity_detail = None
-        check_result = await run_command(["sqlite3", dump_path, "PRAGMA integrity_check"])
-        check_output = f"{check_result.stdout}\n{check_result.stderr}".lower()
-        if any(marker in check_output for marker in _SQLITE_UNVERIFIABLE_MARKERS):
-            # App-specific collation/extension (e.g. Plex icu_root) — the
-            # stock sqlite3 binary cannot evaluate it, which is not corruption.
-            integrity = "skipped"
-            integrity_detail = "unverifiable"
-        elif check_result.returncode == 0 and check_result.stdout.strip().lower() == "ok":
-            integrity = "ok"
-        else:
-            integrity = "failed"
-            logger.warning("SQLite integrity check failed for %s/%s: %s", db.container_name, db.db_name,
-                           (check_result.stdout or check_result.stderr)[:300].strip())
-
-        size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-        return DumpResult(
-            container_name=db.container_name, db_type="sqlite",
-            db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-            integrity_check=integrity, status="success" if size > 0 else "failed",
-            integrity_detail=integrity_detail,
-        )
+        finally:
+            self._discard(partial)
 
     def _dump_mariadb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MariaDB/MySQL via docker exec with streaming."""
         dump_path = self._dump_path(db, self._timestamp(), self._sql_ext())
+        partial = self._partial_path(dump_path)
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -1120,19 +1226,23 @@ class DBDumper:
             if mysql_password:
                 exec_env["MYSQL_PWD"] = mysql_password
             exec_cmd.extend(["--databases", db_name])
-            stream = self._exec_stream_to_file(container, exec_cmd, dump_path, environment=exec_env)
-            return self._streamed_dump_result(db, "mariadb", dump_binary, dump_path, stream, MYSQL_DUMP_TRAILER)
+            stream = self._exec_stream_to_file(container, exec_cmd, partial, environment=exec_env)
+            return self._streamed_dump_result(db, "mariadb", dump_binary, dump_path, stream,
+                                              MYSQL_DUMP_TRAILER, partial)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="mariadb",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
+        finally:
+            self._discard(partial)
 
     def _dump_mongodb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MongoDB via docker exec with authentication support."""
         ext = ".archive.gz" if self.compression == "gzip" else ".archive"
         dump_path = self._dump_path(db, self._timestamp(), ext)
+        partial = self._partial_path(dump_path)
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -1149,14 +1259,16 @@ class DBDumper:
                     "--authenticationDatabase", "admin",
                 ])
 
-            stream = self._exec_stream_to_file(container, exec_cmd, dump_path)
-            return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None)
+            stream = self._exec_stream_to_file(container, exec_cmd, partial)
+            return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None, partial)
         except Exception as e:
             return DumpResult(
                 container_name=db.container_name, db_type="mongodb",
                 db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
             )
+        finally:
+            self._discard(partial)
 
     def _redis_auth_env(self, container) -> dict[str, str]:
         """REDISCLI_AUTH for password-protected Redis (never passed in argv)."""
@@ -1177,9 +1289,29 @@ class DBDumper:
 
     def _dump_redis_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Redis via BGSAVE (non-blocking) + LASTSAVE polling."""
-        ts = self._timestamp()
-        safe_container = re.sub(r'[^a-zA-Z0-9_.\-]', '_', db.container_name)
-        dump_path = str(self.dump_dir / f"{safe_container}_redis_{ts}.rdb")
+        dump_path = self._dump_path(db, self._timestamp(), ".rdb")
+        partial = self._partial_path(dump_path)
+
+        def copied_result(source: str | None) -> DumpResult:
+            """Copy ``source`` (None: already in ``partial``) and move it into place."""
+            try:
+                if source is not None:
+                    shutil.copy2(source, partial)
+                size = os.path.getsize(partial) if os.path.exists(partial) else 0
+                if size > 0:
+                    os.replace(partial, dump_path)
+            except Exception as e:
+                return DumpResult(
+                    container_name=db.container_name, db_type="redis",
+                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
+                    integrity_check="skipped", status="failed", error=str(e),
+                )
+            return DumpResult(
+                container_name=db.container_name, db_type="redis",
+                db_name="redis", dump_path=dump_path, dump_size_bytes=size,
+                integrity_check="skipped", status="success" if size > 0 else "failed",
+                error=None if size > 0 else "Copied RDB file is empty",
+            )
 
         try:
             container = self.docker.containers.get(db.container_name)
@@ -1271,51 +1403,20 @@ class DBDumper:
                     relative = rdb_container_path[len(destination):].lstrip("/")
                     host_rdb = os.path.join(source, relative)
                     if os.path.exists(host_rdb):
-                        try:
-                            shutil.copy2(host_rdb, dump_path)
-                        except Exception as e:
-                            return DumpResult(
-                                container_name=db.container_name, db_type="redis",
-                                db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                                integrity_check="skipped", status="failed", error=str(e),
-                            )
-                        size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-                        return DumpResult(
-                            container_name=db.container_name, db_type="redis",
-                            db_name="redis", dump_path=dump_path, dump_size_bytes=size,
-                            integrity_check="skipped", status="success" if size > 0 else "failed",
-                        )
+                        return copied_result(host_rdb)
 
             # Fallback: scan all mount sources for the rdb filename
             for mount in mounts:
                 source = mount.get("Source", "")
                 rdb_path = os.path.join(source, rdb_filename)
                 if os.path.exists(rdb_path):
-                    try:
-                        shutil.copy2(rdb_path, dump_path)
-                    except Exception as e:
-                        return DumpResult(
-                            container_name=db.container_name, db_type="redis",
-                            db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                            integrity_check="skipped", status="failed", error=str(e),
-                        )
-                    size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-                    return DumpResult(
-                        container_name=db.container_name, db_type="redis",
-                        db_name="redis", dump_path=dump_path, dump_size_bytes=size,
-                        integrity_check="skipped", status="success" if size > 0 else "failed",
-                    )
+                    return copied_result(rdb_path)
 
             copied, archive_error = self._copy_file_from_container_archive(
-                container, rdb_container_path, dump_path
+                container, rdb_container_path, partial
             )
             if copied:
-                size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
-                return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=size,
-                    integrity_check="skipped", status="success" if size > 0 else "failed",
-                )
+                return copied_result(None)
 
             return DumpResult(
                 container_name=db.container_name, db_type="redis",
@@ -1329,10 +1430,14 @@ class DBDumper:
                 db_name="redis", dump_path=dump_path, dump_size_bytes=0,
                 integrity_check="skipped", status="failed", error=str(e),
             )
+        finally:
+            self._discard(partial)
 
-    def cleanup_old_dumps(self, keep_last: int = 1, max_age_days: int | None = 7) -> int:
+    def cleanup_old_dumps(self, keep_last: int = 1, max_age_days: int | None = 7,
+                          protect_prefixes: set[str] | None = None) -> int:
         """Prune the dump directory. See ``cleanup_dump_dir``."""
-        return cleanup_dump_dir(self.dump_dir, keep_last=keep_last, max_age_days=max_age_days)
+        return cleanup_dump_dir(self.dump_dir, keep_last=keep_last, max_age_days=max_age_days,
+                                protect_prefixes=protect_prefixes)
 
     async def dump_single(self, container_name: str, db_name: str, db_type: str,
                           host_path: str | None = None, verify_integrity: bool = True) -> DumpResult:

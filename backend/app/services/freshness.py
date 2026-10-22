@@ -13,6 +13,7 @@ had databases before, dumped at least one.
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 import aiosqlite
 from croniter import croniter
@@ -48,29 +49,40 @@ def _fmt(value: datetime) -> str:
 def schedule_gap_hours(schedule: str, now: datetime | None = None) -> float | None:
     """Longest interval between consecutive runs of a cron schedule, in hours.
 
-    Measured over the past week so uneven schedules ("0 6,18 * * *",
-    weekdays only) are judged by their longest gap. Returns None for an
-    invalid schedule.
+    Judged over at least the past week (so uneven schedules such as
+    "0 6,18 * * *" or weekdays-only count their longest gap) and at least
+    three runs (so sparse schedules — monthly, yearly — still get a gap).
+    Returns None for an invalid schedule. Cached per hour: /api/status calls
+    this on every dashboard poll.
     """
     now = (now or datetime.now(timezone.utc)).astimezone()
+    return _schedule_gap(schedule, now.replace(minute=0, second=0, microsecond=0))
+
+
+_MAX_SAMPLED_RUNS = 3000
+
+
+@lru_cache(maxsize=512)
+def _schedule_gap(schedule: str, now: datetime) -> float | None:
     try:
         if not croniter.is_valid(schedule):
             return None
-        for window_days, max_fires in ((8, 3000), (400, 600)):
-            it = croniter(schedule, now - timedelta(days=window_days))
-            fires: list[datetime] = []
-            while len(fires) < max_fires:
-                fire = it.get_next(datetime)
-                if fire > now:
-                    fires.append(fire)
-                    break
-                fires.append(fire)
-            if len(fires) >= 3:
-                gaps = [(b - a).total_seconds() for a, b in zip(fires, fires[1:])]
-                return max(gaps) / 3600
-    except (ValueError, KeyError, TypeError) as exc:
+        fires = [croniter(schedule, now).get_next(datetime)]
+        # get_prev excludes its start time; start just after `now` so a run
+        # exactly at `now` (likely: `now` is rounded to the hour) is counted.
+        it = croniter(schedule, now + timedelta(seconds=1))
+        cutoff = now - timedelta(days=8)
+        while len(fires) < _MAX_SAMPLED_RUNS:
+            fire = it.get_prev(datetime)
+            fires.append(fire)
+            if len(fires) >= 3 and fire < cutoff:
+                break
+    except Exception as exc:  # croniter raises assorted errors for impossible dates
         logger.debug("Cannot compute schedule gap for %r: %s", schedule, exc)
-    return None
+        return None
+    fires.sort()
+    gaps = [(b - a).total_seconds() for a, b in zip(fires, fires[1:])]
+    return max(gaps) / 3600 if gaps else None
 
 
 def threshold_hours_for(schedule: str, override_hours: int = 0, now: datetime | None = None) -> float | None:
@@ -83,6 +95,8 @@ def threshold_hours_for(schedule: str, override_hours: int = 0, now: datetime | 
     return round(gap + max(GRACE_MIN_HOURS, gap * GRACE_FRACTION), 2)
 
 
+# A target row is "partial" when restic exited 3: the snapshot was written but
+# some files were unreadable. That snapshot still protects the rest.
 _GOOD_RUN_SQL = """
     SELECT jr.started_at
     FROM job_runs jr
@@ -92,12 +106,13 @@ _GOOD_RUN_SQL = """
         OR (
           jr.status = 'partial'
           AND EXISTS (SELECT 1 FROM job_run_targets t
-                      WHERE t.run_id = jr.id AND t.status = 'success')
+                      WHERE t.run_id = jr.id AND t.status IN ('success', 'partial'))
           AND (
             :needs_databases = 0
             OR jr.databases_dumped > 0
-            OR NOT EXISTS (SELECT 1 FROM job_runs p
-                           WHERE p.job_id = jr.job_id AND p.databases_dumped > 0)
+            OR (jr.databases_discovered = 0
+                AND NOT EXISTS (SELECT 1 FROM job_runs p
+                                WHERE p.job_id = jr.job_id AND p.databases_dumped > 0))
           )
         )
       )
@@ -118,8 +133,9 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
     """Assess every enabled job.
 
     Returns ``{"stale", "healthy", "checked_at", "stale_jobs", "jobs"}``.
-    ``healthy`` is True when nothing is stale and no job's latest finished
-    run was bad — the condition for sending the heartbeat.
+    ``healthy`` is True when at least one job is enabled, nothing is stale and
+    no job's latest finished run was bad — the condition for sending the
+    heartbeat.
     """
     now = now or datetime.now(timezone.utc)
     result = {"stale": False, "healthy": True, "checked_at": _fmt(now), "stale_jobs": [], "jobs": []}
@@ -130,6 +146,7 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
         )
         jobs = await cursor.fetchall()
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        result["healthy"] = False
         return result
 
     override = await get_int_setting(db, "stale_backup_hours", minimum=0)
@@ -179,6 +196,9 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
             result["healthy"] = False
 
     result["stale"] = bool(result["stale_jobs"])
+    if not jobs:
+        # Nothing is being backed up: never tell the heartbeat monitor all is well.
+        result["healthy"] = False
     return result
 
 

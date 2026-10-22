@@ -20,8 +20,10 @@ import aiosqlite
 import pytest
 
 from app.core.database import init_db, run_migrations
+from app.services.backup_engine import ResticError
 import app.services.restore_drill as rd
 from app.services.restore_drill import (
+    DRILL_MARKER,
     DUMP_MANIFEST_NAME,
     MIB,
     DrillAlreadyRunningError,
@@ -30,8 +32,10 @@ from app.services.restore_drill import (
     RestoreDrillEngine,
     candidates_from_manifest,
     infer_candidates,
+    parse_pg_connect,
     prepare_sql_dump,
     select_candidates,
+    valid_pg_dbname,
     verify_sqlite_file,
 )
 
@@ -123,16 +127,29 @@ class FakeBackupEngine:
         self.sizes = sizes or {}
         self.restore_calls: list[tuple[list[str], str]] = []
         self.restore_status = "success"
+        self.restore_fail_for: set[str] = set()  # basenames whose restore fails
+        self.list_error: dict[str, str] = {}  # target id -> restic error
+        self.ls_fails = False
         self._snapshots = snapshots if snapshots is not None else [
             {"id": "b" * 64, "short_id": "bbbbbbbb", "paths": ["/mnt/user/appdata"]},
             {"id": "a" * 64, "short_id": "aaaaaaaa", "paths": [self.dump_dir, "/mnt/user/appdata"]},
         ]
 
-    async def snapshots(self, target):
+    async def list_snapshots(self, target):
+        if target["id"] in self.list_error:
+            raise ResticError(self.list_error[target["id"]])
         return self._snapshots
+
+    async def snapshots(self, target):
+        try:
+            return await self.list_snapshots(target)
+        except ResticError:
+            return []
 
     async def ls(self, target, snapshot_id, path):
         assert path == self.dump_dir
+        if self.ls_fails:
+            return []  # what BackupEngine.ls returns when restic fails
         entries = [{"name": "dumps", "type": "directory", "size": None}]
         for name, data in self.files.items():
             entries.append({"name": name, "type": "file", "size": self.sizes.get(name, len(data))})
@@ -140,7 +157,8 @@ class FakeBackupEngine:
 
     async def restore(self, target, snapshot_id, paths=None, restore_to=None):
         self.restore_calls.append((list(paths or []), restore_to))
-        if self.restore_status != "success":
+        if self.restore_status != "success" or any(os.path.basename(p) in self.restore_fail_for
+                                                   for p in paths or []):
             return {"status": "failed", "error": "repository unreachable"}
         for p in paths or []:
             dest = Path(restore_to) / p.lstrip("/")
@@ -340,8 +358,8 @@ class TestSelection:
             ("b", "b.db"): ("2026-10-15T07:00:00Z", "failed"),
             ("d", "d"): ("2026-09-01T07:00:00Z", "passed"),
         }
-        chosen, skipped = select_candidates(cands, history, 3, 2048 * MIB)
-        assert skipped == []
+        chosen, excluded = select_candidates(cands, history, 3, 2048 * MIB)
+        assert excluded == []
         assert [c.container_name for c in chosen] == ["b", "c", "d"]
 
     def test_size_cap_and_untested_types_are_skipped_with_reasons(self):
@@ -353,9 +371,10 @@ class TestSelection:
                           db_name="globals", kind="globals"),
             _cand("ok", "postgres", "ok"),
         ]
-        chosen, skipped = select_candidates(cands, {}, 3, 2048 * MIB)
+        chosen, excluded = select_candidates(cands, {}, 3, 2048 * MIB)
         assert [c.container_name for c in chosen] == ["ok"]
-        reasons = {c.container_name: r for c, r in skipped}
+        assert {status for _, status, _ in excluded} == {"skipped"}
+        reasons = {c.container_name: r for c, _, r in excluded}
         assert reasons["big"] == "dump is 3000 MB; limit is 2048 MB"
         assert reasons["cache"] == "redis dumps are not drill-tested"
         assert reasons["docs"] == "mongodb dumps are not drill-tested"
@@ -374,10 +393,12 @@ class TestSelection:
         chosen, _ = select_candidates(cands, {}, 2, 2048 * MIB)
         assert {c.db_type for c in chosen} == {"postgres", "sqlite"}
 
-    def test_missing_from_snapshot_is_skipped(self):
+    def test_missing_from_snapshot_is_a_failure(self):
         cand = _cand("a", "postgres", "a", in_snapshot=False)
-        chosen, skipped = select_candidates([cand], {}, 3, 2048 * MIB)
-        assert chosen == [] and "missing from the snapshot" in skipped[0][1]
+        chosen, excluded = select_candidates([cand], {}, 3, 2048 * MIB)
+        assert chosen == []
+        assert excluded == [(cand, "failed",
+                             "listed in the snapshot's dump manifest but missing from the snapshot")]
 
 
 class TestCandidates:
@@ -645,10 +666,12 @@ async def test_container_removed_when_exec_raises(tmp_path):
 
     docker.behavior = boom
     summary = await engine.run_drill()
-    assert summary["status"] == "failed"
+    # An infrastructure error is not evidence of a broken dump: not tested -> skipped.
+    assert summary["status"] == "passed"  # the SQLite dump still passed
     assert docker.created and all(c.removed == {"force": True, "v": True} for c in docker.created)
     result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
-    assert "docker exec exploded" in result["detail"]
+    assert result["status"] == "skipped"
+    assert "docker exec exploded" in result["detail"] and "not tested" in result["detail"]
     assert list(cfg.restore_dir.iterdir()) == []
 
 
@@ -778,13 +801,13 @@ async def test_prefers_local_target_and_skips_without_dump_snapshot(tmp_path):
     cfg = await _make_cfg(tmp_path, targets=(("cloud", "B2", "b2"), ("t1", "Local NAS", "local")))
     backup = FakeBackupEngine(cfg.dump_dir, {}, snapshots=[{"id": "c" * 64, "paths": ["/mnt/user/media"]}])
     seen = []
-    original = backup.snapshots
+    original = backup.list_snapshots
 
-    async def snapshots(target):
+    async def list_snapshots(target):
         seen.append(target["id"])
         return await original(target)
 
-    backup.snapshots = snapshots
+    backup.list_snapshots = list_snapshots
     engine = _engine(cfg, backup, FakeDocker())
     summary = await engine.run_drill()
     assert seen == ["t1", "cloud"]
@@ -858,6 +881,258 @@ async def test_start_drill_runs_in_background_and_rejects_second(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Postgres database names
+# ---------------------------------------------------------------------------
+
+
+class TestPostgresNames:
+    @pytest.mark.parametrize("arg, expected", [
+        ("appdb", "appdb"),
+        ('"MixedCase"', "MixedCase"),
+        ('"we""ird"', 'we"ird'),
+        ('-reuse-previous=on "dbname=\'my db\'"', "my db"),
+        ('-reuse-previous=on "dbname=\'café-db\'"', "café-db"),
+        ('-reuse-previous=on "dbname=\'a\\\'b\'"', "a'b"),
+        ('-reuse-previous=on "dbname=\'say ""hi""\'"', 'say "hi"'),
+        ('-reuse-previous=on "dbname=\'it\'\'s\'"', "it's"),
+        ('-reuse-previous=on "dbname=\'unterminated', None),
+    ])
+    def test_parse_connect(self, arg, expected):
+        assert parse_pg_connect(arg) == expected
+
+    def test_name_rule_matches_dumper(self):
+        for ok in ("appdb", "my db", "café", "Immich_DB", "a.b-c"):
+            assert valid_pg_dbname(ok), ok
+        for bad in ("", "-x", "a=b", "postgres://h/db", "a\nb", "a\x00b", "tab\there", None):
+            assert not valid_pg_dbname(bad), bad
+
+    def test_prepare_reads_quoted_connect(self, tmp_path):
+        dump = PG_DUMP.replace(b"\\connect appdb",
+                               b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\"")
+        src = tmp_path / "in.sql"
+        src.write_bytes(dump)
+        assert prepare_sql_dump(src, tmp_path / "out.sql", "postgres").database == "my db"
+
+
+@pytest.mark.asyncio
+async def test_database_name_with_spaces_is_counted_in_that_database(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    dump = PG_DUMP.replace(b"\\connect appdb",
+                           b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\"")
+    name = "pg_my_db_20261022_030000.sql"
+    files = {name: dump, DUMP_MANIFEST_NAME: _manifest([_entry(name, "immich_postgres", "postgres", "my db",
+                                                               image="postgres:16")])}
+    docker = _docker_with_source()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, files), docker)
+    summary = await engine.run_drill()
+    assert summary["status"] == "passed"
+    count = [c for c in docker.created[0].execs if c[0][0] == "psql"][0][0]
+    assert count[count.index("-d") + 1] == "my db"
+
+
+# ---------------------------------------------------------------------------
+# Repository errors are failures, not "nothing to test"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_manifest_entry_missing_from_snapshot_fails_drill(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    files = _standard_files(tmp_path)
+    manifest = json.loads(files[DUMP_MANIFEST_NAME])
+    manifest["dumps"].append(_entry("gone_db_20261022_030000.sql", "gone", "postgres", "db", image="postgres:16"))
+    files[DUMP_MANIFEST_NAME] = json.dumps(manifest).encode()
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, files), _docker_with_source(), notifier)
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE container_name = 'gone'"))[0]
+    assert result["status"] == "failed"
+    assert result["detail"] == "listed in the snapshot's dump manifest but missing from the snapshot"
+    notifier.send.assert_awaited_once()
+    assert "gone/db" in notifier.send.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_unlistable_repository_fails_drill(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    backup.list_error["t1"] = "Fatal: wrong password or no key found"
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, backup, _docker_with_source(), notifier)
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert drill["status"] == "failed"
+    assert "could not list snapshots" in drill["error_message"]
+    assert "wrong password or no key found" in drill["error_message"]
+    notifier.send.assert_awaited_once()
+    assert notifier.send.await_args.args[0] == "drill.failed"
+
+
+@pytest.mark.asyncio
+async def test_listing_error_on_one_target_uses_the_next(tmp_path):
+    cfg = await _make_cfg(tmp_path, targets=(("t1", "Local NAS", "local"), ("cloud", "B2", "b2")))
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    backup.list_error["t1"] = "repository is already locked exclusively"
+    engine = _engine(cfg, backup, _docker_with_source())
+    summary = await engine.run_drill()
+    assert summary["status"] == "passed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert drill["target_id"] == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_listing_errors_without_dump_snapshot_elsewhere_fail(tmp_path):
+    cfg = await _make_cfg(tmp_path, targets=(("t1", "Local NAS", "local"), ("cloud", "B2", "b2")))
+    backup = FakeBackupEngine(cfg.dump_dir, {}, snapshots=[{"id": "c" * 64, "paths": ["/mnt/user/media"]}])
+    backup.list_error["t1"] = "unable to open config file"
+    engine = _engine(cfg, backup, FakeDocker())
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert "Local NAS: unable to open config file" in drill["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_ls_failure_fails_drill(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    backup.ls_fails = True
+    engine = _engine(cfg, backup, _docker_with_source())
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert "restic ls failed" in drill["error_message"]
+    assert (drill["target_id"], drill["snapshot_id"]) == ("t1", "aaaaaaaa")
+
+
+@pytest.mark.asyncio
+async def test_manifest_restore_failure_fails_drill(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    backup.restore_fail_for = {DUMP_MANIFEST_NAME}
+    engine = _engine(cfg, backup, _docker_with_source())
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert "restoring the dump manifest" in drill["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_corrupt_manifest_fails_drill(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    files = _standard_files(tmp_path)
+    files[DUMP_MANIFEST_NAME] = b'{"version": 1, "dumps": [ {"file": '
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, files), _docker_with_source())
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert "unreadable" in drill["error_message"]
+
+
+# ---------------------------------------------------------------------------
+# A server that never becomes ready means "not tested", not "broken dump"
+# ---------------------------------------------------------------------------
+
+
+def _pg_only_files():
+    return {PG_FILE: PG_DUMP,
+            DUMP_MANIFEST_NAME: _manifest([_entry(PG_FILE, "immich_postgres", "postgres", "appdb",
+                                                  image="postgres:16")])}
+
+
+async def _assert_not_tested(cfg, summary, notifier, needle):
+    assert summary["status"] == "skipped"
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "skipped" and needle in result["detail"], result["detail"]
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert drill["status"] == "skipped"
+    assert "no database could be tested" in drill["error_message"]
+    assert "immich_postgres/appdb" in drill["error_message"] and needle in drill["error_message"]
+    notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_server_that_keeps_exiting_is_skipped(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    docker = _docker_with_source()
+    docker.start_status = lambda c: "exited"
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, _pg_only_files()), docker, notifier)
+    summary = await engine.run_drill()
+    await _assert_not_tested(cfg, summary, notifier, "did not start")
+    assert len(docker.created) == 2 and all(c.removed for c in docker.created)
+
+
+@pytest.mark.asyncio
+async def test_readiness_timeout_is_skipped(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    docker = FakeDocker()  # source gone -> one attempt with the image defaults
+    original = docker.behavior
+    docker.behavior = lambda c, cmd, env: (2, b"no response") if cmd[0] == "pg_isready" else original(c, cmd, env)
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, _pg_only_files()), docker, notifier)
+    engine.ready_timeout_seconds = 0
+    summary = await engine.run_drill()
+    await _assert_not_tested(cfg, summary, notifier, "not ready after")
+    assert docker.created[0].removed
+
+
+@pytest.mark.asyncio
+async def test_container_create_error_is_skipped(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    docker = _docker_with_source()
+
+    def refuse(**kwargs):
+        raise RuntimeError("409 Conflict: invalid mount config")
+
+    docker.containers.create = refuse
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, _pg_only_files()), docker, notifier)
+    summary = await engine.run_drill()
+    await _assert_not_tested(cfg, summary, notifier, "invalid mount config")
+
+
+@pytest.mark.asyncio
+async def test_unavailable_image_is_skipped(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    docker = _docker_with_source()
+    del docker.image_configs["postgres:16"]
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, _pg_only_files()), docker, notifier)
+    summary = await engine.run_drill()
+    await _assert_not_tested(cfg, summary, notifier, "is not available")
+    assert docker.created == []
+
+
+@pytest.mark.asyncio
+async def test_drill_dir_has_ownership_marker_while_running(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    seen = {}
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    original = backup.restore
+
+    async def restore(**kwargs):
+        drill_dir = Path(kwargs["restore_to"]).parents[1]
+        if drill_dir.name.startswith("drill-"):
+            seen[drill_dir.name] = (drill_dir / DRILL_MARKER).read_text()
+        return await original(**kwargs)
+
+    backup.restore = restore
+    engine = _engine(cfg, backup, _docker_with_source())
+    summary = await engine.run_drill()
+    assert seen == {f"drill-{summary['drill_id']}": summary["drill_id"]}
+    assert list(cfg.restore_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
 # Startup sweep
 # ---------------------------------------------------------------------------
 
@@ -869,11 +1144,21 @@ async def test_recover_after_restart_and_container_sweep(tmp_path):
         await db.execute("INSERT INTO restore_drills (id, status) VALUES ('old', 'running')")
         await db.execute("INSERT INTO restore_drills (id, status) VALUES ('done', 'passed')")
         await db.commit()
-    stale = cfg.restore_dir / "drill-old" / "db-0" / "work" / "data"
+    old_id = "0" * 31 + "1"
+    stale = cfg.restore_dir / f"drill-{old_id}" / "db-0" / "data"
     stale.mkdir(parents=True)
     (stale / "PG_VERSION").write_text("16")
-    other = cfg.restore_dir / "restore-123"
-    other.mkdir()
+    (cfg.restore_dir / f"drill-{old_id}" / DRILL_MARKER).write_text(old_id)
+    # Not ours: user restores, wrong name format, no marker, mismatching marker.
+    kept = []
+    for name, marker in (("restore-123", None), ("drill-recovery", "drill-recovery"),
+                         ("drill-" + "a" * 32, None), ("drill-" + "b" * 32, "c" * 32)):
+        d = cfg.restore_dir / name
+        (d / "data").mkdir(parents=True)
+        (d / "data" / "important.txt").write_text("user data")
+        if marker:
+            (d / DRILL_MARKER).write_text(marker)
+        kept.append(d)
     docker = FakeDocker()
     leftover = FakeContainer(docker, {"name": "arkive-drill-old-0-0", "labels": {"arkive.drill": "old"}})
     docker.leftovers = [leftover]
@@ -885,8 +1170,9 @@ async def test_recover_after_restart_and_container_sweep(tmp_path):
     rows = {r["id"]: r for r in await _rows(cfg, "SELECT * FROM restore_drills")}
     assert rows["old"]["status"] == "failed" and rows["old"]["error_message"] == "Interrupted by restart"
     assert rows["done"]["status"] == "passed"
-    assert not (cfg.restore_dir / "drill-old").exists()
-    assert other.exists()  # user restores are left alone
+    assert not (cfg.restore_dir / f"drill-{old_id}").exists()
+    for d in kept:  # user restores are left alone
+        assert (d / "data" / "important.txt").read_text() == "user data", d
     assert removed == 1 and leftover.removed == {"force": True, "v": True}
 
 

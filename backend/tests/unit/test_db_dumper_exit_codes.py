@@ -313,10 +313,14 @@ class TestSQLiteInjection:
 
         calls = []
 
+        integrity_ok = MagicMock(returncode=0, stderr="", stdout="ok\n")
+
         async def fake_run(cmd, **kwargs):
             backup_arg = cmd[2]
+            if backup_arg.startswith("PRAGMA integrity_check"):
+                return integrity_ok
             if not backup_arg.startswith(".backup "):
-                return second  # PRAGMA calls on the finished dump
+                return second  # PRAGMA journal_mode on the finished copy
             calls.append(cmd)
             path = shlex.split(backup_arg.replace(".backup ", ""))[0]
             if len(calls) == 2:

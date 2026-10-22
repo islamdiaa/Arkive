@@ -37,19 +37,21 @@ export async function copyText(text: string): Promise<boolean> {
 	} catch {
 		/* fall through to the legacy path */
 	}
+	// The text may be a secret (the recovery kit): the temporary textarea must
+	// leave the DOM even when selecting or copying throws.
+	const area = document.createElement('textarea');
 	try {
-		const area = document.createElement('textarea');
 		area.value = text;
 		area.setAttribute('readonly', '');
 		area.style.position = 'fixed';
 		area.style.opacity = '0';
 		document.body.appendChild(area);
 		area.select();
-		const ok = document.execCommand('copy');
-		area.value = '';
-		area.remove();
-		return ok;
+		return document.execCommand('copy');
 	} catch {
 		return false;
+	} finally {
+		area.value = '';
+		area.remove();
 	}
 }

@@ -107,7 +107,7 @@ async def test_docker_unavailable_marks_run_partial_and_still_uploads(config):
     assert row["status"] == "partial"
     assert "container discovery failed" in row["error_message"]
     orch.notifier.send.assert_awaited()
-    assert orch.notifier.send.await_args.args[0] == "backup.failed"
+    assert orch.notifier.send.await_args.args[0] == "backup.partial"
 
 
 @pytest.mark.asyncio
@@ -199,22 +199,22 @@ async def test_missing_watched_directory_is_reported(config, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_drop_to_zero_databases_is_flagged_once(config):
+async def test_drop_to_zero_databases_stops_warning_after_the_window(config):
+    """Databases last seen more than database_loss_window_days ago count as
+    intentionally removed."""
     async with aiosqlite.connect(config.db_path) as db:
         await db.execute(
             """INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered)
-               VALUES ('prev', 'job-db', 'success', '2026-01-01T00:00:00Z', 12)"""
+               VALUES ('prev', 'job-db', 'success',
+                       strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-45 days'), 12)"""
         )
         await db.commit()
     discovery = MagicMock(scan=AsyncMock(return_value=[_container("web", [])]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock())
 
-    first = await orch.run_backup("job-db", run_id="r-zero-1")
-    second = await orch.run_backup("job-db", run_id="r-zero-2")
+    result = await orch.run_backup("job-db", run_id="r-zero-1")
 
-    assert first["status"] == "partial"
-    assert "previous run found 12" in (await _run_row(config, "r-zero-1"))["error_message"]
-    assert second["status"] == "success"
+    assert result["status"] == "success"
 
 
 @pytest.mark.asyncio
@@ -342,12 +342,15 @@ async def test_cloud_target_rclone_config_written_before_upload(config):
 
 
 @pytest.mark.asyncio
-async def test_local_target_dir_gets_exclusion_marker(config, tmp_path):
+async def test_arkive_storage_is_excluded_by_exact_path(config, tmp_path):
+    """Local repositories and the restore dir are excluded with --exclude on
+    their exact paths. No marker is written into the target's configured
+    directory, which may be a parent of real data (e.g. /mnt/user/appdata)."""
     from app.core.security import encrypt_config
     from app.services.backup_engine import EXCLUDE_MARKER
 
-    repo_parent = tmp_path / "local-backup"
-    repo_parent.mkdir()
+    repo_parent = tmp_path / "appdata"
+    (repo_parent / "some-app").mkdir(parents=True)
     async with aiosqlite.connect(config.db_path) as db:
         await db.execute(
             "UPDATE storage_targets SET config = ? WHERE id = 't1'",
@@ -358,12 +361,50 @@ async def test_local_target_dir_gets_exclusion_marker(config, tmp_path):
 
     await orch.run_backup("job-full", run_id="r-mark")
 
-    assert (repo_parent / EXCLUDE_MARKER).exists()
-    assert (config.restore_dir / EXCLUDE_MARKER).exists()
+    excludes = orch.backup_engine.backup.await_args.args[2]
+    assert str(repo_parent / "arkive-repo") in excludes
+    assert str(config.restore_dir) in excludes
+    assert str(repo_parent) not in excludes
+    assert not (repo_parent / EXCLUDE_MARKER).exists()
 
 
 @pytest.mark.asyncio
-async def test_stale_dumps_pruned_even_without_docker(config):
+async def test_notification_event_matches_outcome(config):
+    orch = make_orchestrator(config, backup_result={
+        "status": "partial", "snapshot_id": "abc", "total_bytes_processed": 10,
+        "error": "Some files could not be read: /x",
+    })
+    await orch.run_backup("job-flash", run_id="r-evt-partial")
+    assert orch.notifier.send.await_args.args[0] == "backup.partial"
+
+    orch = make_orchestrator(config, backup_result={"status": "failed", "error": "repo locked"})
+    await orch.run_backup("job-flash", run_id="r-evt-failed")
+    args = orch.notifier.send.await_args
+    assert args.args[0] == "backup.failed" and args.kwargs["severity"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_database_loss_keeps_warning_on_consecutive_empty_runs(config):
+    """5 -> 0 -> 0: the second empty run must still be partial."""
+    async with aiosqlite.connect(config.db_path) as db:
+        await db.execute(
+            "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped) "
+            "VALUES ('had-dbs', 'job-db', 'success', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 days'), 5, 5)")
+        await db.commit()
+    discovery = MagicMock(scan=AsyncMock(return_value=[]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock())
+
+    first = await orch.run_backup("job-db", run_id="empty-1")
+    second = await orch.run_backup("job-db", run_id="empty-2")
+
+    assert first["status"] == "partial" and second["status"] == "partial"
+    assert "a recent run found 5" in (await _run_row(config, "empty-2"))["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_dumps_are_not_aged_out_when_discovery_is_incomplete(config):
+    """Docker down (or a job that doesn't dump databases): this run can't tell
+    a vanished database from an unreachable one, so no dump is aged out."""
     import os
     import time
 
@@ -375,5 +416,58 @@ async def test_stale_dumps_pruned_even_without_docker(config):
 
     await orch.run_backup("job-flash", run_id="r-prune")
 
-    assert not old.exists()
+    assert old.exists()
 
+
+@pytest.mark.asyncio
+async def test_dumps_of_vanished_databases_age_out_but_stopped_ones_are_kept(config):
+    import os
+    import time
+
+    from app.services.db_dumper import dump_prefix
+
+    stale = time.time() - 30 * 86400
+    gone = config.dump_dir / f"{dump_prefix('gone', 'postgres', 'app')}_20200101_000000.sql"
+    stopped_db = _db("pg-old")
+    kept = config.dump_dir / f"{dump_prefix('pg-old', 'postgres', 'app')}_20200101_000000.sql"
+    for f in (gone, kept):
+        f.write_bytes(b"-- PostgreSQL database dump complete\n")
+        os.utime(f, (stale, stale))
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg-old", [stopped_db], status="exited")]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock(dump_all=AsyncMock(return_value=[])))
+
+    result = await orch.run_backup("job-db", run_id="r-age")
+
+    assert result["status"] == "success"
+    assert not gone.exists()
+    assert kept.exists()
+
+
+@pytest.mark.asyncio
+async def test_enumeration_warning_makes_run_partial_and_blocks_age_out(config):
+    import os
+    import time
+
+    db = _db("pg")
+    container = _container("pg", [db])
+    container.warnings = ["could not list databases in pg (timeout); only app is being backed up"]
+    other = config.dump_dir / "pg_otherdb-0123abcd_20200101_000000.sql"
+    other.write_bytes(b"x")
+    stale = time.time() - 30 * 86400
+    os.utime(other, (stale, stale))
+    discovery = MagicMock(scan=AsyncMock(return_value=[container]))
+    orch = make_orchestrator(config, discovery=discovery,
+                             db_dumper=MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db)])))
+
+    result = await orch.run_backup("job-db", run_id="r-enum")
+
+    assert result["status"] == "partial"
+    assert "could not list databases in pg" in (await _run_row(config, "r-enum"))["error_message"]
+    assert other.exists()
+
+
+@pytest.mark.asyncio
+async def test_partial_dump_files_are_excluded_from_snapshots(config):
+    orch = make_orchestrator(config)
+    await orch.run_backup("job-flash", run_id="r-partial-ex")
+    assert "*.partial" in orch.backup_engine.backup.await_args.args[2]

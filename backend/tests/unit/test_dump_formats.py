@@ -9,6 +9,7 @@ arkive-dumps-manifest.json, and Redis AUTH via REDISCLI_AUTH.
 import gzip
 import json
 import os
+import re
 import sqlite3
 import time
 import tracemalloc
@@ -24,6 +25,7 @@ from app.services.db_dumper import (
     DUMP_MANIFEST_NAME,
     DBDumper,
     cleanup_dump_dir,
+    dump_prefix,
     read_dump_manifest,
     write_dump_manifest,
 )
@@ -289,7 +291,8 @@ class TestPlainTruncation:
         assert db_result.status == "failed"
         assert "incomplete" in db_result.error
         assert not os.path.exists(db_result.dump_path)
-        assert not [n for n in _files(mock_config.dump_dir) if "_app_" in n]
+        app_prefix = dump_prefix("pg", "postgres", "app")
+        assert not [n for n in _files(mock_config.dump_dir) if n.startswith(app_prefix) or n.endswith(".partial")]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("compression", ["none", "gzip"])
@@ -624,7 +627,8 @@ class TestGlobals:
         assert [(r.container_name, r.db_name, r.db_type, r.status) for r in globals_results] == [
             ("pg", "globals", "postgres", "success"), ("pg2", "globals", "postgres", "success")]
         assert globals_results[0].integrity_check == "ok"
-        assert os.path.basename(globals_results[0].dump_path).startswith("pg_globals_")
+        assert os.path.basename(globals_results[0].dump_path).startswith(
+            dump_prefix("pg", "postgres", "globals", kind="globals") + "_")
         assert globals_results[0].dump_path.endswith(".sql")
         assert Path(globals_results[0].dump_path).read_bytes() == PG_GLOBALS
         dumpall = [c["cmd"] for c in pg.calls if c["cmd"][0] == "pg_dumpall"]
@@ -672,7 +676,7 @@ class TestGlobals:
         result = next(r for r in results if r.kind == "globals")
         assert (result.status, result.db_name, result.db_type) == ("failed", "globals", "postgres")
         assert "permission denied" in result.error
-        assert not [n for n in _files(mock_config.dump_dir) if "_globals_" in n]
+        assert not [n for n in _files(mock_config.dump_dir) if "globals" in n or n.endswith(".partial")]
 
     @pytest.mark.asyncio
     async def test_truncated_globals_fail(self, mock_config):
@@ -694,8 +698,12 @@ class TestGlobals:
     def test_database_named_globals_does_not_collide(self, tmp_path):
         config = MagicMock()
         config.dump_dir = tmp_path
-        path = DBDumper(MagicMock(), config)._dump_path(_pg_db("pg", "globals"), "20261022_220000", ".sql")
-        assert os.path.basename(path) == "pg_globals-db_20261022_220000.sql"
+        dumper = DBDumper(MagicMock(), config)
+        db_path = dumper._dump_path(_pg_db("pg", "globals"), "20261022_220000", ".sql")
+        roles_path = dumper._dump_path(_pg_db("pg", "globals"), "20261022_220000", ".sql", kind="globals")
+        assert db_path != roles_path
+        assert os.path.basename(db_path).startswith(dump_prefix("pg", "postgres", "globals") + "_")
+        assert os.path.basename(roles_path).startswith(dump_prefix("pg", "postgres", "globals", kind="globals") + "_")
 
 
 class TestPgDbnameValidation:
@@ -877,7 +885,8 @@ class TestManifest:
         assert removed == 2
         assert (d / DUMP_MANIFEST_NAME).exists()
         files = sorted(e["file"] for e in read_dump_manifest(d)["dumps"])
-        assert files == ["pg_app_20261022_220000.sql", "pg_globals_20261022_220000.sql"]
+        assert files == sorted([f"{dump_prefix('pg', 'postgres', 'app')}_20261022_220000.sql",
+                                f"{dump_prefix('pg', 'postgres', 'globals', kind='globals')}_20261022_220000.sql"])
         assert files == [n for n in _files(d) if n != DUMP_MANIFEST_NAME]
 
     def test_cleanup_without_manifest_does_not_create_one(self, tmp_path):
@@ -957,3 +966,341 @@ class TestRedisAuth:
     def test_no_password_no_environment(self, tmp_path):
         _, calls = self._redis(tmp_path, cmd=["redis-server"])
         assert all("environment" not in kwargs for _, kwargs in calls)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: identity-hashed names, .partial writes, SQLite integrity,
+# protected cleanup, discovery coverage warnings
+# ---------------------------------------------------------------------------
+
+class TestDumpPrefix:
+    @pytest.mark.parametrize("a,b", [
+        (("pg", "postgres", "sales data"), ("pg", "postgres", "sales_data")),
+        (("a", "postgres", "b_c"), ("a_b", "postgres", "c")),
+        (("app", "sqlite", "creds.db", "/a/creds.db"), ("app", "sqlite", "creds.db", "/b/creds.db")),
+        (("pg", "postgres", "app"), ("pg", "mariadb", "app")),
+    ])
+    def test_lossy_names_get_distinct_prefixes(self, a, b):
+        assert dump_prefix(*a) != dump_prefix(*b)
+
+    def test_roles_dump_never_collides_with_database_named_globals(self):
+        assert dump_prefix("pg", "postgres", "globals") != dump_prefix("pg", "postgres", "globals", kind="globals")
+
+    def test_stable_and_readable(self):
+        prefix = dump_prefix("immich_postgres", "postgres", "immich")
+        assert prefix == dump_prefix("immich_postgres", "postgres", "immich", None)
+        assert re.fullmatch(r"immich_postgres_immich-[0-9a-f]{8}", prefix)
+        assert dump_prefix("db", "mysql", "app") == dump_prefix("db", "mariadb", "app")
+
+    @pytest.mark.asyncio
+    async def test_dump_files_group_under_dump_prefix(self, mock_config):
+        """Cleanup's grouping prefix of every written file is exactly dump_prefix()."""
+        pg = _container("pg", [], _pg_handler)
+        await DBDumper(_docker(pg), mock_config).dump_all([_pg_db("pg", "sales data"), _pg_db("pg", "sales_data")])
+
+        prefixes = {dumper_module._DUMP_TS_PATTERN.match(n).group(1)
+                    for n in _files(mock_config.dump_dir) if n != DUMP_MANIFEST_NAME}
+        assert prefixes == {dump_prefix("pg", "postgres", "sales data"), dump_prefix("pg", "postgres", "sales_data"),
+                            dump_prefix("pg", "postgres", "globals", kind="globals")}
+        # Both colliding-name databases survive cleanup.
+        cleanup_dump_dir(mock_config.dump_dir, keep_last=1, max_age_days=None)
+        assert len([n for n in _files(mock_config.dump_dir) if "sales" in n]) == 2
+
+
+class TestPartialFiles:
+    def test_dump_is_streamed_to_partial_and_renamed_when_valid(self, tmp_path):
+        seen_during_stream = []
+        config = MagicMock()
+        config.dump_dir = tmp_path
+        dumper = DBDumper(MagicMock(), config)
+
+        def output():
+            seen_during_stream.append(_files(tmp_path))
+            yield (pg_dump_output("app"), None)
+            seen_during_stream.append(_files(tmp_path))
+
+        container = MagicMock()
+        container.client.api = None
+        container.attrs = {"Config": {"Env": []}}
+        container.exec_run.return_value = (0, output())
+        dumper.docker.containers.get.return_value = container
+
+        result = dumper._dump_postgres_blocking(_pg_db())
+
+        assert result.status == "success"
+        assert all(len(names) == 1 and names[0].endswith(".partial") for names in seen_during_stream)
+        assert _files(tmp_path) == [os.path.basename(result.dump_path)]
+
+    @pytest.mark.parametrize("method,db,tags", [
+        ("_dump_postgres_blocking", _pg_db(), ("postgres:16",)),
+        ("_dump_mariadb_blocking", DiscoveredDatabase(container_name="pg", db_type="mariadb", db_name="app"),
+         ("mariadb:11",)),
+    ])
+    def test_failed_stream_leaves_no_files(self, tmp_path, method, db, tags):
+        config = MagicMock()
+        config.dump_dir = tmp_path
+        cut = _container("pg", [], lambda cmd: (0, b"-- partial output without trailer\n" * 20, b""), tags=tags)
+        result = getattr(DBDumper(_docker(cut), config), method)(db)
+        assert result.status == "failed"
+        assert _files(tmp_path) == []
+
+    def test_exception_mid_stream_leaves_no_files(self, tmp_path):
+        config = MagicMock()
+        config.dump_dir = tmp_path
+
+        def output():
+            yield (b"-- PostgreSQL database dump\n" * 100, None)
+            raise ConnectionError("docker stream reset")
+
+        container = MagicMock()
+        container.client.api = None
+        container.attrs = {"Config": {"Env": []}}
+        container.exec_run.return_value = (0, output())
+        dumper = DBDumper(MagicMock(), config)
+        dumper.docker.containers.get.return_value = container
+
+        result = dumper._dump_postgres_blocking(_pg_db())
+
+        assert result.status == "failed" and "stream reset" in result.error
+        assert _files(tmp_path) == []
+
+    def test_cleanup_ignores_fresh_partials_and_removes_stale_ones(self, tmp_path):
+        prefix = dump_prefix("pg", "postgres", "app")
+        _touch(tmp_path / f"{prefix}_20261021_100000.sql")
+        _touch(tmp_path / f"{prefix}_20261022_220000.sql.1a2b3c4d.partial")  # in progress, "newer"
+        _touch(tmp_path / f"{prefix}_20261020_100000.sql.deadbeef.partial", age_days=0.5)  # crashed 12h ago
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None)
+        assert _files(tmp_path) == [f"{prefix}_20261021_100000.sql", f"{prefix}_20261022_220000.sql.1a2b3c4d.partial"]
+
+    def test_manifest_lists_only_final_files(self, tmp_path):
+        prefix = dump_prefix("pg", "postgres", "app")
+        (tmp_path / f"{prefix}_20261021_100000.sql").write_bytes(pg_dump_output("app"))
+        (tmp_path / f"{prefix}_20261022_220000.sql.1a2b3c4d.partial").write_bytes(b"-- half")
+        manifest = write_dump_manifest(tmp_path, known_containers={"pg"})
+        assert [e["file"] for e in manifest["dumps"]] == [f"{prefix}_20261021_100000.sql"]
+
+    def test_redis_copy_goes_through_partial(self, tmp_path):
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "dump.rdb").write_bytes(b"REDIS0011" + b"\x00" * 50)
+        replies = iter([b"1709000000\n", b"1709000001\n"])
+
+        def exec_run(command, **kwargs):
+            joined = " ".join(command)
+            if "LASTSAVE" in joined:
+                return 0, next(replies, b"1709000001\n")
+            if "CONFIG GET dir" in joined:
+                return 0, b"dir\n/data\n"
+            if "CONFIG GET dbfilename" in joined:
+                return 0, b"dbfilename\ndump.rdb\n"
+            return 0, b"OK\n"
+
+        container = MagicMock()
+        container.exec_run.side_effect = exec_run
+        container.attrs = {"Config": {"Env": []}, "Mounts": [{"Source": str(data), "Destination": "/data"}]}
+        config = MagicMock()
+        config.dump_dir = tmp_path / "dumps"
+        dumper = DBDumper(MagicMock(), config)
+        dumper.docker.containers.get.return_value = container
+        replaced = []
+        real_replace = os.replace
+        with patch("time.sleep"), patch.object(dumper_module.os, "replace",
+                                               side_effect=lambda a, b: (replaced.append(a), real_replace(a, b))):
+            result = dumper._dump_redis_blocking(
+                DiscoveredDatabase(container_name="cache", db_type="redis", db_name="redis"))
+
+        assert result.status == "success"
+        assert replaced and replaced[0].endswith(".partial")
+        assert _files(config.dump_dir) == [os.path.basename(result.dump_path)]
+        assert os.path.basename(result.dump_path).startswith(dump_prefix("cache", "redis", "redis") + "_")
+
+
+class TestSqliteIntegrityFailure:
+    def _fake_run(self, integrity_stdout, integrity_stderr="", returncode=0):
+        async def fake_run(cmd, **kwargs):
+            if ".backup" in cmd[-1]:
+                Path(cmd[-1].split(" ", 1)[1].strip("'")).write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
+                return CommandResult(0, "", "", 0.1, "")
+            if cmd[-1].startswith("PRAGMA integrity_check"):
+                return CommandResult(returncode, integrity_stdout, integrity_stderr, 0.1, "")
+            return CommandResult(0, "delete", "", 0.1, "")
+        return fake_run
+
+    @pytest.mark.asyncio
+    async def test_corrupt_copy_is_a_failed_dump_and_previous_survives(self, mock_config, tmp_path):
+        src = tmp_path / "src" / "vault.db"
+        src.parent.mkdir()
+        src.write_bytes(b"x")
+        db = DiscoveredDatabase(container_name="vw", db_type="sqlite", db_name="vault.db", host_path=str(src))
+        previous = mock_config.dump_dir / f"{dump_prefix('vw', 'sqlite', 'vault.db', str(src))}_20261021_100000.sqlite3"
+        previous.write_bytes(b"SQLite format 3\x00good")
+        dumper = DBDumper(_docker(), mock_config)
+
+        corrupt = self._fake_run("*** in database main ***\nPage 42: btree page is not a leaf")
+        with patch("app.services.db_dumper.run_command", side_effect=corrupt):
+            (result,) = await dumper.dump_all([db])
+
+        assert result.status == "failed" and result.integrity_check == "failed"
+        assert "btree page is not a leaf" in result.error
+        cleanup_dump_dir(mock_config.dump_dir, keep_last=1, max_age_days=None)
+        assert _files(mock_config.dump_dir) == sorted([previous.name, DUMP_MANIFEST_NAME])
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_schema_is_still_success(self, tmp_path):
+        src = tmp_path / "lib.db"
+        src.write_bytes(b"x")
+        config = MagicMock()
+        config.dump_dir = tmp_path / "dumps"
+        unverifiable = self._fake_run("", "Error: no such collation sequence: icu_root", returncode=1)
+        with patch("app.services.db_dumper.run_command", side_effect=unverifiable):
+            result = await DBDumper(MagicMock(), config)._dump_sqlite(
+                DiscoveredDatabase(container_name="plex", db_type="sqlite", db_name="lib.db", host_path=str(src)))
+        assert result.status == "success" and result.integrity_detail == "unverifiable"
+        assert os.path.exists(result.dump_path)
+
+
+class TestProtectedCleanup:
+    def test_protected_newest_dump_survives_age(self, tmp_path):
+        live = dump_prefix("pg", "postgres", "app")
+        gone = dump_prefix("old", "postgres", "app")
+        _touch(tmp_path / f"{live}_20260901_000000.sql", age_days=50)
+        _touch(tmp_path / f"{live}_20260801_000000.sql", age_days=80)
+        _touch(tmp_path / f"{gone}_20260901_000000.sql", age_days=50)
+
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live})
+
+        assert _files(tmp_path) == [f"{live}_20260901_000000.sql"]
+
+    def test_only_the_newest_protected_dump_is_exempt(self, tmp_path):
+        live = dump_prefix("pg", "postgres", "app")
+        _touch(tmp_path / f"{live}_20260901_000000.sql", age_days=50)
+        _touch(tmp_path / f"{live}_20260801_000000.sql", age_days=80)
+        cleanup_dump_dir(tmp_path, keep_last=2, max_age_days=7, protect_prefixes={live})
+        assert _files(tmp_path) == [f"{live}_20260901_000000.sql"]
+
+    def test_max_age_none_never_deletes_for_age(self, tmp_path):
+        gone = dump_prefix("old", "postgres", "app")
+        _touch(tmp_path / f"{gone}_20200101_000000.sql", age_days=900)
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None, protect_prefixes=set())
+        assert _files(tmp_path) == [f"{gone}_20200101_000000.sql"]
+
+    def test_legacy_dump_is_protected_until_a_hashed_dump_exists(self, tmp_path):
+        live = dump_prefix("pg", "postgres", "app")
+        _touch(tmp_path / "pg_app_20260901_000000.sql.gz", age_days=50)
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live})
+        assert _files(tmp_path) == ["pg_app_20260901_000000.sql.gz"]
+
+        _touch(tmp_path / f"{live}_20261022_220000.sql")
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live})
+        assert _files(tmp_path) == [f"{live}_20261022_220000.sql"]
+
+    def test_legacy_dumps_still_group_and_age_out(self, tmp_path):
+        _touch(tmp_path / "pg_app_20260101_000000.sql.gz", age_days=30)
+        _touch(tmp_path / "pg_app_20260102_000000.sql.gz", age_days=29)
+        assert cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7) == 2
+        assert _files(tmp_path) == []
+
+    def test_legacy_newer_than_hashed_is_kept(self, tmp_path):
+        """A downgrade/upgrade round trip must not delete the newest dump."""
+        live = dump_prefix("pg", "postgres", "app")
+        _touch(tmp_path / f"{live}_20261020_000000.sql")
+        _touch(tmp_path / "pg_app_20261022_000000.sql.gz")
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None, protect_prefixes={live})
+        assert _files(tmp_path) == sorted(["pg_app_20261022_000000.sql.gz", f"{live}_20261020_000000.sql"])
+
+
+class TestHashedNameInference:
+    def test_manifest_infers_hashed_names(self, tmp_path):
+        app = dump_prefix("immich_postgres", "postgres", "immich")
+        roles = dump_prefix("immich_postgres", "postgres", "globals", kind="globals")
+        (tmp_path / f"{app}_20261022_220000.sql").write_bytes(pg_dump_output("immich"))
+        (tmp_path / f"{roles}_20261022_220000.sql").write_bytes(PG_GLOBALS)
+
+        manifest = write_dump_manifest(tmp_path, known_containers={"immich_postgres"})
+
+        by_db = {e["db_name"]: e for e in manifest["dumps"]}
+        assert by_db["immich"]["container_name"] == "immich_postgres"
+        assert by_db["globals"]["kind"] == "globals" and by_db["globals"]["container_name"] == "immich_postgres"
+
+    def test_verify_accepts_hashed_names(self, tmp_path):
+        path = tmp_path / f"{dump_prefix('pg', 'postgres', 'app')}_20261022_220000.sql"
+        path.write_bytes(pg_dump_output("app")[:200])
+        assert VerifyEngine._check_plain_sql_dump(str(path))["status"] == "failed"  # Arkive-named, truncated
+
+
+class TestDiscoveryCoverageWarnings:
+    def _scan(self, mock_config, *containers, profiles=None):
+        from app.services.discovery import DiscoveryEngine
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+        engine.docker = _docker(*containers)
+        engine.profiles = profiles or []
+        for c in containers:
+            c.id = c.name
+            c.labels = getattr(c, "labels", None) if isinstance(getattr(c, "labels", None), dict) else {}
+            c.attrs.setdefault("NetworkSettings", {"Networks": {}})
+        return {c.name: c for c in engine._scan_blocking()}
+
+    def test_enumeration_failure_warns_once_and_keeps_fallback(self, mock_config):
+        pg = _pg_cluster("pg", ["POSTGRES_DB=app"], [], list_exit=2)
+        found = self._scan(mock_config, pg)
+        assert [d.db_name for d in found["pg"].databases] == ["app"]
+        (warning,) = found["pg"].warnings
+        assert warning.startswith("could not list databases in pg (")
+        assert warning.endswith("only app is being backed up")
+        assert "does not exist" in warning
+
+    def test_companion_failure_warns_once(self, mock_config):
+        profile = {"name": "immich", "image_patterns": ["ghcr.io/immich-app/immich-server"],
+                   "databases": [{"type": "postgres", "env_vars": {"db_name": ["POSTGRES_DB"],
+                                                                    "db_host": ["DB_HOSTNAME"]}}]}
+        app = _container("immich_server", ["DB_HOSTNAME=immich_postgres"], lambda cmd: (1, b"", b""),
+                         tags=("ghcr.io/immich-app/immich-server:release",))
+        db = _pg_cluster("immich_postgres", ["POSTGRES_DB=immich"], [], list_exit=2,
+                         tags=("ghcr.io/immich-app/postgres:14",))
+        found = self._scan(mock_config, app, db, profiles=[profile])
+        assert len(found["immich_postgres"].warnings) == 1
+        assert found["immich_server"].warnings == []
+
+    def test_no_warning_when_listing_works_or_container_stopped(self, mock_config):
+        ok = _pg_cluster("pg", ["POSTGRES_DB=app"], ["app", "wiki"])
+        stopped = _pg_cluster("pg2", ["POSTGRES_DB=app"], [], list_exit=2, status="exited")
+        found = self._scan(mock_config, ok, stopped)
+        assert found["pg"].warnings == [] and found["pg2"].warnings == []
+        assert [d.db_name for d in found["pg"].databases] == ["app", "wiki"]
+
+    def test_maintenance_check_failure_warns(self, mock_config):
+        def handler(cmd):
+            if "FROM pg_database" in cmd[-1]:
+                return 0, b"app\npostgres\n", b""
+            return 2, b"", b"psql: error: permission denied for database postgres"
+
+        pg = _container("pg", ["POSTGRES_DB=app"], handler)
+        found = self._scan(mock_config, pg)
+        assert [d.db_name for d in found["pg"].databases] == ["app"]
+        assert "permission denied" in found["pg"].warnings[0]
+
+    def test_warnings_are_not_persisted_and_serialise(self, mock_config):
+        from app.models.discovery import DiscoveredContainer
+
+        container = DiscoveredContainer(name="pg", image="postgres:16", status="running", warnings=["x"])
+        assert container.model_dump()["warnings"] == ["x"]
+        assert DiscoveredContainer(name="pg", image="postgres:16", status="running").warnings == []
+
+
+class TestRestorePlanFileNames:
+    def test_commands_name_hashed_and_legacy_files(self, mock_config):
+        from app.services.restore_plan import RestorePlanGenerator
+
+        gen = RestorePlanGenerator(mock_config)
+        _, pg_full = gen._get_restore_commands("postgres", "app", "pg")
+        assert f"< {dump_prefix('pg', 'postgres', 'app')}_[0-9]*.sql\n" in pg_full
+        assert f"gunzip -c {dump_prefix('pg', 'postgres', 'app')}_[0-9]*.sql.gz |" in pg_full
+        assert "pg_app_[0-9]*.sql.gz" in pg_full  # Arkive 0.3 name
+
+        _, roles_full = gen._get_globals_restore_commands("pg")
+        assert dump_prefix("pg", "postgres", "globals", kind="globals") in roles_full
+
+        _, sqlite_full = gen._get_restore_commands("sqlite", "db.sqlite3", "vw", "/mnt/user/appdata/vw/db.sqlite3")
+        assert dump_prefix("vw", "sqlite", "db.sqlite3", "/mnt/user/appdata/vw/db.sqlite3") in sqlite_full

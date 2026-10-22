@@ -67,6 +67,7 @@ def mock_config(tmp_path, db_path):
     config.dump_dir.mkdir(parents=True, exist_ok=True)
     config.config_dir = tmp_path
     config.rclone_config = tmp_path / "rclone.conf"
+    config.restore_dir = tmp_path / "restores"
     return config
 
 

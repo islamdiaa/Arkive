@@ -3,9 +3,10 @@
 import json
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.dependencies import get_db, get_db_dumper, require_auth
+from app.services.lock_manager import BackupLockManager
 
 router = APIRouter(prefix="/databases", tags=["databases"], dependencies=[Depends(require_auth)])
 
@@ -46,6 +47,7 @@ async def list_databases(
 async def dump_database(
     container_name: str,
     db_name: str,
+    request: Request,
     verify_integrity: bool = True,
     db: aiosqlite.Connection = Depends(get_db),
     db_dumper=Depends(get_db_dumper),
@@ -70,13 +72,24 @@ async def dump_database(
     if not target_db:
         raise HTTPException(404, f"Database {db_name} not found in {container_name}")
 
-    result = await db_dumper.dump_single(
-        container_name=container_name,
-        db_name=db_name,
-        db_type=target_db.get("db_type", ""),
-        host_path=target_db.get("host_path"),
-        verify_integrity=verify_integrity,
-    )
+    # A dump writes into the shared dump directory; running it while a backup
+    # is dumping, pruning and uploading that directory races its cleanup.
+    lock_manager = getattr(getattr(request.app.state, "orchestrator", None), "lock_manager", None)
+    if not isinstance(lock_manager, BackupLockManager):
+        lock_manager = None
+    if lock_manager is not None and not lock_manager.acquire_backup_lock(f"manual-dump-{container_name}"):
+        raise HTTPException(409, "A backup or restore is running; try the dump again when it finishes")
+    try:
+        result = await db_dumper.dump_single(
+            container_name=container_name,
+            db_name=db_name,
+            db_type=target_db.get("db_type", ""),
+            host_path=target_db.get("host_path"),
+            verify_integrity=verify_integrity,
+        )
+    finally:
+        if lock_manager is not None:
+            lock_manager.release_backup_lock()
 
     return {
         "container_name": result.container_name,

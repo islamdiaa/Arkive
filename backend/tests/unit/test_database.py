@@ -186,8 +186,10 @@ async def test_run_migrations_version_gap(db_path):
     db_module.MIGRATIONS[2] = [
         "ALTER TABLE settings ADD COLUMN gap_col_v2 INTEGER NOT NULL DEFAULT 0"
     ]
-    # Remove v3 to test gap behavior (2 -> 4 with no 3)
+    # Remove v3 to test gap behavior (2 -> 4 with no 3), and anything newer
     db_module.MIGRATIONS.pop(3, None)
+    for version in [v for v in db_module.MIGRATIONS if v > 4]:
+        db_module.MIGRATIONS.pop(version)
     db_module.MIGRATIONS[4] = [
         "ALTER TABLE settings ADD COLUMN gap_col_v4 INTEGER NOT NULL DEFAULT 0"
     ]

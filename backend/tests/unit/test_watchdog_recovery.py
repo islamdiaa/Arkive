@@ -127,6 +127,13 @@ class TestScheduleGap:
     def test_longest_gap(self, schedule, expected):
         assert freshness.schedule_gap_hours(schedule, NOW) == pytest.approx(expected, abs=1.01)
 
+    def test_sparse_schedules_still_have_a_gap(self):
+        assert freshness.schedule_gap_hours("0 0 1 1 *", NOW) == pytest.approx(365 * 24, abs=25)
+        assert freshness.schedule_gap_hours("0 3 1 * *", NOW) == pytest.approx(31 * 24, abs=25)
+
+    def test_impossible_schedule(self):
+        assert freshness.schedule_gap_hours("0 0 30 2 *", NOW) is None
+
     def test_invalid_schedule(self):
         assert freshness.schedule_gap_hours("not a cron", NOW) is None
 
@@ -234,12 +241,37 @@ class TestEvaluateFreshness:
         assert result["stale"] is False
         assert result["healthy"] is False
 
-    async def test_disabled_jobs_are_ignored(self, fresh_db):
+    async def test_disabled_jobs_are_ignored_but_no_jobs_is_not_healthy(self, fresh_db):
         await _add_job(fresh_db)
         await fresh_db.execute("UPDATE backup_jobs SET enabled = 0")
         await fresh_db.commit()
         result = await freshness.evaluate_freshness(fresh_db, NOW)
-        assert result["jobs"] == [] and result["healthy"] is True
+        assert result["jobs"] == [] and result["stale"] is False
+        assert result["healthy"] is False  # nothing is backed up: no heartbeat
+
+    async def test_snapshot_with_unreadable_files_counts(self, fresh_db):
+        """restic exit 3 stores the target as partial; the snapshot still counts."""
+        await _add_job(fresh_db)
+        await _add_run(fresh_db, "r1", NOW - timedelta(hours=10), status="partial", target_status="partial")
+        result = await freshness.evaluate_freshness(fresh_db, NOW)
+        assert result["stale"] is False and result["healthy"] is True
+
+    async def test_never_dumped_with_databases_discovered_is_not_good(self, fresh_db):
+        """New install: databases discovered, every dump fails, files upload fine."""
+        await _add_job(fresh_db, created=NOW - timedelta(days=3))
+        await fresh_db.execute(
+            "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped) "
+            "VALUES ('r1', 'j1', 'partial', ?, 4, 0)", (_ts(NOW - timedelta(hours=5)),))
+        await fresh_db.execute("INSERT INTO job_run_targets (run_id, target_id, status) VALUES ('r1', 't1', 'success')")
+        await fresh_db.commit()
+        result = await freshness.evaluate_freshness(fresh_db, NOW)
+        assert result["stale"] is True and result["healthy"] is False
+
+    async def test_system_without_databases_is_fine(self, fresh_db):
+        await _add_job(fresh_db)
+        await _add_run(fresh_db, "r1", NOW - timedelta(hours=10), status="partial", dumped=0)
+        result = await freshness.evaluate_freshness(fresh_db, NOW)
+        assert result["stale"] is False
 
     async def test_override_setting(self, fresh_db):
         await _add_job(fresh_db)
@@ -615,6 +647,8 @@ class TestLegacyHostnames:
             {"id": "b" * 64, "hostname": "tower", "paths": ["/config/dumps"]},
             {"id": "c" * 64, "hostname": "abcdef012345", "paths": ["/home/other"]},
             {"id": "d" * 64, "hostname": "laptop", "paths": ["/config/dumps"]},
+            # Another Arkive instance sharing the repository: same shape, not ours.
+            {"id": "e" * 64, "hostname": "fedcba987654", "paths": ["/config/dumps"]},
         ]
         calls = []
 
@@ -627,8 +661,11 @@ class TestLegacyHostnames:
         monkeypatch.setattr(be, "run_command", fake_run)
         engine = _engine(tmp_path)
         engine.current_hostname = AsyncMock(return_value="tower")
-        result = await engine.normalize_legacy_hostnames({"type": "local", "config": {"path": "/data"}}, "/config/dumps")
+        owned = {"a" * 64, "b" * 64, "c" * 8}
+        result = await engine.normalize_legacy_hostnames(
+            {"type": "local", "config": {"path": "/data"}}, "/config/dumps", owned)
         assert result == {"status": "success", "rewritten": 1, "host": "tower"}
+        assert "e" * 64 not in calls[-1]
         rewrite = calls[-1]
         assert rewrite[:2] == ["restic", "rewrite"]
         assert rewrite[rewrite.index("--new-host") + 1] == "tower"
@@ -637,7 +674,7 @@ class TestLegacyHostnames:
     async def test_skips_when_current_host_is_a_container_id(self, tmp_path):
         engine = _engine(tmp_path)
         engine.current_hostname = AsyncMock(return_value="0123456789ab")
-        result = await engine.normalize_legacy_hostnames({"type": "local", "config": {}}, "/config/dumps")
+        result = await engine.normalize_legacy_hostnames({"type": "local", "config": {}}, "/config/dumps", set())
         assert result["status"] == "skipped"
 
     async def test_retention_relabels_before_forget(self, tmp_path):
@@ -646,6 +683,10 @@ class TestLegacyHostnames:
         await run_migrations(config.db_path)
         async with aiosqlite.connect(config.db_path) as db:
             await db.execute("INSERT INTO storage_targets (id, name, type, config) VALUES ('t1', 'L', 'local', '{}')")
+            await db.execute("INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'J', '0 1 * * *')")
+            await db.execute("INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'success')")
+            await db.execute("INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id) "
+                             "VALUES ('r1', 't1', 'success', 'deadbeef')")
             await db.commit()
         order = []
         engine = MagicMock()
@@ -656,6 +697,7 @@ class TestLegacyHostnames:
         assert order == ["relabel", "forget"]
         engine.normalize_legacy_hostnames.assert_awaited_once()
         assert engine.normalize_legacy_hostnames.await_args.args[1] == str(config.dump_dir)
+        assert engine.normalize_legacy_hostnames.await_args.args[2] == {"deadbeef"}
 
 
 # ---------------------------------------------------------------------------

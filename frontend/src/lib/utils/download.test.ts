@@ -47,4 +47,11 @@ describe('copyText', () => {
 		expect(exec).toHaveBeenCalledWith('copy');
 		expect(document.querySelector('textarea')).toBeNull();
 	});
+
+	it('removes the secret from the DOM when the legacy copy throws', async () => {
+		Object.assign(document, { execCommand: vi.fn(() => { throw new Error('unsupported'); }) });
+		expect(await copyText('secret-password')).toBe(false);
+		expect(document.querySelector('textarea')).toBeNull();
+		expect(document.body.innerHTML).not.toContain('secret-password');
+	});
 });

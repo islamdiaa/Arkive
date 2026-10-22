@@ -8,7 +8,7 @@ import docker
 import pytest
 
 from app.models.discovery import DiscoveredDatabase
-from app.services.db_dumper import DBDumper, cleanup_dump_dir
+from app.services.db_dumper import DBDumper, cleanup_dump_dir, dump_prefix
 from app.utils.subprocess_runner import CommandResult
 
 PG_OK = b"--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\n" + b"x" * 200 + \
@@ -127,7 +127,9 @@ class TestDumpAll:
 
         assert len(seen) == 3
         assert len(set(seen)) == 3
-        assert seen[2].endswith("app_other.db_20260101_000000.sqlite3")  # no suffix when unique
+        # Every name carries the identity hash (container, type, name, host path).
+        assert os.path.basename(seen[2]) == f"{dump_prefix('app', 'sqlite', 'other.db', '/a/other.db')}_20260101_000000.sqlite3"
+        assert os.path.basename(seen[2]).startswith("app_other.db-")
 
 
 class TestSqliteIntegrity:
