@@ -13,6 +13,9 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
+  // The dev server compiles each route on first request; on a cold or busy
+  // machine (CI runners, the first spec) that can exceed the 5s default.
+  expect: { timeout: 10_000 },
   retries: process.env.CI ? 2 : 0,
   // Tests share one backend process and mutable auth/rate-limit state.
   // Keep one worker to avoid cross-project lockout races.

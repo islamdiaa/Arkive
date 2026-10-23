@@ -245,6 +245,9 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "POSTGRES_PASSWORD=secret",
             ],
             exec_handlers={
+                # Database enumeration during discovery (psql -At -c ...).
+                "SELECT datname FROM pg_database": (0, b"postgres\ntestdb\n"),
+                "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class": (0, b"f\n"),
                 # Checked in order with substring matching: pg_dumpall first.
                 "pg_dumpall": (0, POSTGRES_GLOBALS),
                 "pg_dump": (0, POSTGRES_DUMP),
