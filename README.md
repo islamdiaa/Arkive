@@ -30,20 +30,24 @@ Arkive is under active development. Core backup, snapshot, restore, and cloud-ta
 ## Features
 
 ### Core Backup Engine
-- **Zero-config container discovery** — Automatically detects running containers with 50+ built-in app profiles (Nextcloud, Immich, Plex, Home Assistant, Vaultwarden, and more)
+- **Zero-config container discovery** — Detects database containers by image, scans app bind mounts for SQLite files, and uses built-in profiles for common apps (Immich, Paperless-ngx, Vaultwarden, Plex, Authelia, the *arr stack, and more)
 - **Application-aware database dumps** — PostgreSQL, MariaDB/MySQL, MongoDB, SQLite, Redis, InfluxDB with per-engine integrity verification
 - **Encrypted, deduplicated backups** — Powered by [restic](https://restic.net/) with AES-256-CTR encryption and content-defined chunking
 - **Multi-target cloud sync** — Backblaze B2, AWS S3, SFTP, or local storage via [rclone](https://rclone.org/)
 - **Flash drive backup** — Backs up your Unraid USB flash configuration automatically
 
 ### Operations & Reliability
-- **Flexible scheduling** — Cron-based schedules for DB dumps, cloud sync, and flash backups with APScheduler (no system cron dependency)
-- **Retention policies** — Configurable keep-daily, keep-weekly, keep-monthly, keep-yearly per storage target
-- **Notifications** — Discord, Slack, and [ntfy](https://ntfy.sh/) alerts for backup success, failure, and system events
+- **Flexible scheduling** — Cron-based schedules with APScheduler (no system cron dependency). Job types choose what gets refreshed before each snapshot: **Full** (database dumps + flash archive), **Database Dump**, or **Flash Backup**. Every snapshot covers the dump directory plus watched directories, so each one is a complete restore point. Scheduled jobs that fire while another backup is running wait for it instead of being skipped.
+- **Retention policies** — Configurable keep-daily, keep-weekly, keep-monthly; weekly prune
+- **No silent successes** — A run that misses anything (a database, a watched path, a target, unreadable files) is reported as `partial` with the reason, never as `success`
+- **Overdue-backup watchdog** — Every 15 minutes Arkive checks that each job produced a good backup within its schedule window; an overdue job turns the dashboard red and sends a `backup.stale` alert
+- **Heartbeat (dead man's switch)** — Point Arkive at an Uptime Kuma push monitor or healthchecks.io check; it pings while all backups are healthy, so you're alerted when Arkive itself is down too
+- **Notifications** — Discord, Slack, ntfy, Telegram, email, Gotify, Pushover and webhooks via Apprise, for backup failures, incomplete or overdue backups, failed verification or restore drills, and unreachable targets
 - **Activity log** — Full audit trail of every backup run, discovery, and configuration change
-- **Health monitoring** — Continuous system health checks with status reporting
 
 ### Restore & Recovery
+- **Automated restore drills** — Weekly, Arkive restores recent database dumps from the latest snapshot and loads them into a temporary, network-isolated copy of each database's own container image, proving the backups actually restore
+- **Recovery kit** — A one-time export of the encryption password, every repository location and restore steps, so your backups stay readable if the server itself is lost; the dashboard reminds you until you confirm you've stored it
 - **One-click restore plan** — Downloadable PDF with step-by-step disaster recovery instructions tailored to your configuration
 - **Granular restore** — Browse snapshots, select specific files or databases to restore
 - **Snapshot browser** — Explore all restic snapshots across storage targets with filtering
@@ -60,14 +64,14 @@ Arkive is under active development. Core backup, snapshot, restore, and cloud-ta
 
 ### Production Deployment
 
-Arkive is designed to run as a long-lived container on your Unraid server or another Docker host. For production, use the published image from GHCR and persist `/config` on durable storage.
+Arkive is designed to run as a long-lived container on your Unraid server or another Docker host. For production, use the published Docker Hub image (`islamdiaa/arkive`) and persist `/config` on durable storage.
 
 ### Docker Compose (recommended)
 
 ```yaml
 services:
   arkive:
-    image: ghcr.io/islamdiaa/arkive:latest
+    image: islamdiaa/arkive:latest
     container_name: arkive
     # On Unraid, run as root for flash backup and app-owned SQLite host reads.
     user: "0:0"
@@ -78,6 +82,9 @@ services:
       - /mnt/user/appdata/arkive:/config
       - /mnt/user/appdata:/mnt/user/appdata:ro
       - /boot/config:/boot-config:ro
+      # Destination for a local storage target (must be a host path)
+      - /mnt/user/backups:/mnt/user/backups
+      - /mnt/user/appdata/arkive/cache:/cache
     environment:
       - TZ=America/New_York
     restart: unless-stopped
@@ -100,7 +107,9 @@ docker run -d \
   -v /mnt/user/appdata/arkive:/config \
   -v /mnt/user/appdata:/mnt/user/appdata:ro \
   -v /boot/config:/boot-config:ro \
-  ghcr.io/islamdiaa/arkive:latest
+  -v /mnt/user/backups:/mnt/user/backups \
+  -v /mnt/user/appdata/arkive/cache:/cache \
+  islamdiaa/arkive:latest
 ```
 
 ### First Boot
@@ -149,7 +158,7 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 │                    Arkive Pipeline                       │
 │                                                         │
 │  1. DISCOVER     Docker socket → detect containers      │
-│                  Match against 50+ app profiles         │
+│                  Match against built-in app profiles    │
 │                                                         │
 │  2. DUMP         Application-aware database dumps       │
 │                  pg_dump, mysqldump, mongodump, etc.    │
@@ -161,7 +170,7 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 │                  Multi-target with parallel uploads      │
 │                                                         │
 │  5. RETAIN       Configurable retention policies         │
-│                  keep-daily, weekly, monthly, yearly     │
+│                  keep-daily, weekly, monthly             │
 │                                                         │
 │  6. NOTIFY       Discord, Slack, ntfy                    │
 │                  Per-event filtering + throttling        │
@@ -174,12 +183,17 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 
 | Engine | Dump Method | Streaming | Profile Examples |
 |--------|-------------|-----------|------------------|
-| PostgreSQL | `pg_dump` | Yes | Nextcloud, Immich, Gitea, Authentik |
-| MariaDB / MySQL | `mysqldump` | Yes | WordPress, Bookstack, Firefly III |
+| PostgreSQL | `pg_dump` per database + `pg_dumpall --globals-only` (roles) | Yes | Nextcloud, Immich, Gitea, Authentik |
+| MariaDB / MySQL | `mysqldump --single-transaction` | Yes | WordPress, Bookstack, Firefly III |
 | MongoDB | `mongodump` | Yes | Unifi Controller, Rocket.Chat |
-| SQLite | File copy | Yes | Vaultwarden, Home Assistant, Paperless |
+| SQLite | Online `.backup` | No | Vaultwarden, Home Assistant, Paperless |
 | Redis | `BGSAVE` + dump.rdb | No | Authelia, Outline |
-| InfluxDB | `influx backup` | Yes | Grafana, Telegraf |
+
+Every database in a PostgreSQL cluster is dumped, not just the one named in the container's environment. SQL dumps must end with the tool's completion trailer, or they count as failed.
+
+SQL dumps are stored uncompressed by default (**Settings → Dump compression**). restic compresses the repository itself, and an uncompressed dump deduplicates against the previous one, so a large database only adds its changes to each snapshot. A gzip stream changes completely whenever the data changes. Choose gzip if the local dump folder's size matters more than repository growth.
+
+The dump folder also holds `arkive-dumps-manifest.json`, which records which dump file belongs to which container and database. It is included in every snapshot.
 
 ---
 
@@ -192,17 +206,44 @@ https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
 | `TZ` | `UTC` | Timezone for schedules and logs |
 | `ARKIVE_CONFIG_DIR` | `/config` | Path to config directory (SQLite DB, logs) |
 | `ARKIVE_DEV_MODE` | `0` | Set to `1` to skip Docker/binary validation |
+| `ARKIVE_ALLOW_NEW_KEYFILE` | `0` | Set to `1` to start even though `/config/.keyfile` is missing or doesn't match the database (see below) |
+
+### The keyfile and your recovery kit
+
+Secrets in Arkive's database are encrypted with `/config/.keyfile`. These include the restic encryption password and storage credentials. If the keyfile is missing or doesn't match the database, Arkive refuses to start instead of silently generating a new key, because a new key would strand every stored secret. Restore the original keyfile, or set `ARKIVE_ALLOW_NEW_KEYFILE=1` to start fresh and re-enter your secrets.
+
+The keyfile lives on the same disk as everything else. Open **Settings → Recovery kit** once after setup and store the kit somewhere other than the server, such as a password manager or a printed copy. It contains:
+- the encryption password
+- every repository location, including host paths for local repositories
+- steps to restore with Arkive or with plain restic
+
+Without the password, no snapshot can be opened. The dashboard keeps reminding you until you confirm you've saved the kit.
+
+### Monitoring
+
+Arkive alerts on overdue backups itself, but it can't tell you when it isn't running. For that, add a heartbeat:
+
+1. In Uptime Kuma, create a **Push** monitor with a heartbeat interval of 30–60 minutes. A healthchecks.io check works too.
+2. Paste its URL into **Settings → Monitoring → Heartbeat URL** and send a test ping.
+
+Every 15 minutes, while every job is healthy (nothing overdue, no job whose last run failed), Arkive pings that URL. If Arkive stops, or backups start failing or go overdue, the pings stop and your monitor alerts.
+
+A job counts as overdue when its last good backup is older than the longest gap in its schedule plus a grace period: 25%, at least 2 hours. A daily job is overdue after about 30 hours. Override this with **Stale backup hours**.
 
 ### Volumes
 
 | Mount | Purpose | Required |
 |-------|---------|----------|
 | `/var/run/docker.sock:/var/run/docker.sock:ro` | Container discovery | Yes |
-| `/config` | Database, logs, cache | Yes |
+| `/config` | Database, logs, dumps | Yes |
+| `/cache` | restic metadata cache | Recommended |
+| `/mnt/user/backups` (or any host path) | Destination for a local storage target | If you use a local target |
 | `/mnt/user/appdata:/mnt/user/appdata:ro` | App data to back up | Recommended |
 | `/boot/config:/boot-config:ro` | Unraid flash config backup | Optional |
 
-Mount any additional host paths you plan to protect as read-only volumes. The quick-start example only mounts `/mnt/user/appdata`.
+Mount any additional host paths you plan to protect as read-only volumes. The quick-start example only mounts `/mnt/user/appdata`. Arkive only needs write access to `/config`, `/cache` and the local target path. Restores always land in `/config/restores`, and you copy the files into place from there, so the data being backed up never needs to be writable by Arkive.
+
+A local storage target must point at a path that is mapped to the host. Arkive refuses local target paths that live inside the container's own filesystem or an anonymous Docker volume, because those are deleted when the container is re-created (for example on an image update). A local target on the same array is also not off-site protection; add a cloud or SFTP target for real disaster recovery.
 
 For Unraid, full host coverage assumes the container runs as `root`. Running as a non-root UID is still supported, but expect `partial` backups when flash backup or host SQLite reads are denied.
 
@@ -226,7 +267,7 @@ Full API documentation is available at `http://your-server:8200/docs` (OpenAPI/S
 | **Frontend** | SvelteKit 2.x, Svelte 5, Tailwind CSS |
 | **Backup** | restic (encrypted, deduplicated), rclone (cloud sync) |
 | **Container** | Docker multi-stage build (Node + Python), root runtime recommended on Unraid for host access |
-| **CI/CD** | GitHub Actions, multi-arch (amd64 + arm64), GHCR |
+| **CI/CD** | GitHub Actions, multi-arch (amd64 + arm64), Docker Hub |
 | **Security** | AES-256-CTR encryption, SHA-256 hashed API keys, Fernet-encrypted secrets |
 | **Testing** | pytest (unit + integration), Playwright (E2E), Vitest (component) |
 
@@ -308,7 +349,7 @@ arkive/
 │   │   ├── lib/              Components, stores, utilities
 │   │   └── routes/           SvelteKit file-based routing
 │   └── tests/e2e/            Playwright E2E tests
-├── profiles/                 50+ YAML container profiles
+├── profiles/                 YAML container profiles
 ├── Dockerfile                Multi-stage build (Node + Python)
 ├── docker-compose.yml        Production deployment
 └── docs/                     Documentation + screenshots
@@ -330,7 +371,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ## Roadmap
 
-- [ ] Automated backup verification (test restore)
+- [x] Automated backup verification (restore drills)
 - [ ] Prometheus metrics endpoint (`/api/metrics`)
 - [ ] Multi-user RBAC with role-based access
 - [ ] Database migration framework

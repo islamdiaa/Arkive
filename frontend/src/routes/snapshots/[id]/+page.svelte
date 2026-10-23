@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import Header from '$lib/components/layout/Header.svelte';
+  import RestoreModal from '$lib/components/modals/RestoreModal.svelte';
   import { api } from '$lib/api/client';
   import { formatBytes } from '$lib/utils/format';
   import { timeAgo } from '$lib/utils/date';
@@ -20,9 +21,7 @@
   let browseEntries: Array<{ name: string; type: string; size?: number }> = [];
   let browsePath = '/';
   let browseLoading = false;
-  let showRestoreConfirm = false;
-  let restoring = false;
-  let restoreMessage = '';
+  let showRestore = false;
 
   $: snapshotId = $page.params.id || data.id || '';
 
@@ -82,26 +81,6 @@
     parts.pop();
     const parent = parts.length === 0 ? '/' : '/' + parts.join('/');
     await browsePath_load(parent);
-  }
-
-  async function triggerRestore() {
-    if (!snapshot) return;
-    restoring = true;
-    restoreMessage = '';
-    try {
-      await api.post('/restore', {
-        snapshot_id: snapshot.short_id || snapshot.id,
-        target: snapshot.target_id,
-        paths: snapshot.paths || [],
-        restore_to: '/',
-      });
-      restoreMessage = 'Restore initiated successfully.';
-    } catch (e: unknown) {
-      restoreMessage = e instanceof Error ? e.message : 'Restore failed.';
-    } finally {
-      restoring = false;
-      showRestoreConfirm = false;
-    }
   }
 
   function formatEntryType(type: string): string {
@@ -166,7 +145,7 @@
 
         <!-- Restore button -->
         <button
-          on:click={() => { showRestoreConfirm = true; }}
+          on:click={() => { showRestore = true; }}
           class="px-4 py-2 rounded bg-primary text-white text-sm font-medium hover:bg-primary/80 transition-colors"
         >
           Restore Snapshot
@@ -276,45 +255,7 @@
     </div>
   {/if}
 
-  <!-- Restore confirm dialog -->
-  {#if showRestoreConfirm}
-    <div
-      class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="restore-dialog-title"
-      aria-describedby="restore-dialog-desc"
-    >
-      <div class="bg-surface border border-border rounded-lg p-6 max-w-md w-full mx-4 space-y-4">
-        <h2 id="restore-dialog-title" class="text-lg font-semibold text-text">Confirm Restore</h2>
-        <p id="restore-dialog-desc" class="text-sm text-text-secondary">
-          This will restore snapshot
-          <span class="font-mono text-primary">{snapshot?.short_id || snapshotId}</span>
-          to your server. This operation cannot be undone automatically.
-        </p>
-        {#if restoreMessage}
-          <div class="text-sm px-3 py-2 rounded border {restoreMessage.includes('success') ? 'border-success/40 text-success bg-success/10' : 'border-danger/40 text-danger bg-danger/10'}">
-            {restoreMessage}
-          </div>
-        {/if}
-        <div class="flex justify-end gap-3 pt-2">
-          <button
-            on:click={() => { showRestoreConfirm = false; restoreMessage = ''; }}
-            class="px-4 py-2 rounded border border-border text-text-secondary text-sm hover:text-text transition-colors"
-            disabled={restoring}
-          >
-            Cancel
-          </button>
-          <button
-            on:click={triggerRestore}
-            class="px-4 py-2 rounded bg-primary text-white text-sm font-medium hover:bg-primary/80 transition-colors disabled:opacity-50"
-            disabled={restoring}
-          >
-            {restoring ? 'Restoring...' : 'Confirm Restore'}
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <!-- Restore dialog: restores into a safe restore root, never over the originals -->
+  <RestoreModal bind:open={showRestore} {snapshot} />
 
 </main>

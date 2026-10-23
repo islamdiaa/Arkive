@@ -9,6 +9,10 @@ import os
 import pytest
 from tests.conftest import do_setup, auth_headers
 
+# Mark entire module as forked to prevent async fixture teardown race
+# that causes "previous item was not torn down properly" in CI with pytest-xdist.
+pytestmark = pytest.mark.forked
+
 
 pytestmark = pytest.mark.asyncio
 

@@ -31,7 +31,7 @@ async def _setup_and_create_channel(client, url: str = _WEBHOOK_URL) -> tuple[st
             "type": "discord",
             "name": "Encrypt Test",
             "url": url,
-            "events": ["backup.completed"],
+            "events": ["backup.success"],
         },
         headers=auth_headers(api_key),
     )

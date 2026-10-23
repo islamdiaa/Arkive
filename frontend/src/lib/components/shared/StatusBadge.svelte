@@ -8,6 +8,7 @@
     success: 'bg-success-bg text-success',
     completed: 'bg-success-bg text-success',
     connected: 'bg-success-bg text-success',
+    passed: 'bg-success-bg text-success',
     backup: 'bg-primary-bg text-primary',
     restore: 'bg-info-bg text-info',
     target: 'bg-warning-bg text-warning',
@@ -30,7 +31,7 @@
   };
 
   const icons: Record<string, string> = {
-    success: 'ok', completed: 'ok', connected: 'ok',
+    success: 'ok', completed: 'ok', connected: 'ok', passed: 'ok',
     backup: 'B', restore: 'R', target: 'T', system: 'S', discovery: 'D', notification: 'N',
     running: 'o', in_progress: 'o',
     failed: 'x', error: 'x',

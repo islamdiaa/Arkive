@@ -67,6 +67,7 @@ def mock_config(tmp_path, db_path):
     config.dump_dir.mkdir(parents=True, exist_ok=True)
     config.config_dir = tmp_path
     config.rclone_config = tmp_path / "rclone.conf"
+    config.restore_dir = tmp_path / "restores"
     return config
 
 
@@ -123,10 +124,11 @@ class TestLockFileAtomicity:
 
     def test_acquire_lock_creates_file_atomically(self, tmp_path):
         """Lock file should be created with O_EXCL to prevent races."""
-        from app.services.orchestrator import BackupOrchestrator, LOCK_FILE
+        from app.services.orchestrator import BackupOrchestrator
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -135,14 +137,13 @@ class TestLockFileAtomicity:
         )
 
         lock_file = tmp_path / "backup.lock"
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-            result = orch._acquire_lock(run_id="test-run")
-            assert result is True
-            assert lock_file.exists()
+        result = orch._acquire_lock(run_id="test-run")
+        assert result is True
+        assert lock_file.exists()
 
-            data = json.loads(lock_file.read_text())
-            assert data["run_id"] == "test-run"
-            assert data["pid"] == os.getpid()
+        data = json.loads(lock_file.read_text())
+        assert data["run_id"] == "test-run"
+        assert data["pid"] == os.getpid()
 
     def test_acquire_lock_fails_when_already_locked(self, tmp_path):
         """Second lock acquisition should fail if lock already exists."""
@@ -150,6 +151,7 @@ class TestLockFileAtomicity:
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -161,10 +163,11 @@ class TestLockFileAtomicity:
         # Pre-create lock with our own PID (alive)
         lock_file.write_text(json.dumps({
             "pid": os.getpid(),
+            "proc_start_time": "12345",
             "started_at": "2026-01-01T00:00:00Z",
         }))
 
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
+        with patch("app.services.lock_manager._is_process_alive", return_value=True):
             result = orch._acquire_lock(run_id="second-run")
             assert result is False
 
@@ -174,6 +177,7 @@ class TestLockFileAtomicity:
 
         config = MagicMock()
         config.db_path = tmp_path / "test.db"
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
@@ -185,14 +189,14 @@ class TestLockFileAtomicity:
         # Use a PID that's guaranteed to be dead (PID 99999999)
         lock_file.write_text(json.dumps({
             "pid": 99999999,
+            "proc_start_time": "12345",
             "started_at": "2026-01-01T00:00:00Z",
         }))
 
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-            result = orch._acquire_lock(run_id="new-run")
-            assert result is True
-            data = json.loads(lock_file.read_text())
-            assert data["run_id"] == "new-run"
+        result = orch._acquire_lock(run_id="new-run")
+        assert result is True
+        data = json.loads(lock_file.read_text())
+        assert data["run_id"] == "new-run"
 
 
 # ===========================================================================
@@ -720,14 +724,18 @@ class TestOrchestratorDumpCleanup:
 
     @pytest.mark.asyncio
     async def test_dump_cleanup_called_after_backup(self, db_path, mock_config):
-        """After a successful backup, cleanup_old_dumps should be called."""
-        with patch("app.services.orchestrator.decrypt_config", return_value={}):
+        """Dumps are pruned to the newest generation before upload and again
+        in the finally block, independent of whether Docker is available."""
+        with patch("app.services.orchestrator.decrypt_config", return_value={}), \
+             patch("app.services.orchestrator.cleanup_dump_dir") as cleanup:
             orchestrator = make_orchestrator(mock_config, snapshots_return=[])
             orchestrator._self_backup = AsyncMock()
             await orchestrator.run_backup("job-1", trigger="manual",
                                           skip_databases=True, skip_flash=True)
 
-        orchestrator.db_dumper.cleanup_old_dumps.assert_called_once_with(keep_last=3)
+        assert cleanup.call_count == 2
+        for call in cleanup.call_args_list:
+            assert call.kwargs["keep_last"] == 1
 
 
 # ===========================================================================

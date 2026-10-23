@@ -64,15 +64,22 @@ async function mockDatabasesRoutes(page: Page) {
     return route.continue();
   });
 
-  // Discovery scan trigger
-  await page.route('**/api/databases/discover', (route) =>
+  // Discovery scan trigger: the "Rescan" button calls POST /api/discover/scan
+  // and then reloads GET /api/databases.
+  await page.route('**/api/discover/scan', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        discovered: mockDatabases.length,
-        message: 'Discovery scan complete',
+        total_containers: mockDatabases.length,
+        running_containers: mockDatabases.length,
+        stopped_containers: 0,
+        containers: [],
         databases: mockDatabases,
+        flash_config_found: false,
+        shares: [],
+        scan_duration_seconds: 0.1,
+        scanned_at: '2026-03-06T00:00:00Z',
       }),
     })
   );
@@ -160,11 +167,12 @@ test.describe('Databases Page', () => {
       .getByRole('button', { name: /scan|discover|refresh|run discovery/i })
       .first();
 
-    // Clicking should trigger the /api/databases/discover route and keep the page functional.
+    // Clicking should trigger a discovery scan and keep the page functional.
     const [response] = await Promise.all([
-      page.waitForResponse('**/api/databases/discover').catch(() => null),
+      page.waitForResponse('**/api/discover/scan'),
       scanBtn.click(),
     ]);
+    expect(response.ok()).toBe(true);
 
     // Page must still render after the click — databases remain listed.
     const dbEntry = page

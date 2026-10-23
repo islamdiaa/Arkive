@@ -3,11 +3,11 @@ from pathlib import Path
 import aiosqlite
 from unittest.mock import patch
 
-from tests.conftest import do_setup
+from tests.conftest import auth_headers, do_setup
 
 
 async def test_status_uses_latest_discovery_after_backup_refresh(client):
-    await do_setup(client)
+    setup_data = await do_setup(client)
     db_path = client._transport.app.state.config.db_path
 
     async with aiosqlite.connect(db_path) as db:
@@ -43,11 +43,11 @@ async def test_status_uses_latest_discovery_after_backup_refresh(client):
         await db.execute(
             """INSERT INTO backup_jobs
             (id, name, schedule, enabled, targets, include_databases, include_flash)
-            VALUES ('job1', 'DB Dumps', '0 0 * * *', 1, '[]', 0, 0)"""
+            VALUES ('job1', 'DB Dumps', '0 0 * * *', 1, '[]', 1, 0)"""
         )
         await db.commit()
 
-    status_before = await client.get("/api/status")
+    status_before = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert status_before.status_code == 200
     assert status_before.json()["health"] == "degraded"
 
@@ -118,7 +118,7 @@ async def test_status_uses_latest_discovery_after_backup_refresh(client):
         result = await orchestrator.run_backup("job1", run_id="run2", trigger="manual")
     assert result["status"] in {"success", "partial"}
 
-    status_after = await client.get("/api/status")
+    status_after = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert status_after.status_code == 200
     body = status_after.json()
     assert body["databases"]["total"] == 1
@@ -126,7 +126,7 @@ async def test_status_uses_latest_discovery_after_backup_refresh(client):
 
 
 async def test_status_prefers_configured_or_host_hostname(client):
-    await do_setup(client)
+    setup_data = await do_setup(client)
     db_path = client._transport.app.state.config.db_path
 
     async with aiosqlite.connect(db_path) as db:
@@ -135,6 +135,6 @@ async def test_status_prefers_configured_or_host_hostname(client):
         )
         await db.commit()
 
-    status = await client.get("/api/status")
+    status = await client.get("/api/status", headers=auth_headers(setup_data["api_key"]))
     assert status.status_code == 200
     assert status.json()["hostname"] == "test-server"

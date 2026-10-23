@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.core.security import decrypt_config
+from app.core.security import KeyfileError, decrypt_config, verify_keyfile
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,11 +29,16 @@ from app.services.backup_engine import BackupEngine
 from app.services.cloud_manager import CloudManager
 from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
+from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
+from app.services.host_identity import resolve_hostname
+from app.services.discovery_persistence import persist_discovery_results
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
+from app.services.restore_drill import RestoreDrillEngine
 from app.services.restore_plan import RestorePlanGenerator
 from app.services.scheduler import ArkiveScheduler
+from app.services.verify_engine import VerifyEngine
 from app.utils.log_config import setup_logging
 from app.api.restore import cleanup_stale_restore_lock
 
@@ -56,6 +61,14 @@ def _warn_unraid_runtime_permissions(platform: Platform) -> None:
         uid,
         gid,
     )
+
+
+async def _display_hostname(app: FastAPI) -> str:
+    """Server name for messages (the container hostname is just its ID)."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(resolve_hostname, app=app), timeout=10)
+    except Exception:
+        return socket.gethostname()
 
 
 @asynccontextmanager
@@ -98,6 +111,14 @@ async def lifespan(app: FastAPI):
     await init_db(config.db_path)
     await run_migrations(config.db_path)
 
+    # Never start on a keyfile that can't decrypt the stored secrets: a fresh
+    # key would silently strand the restic password and every credential.
+    try:
+        verify_keyfile(config.config_dir, config.db_path)
+    except KeyfileError as e:
+        logger.critical("Refusing to start: %s", e)
+        raise SystemExit(f"Refusing to start: {e}")
+
     # Step 5: Detect platform
     platform = detect_platform()
     logger.info("Platform detected: %s", platform.value)
@@ -132,6 +153,17 @@ async def lifespan(app: FastAPI):
             await db.commit()
             logger.warning("Cleaned %d stale job runs from previous shutdown", len(stale_runs))
 
+        cursor = await db.execute("SELECT id FROM verification_runs WHERE status = 'running'")
+        stale_verifications = await cursor.fetchall()
+        if stale_verifications:
+            await db.execute(
+                "UPDATE verification_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
+                "completed_at = ? WHERE status = 'running'",
+                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+            )
+            await db.commit()
+            logger.warning("Cleaned %d stale verification runs from previous shutdown", len(stale_verifications))
+
         cursor = await db.execute("SELECT id FROM restore_runs WHERE status = 'running'")
         stale_restores = await cursor.fetchall()
         if stale_restores:
@@ -159,13 +191,20 @@ async def lifespan(app: FastAPI):
     # Initialize services
     event_bus = EventBus()
 
-    # Docker client (optional — may not be available in dev)
-    docker_client = None
-    try:
-        import docker
-        docker_client = docker.from_env()
-    except Exception as e:
-        logger.warning("Docker client not available: %s", e)
+    # Docker client — connects lazily and reconnects after failures, so a slow
+    # daemon at boot no longer disables discovery until the next restart.
+    # Only absent in dev mode when no socket is mounted.
+    docker_client = ResilientDockerClient() if docker_sock.exists() else None
+    if docker_client is not None:
+        # Connect in the background so a slow daemon doesn't delay serving the UI.
+        async def _warm_up_docker() -> None:
+            try:
+                await asyncio.to_thread(docker_client.get_client)
+            except DockerUnavailableError as e:
+                logger.warning("Docker daemon not reachable at startup, will retry on demand: %s", e)
+
+        # Keep a reference so the task isn't garbage-collected mid-flight.
+        app.state.docker_warmup = asyncio.create_task(_warm_up_docker())
 
     discovery = DiscoveryEngine(docker_client, config) if docker_client else None
     db_dumper = DBDumper(docker_client, config) if docker_client else None
@@ -186,12 +225,28 @@ async def lifespan(app: FastAPI):
         config=config,
     )
 
+    verify_engine = VerifyEngine(config, backup_engine=backup_engine)
+
+    # Restore drills: a crash mid-drill leaves a 'running' row, scratch files
+    # and possibly a throwaway DB container behind — clean all of them up.
+    restore_drill = RestoreDrillEngine(
+        config, backup_engine=backup_engine, docker_client=docker_client,
+        notifier=notifier, event_bus=event_bus,
+    )
+    await restore_drill.recover_after_restart()
+    if docker_client is not None:
+        # Docker may be slow right after boot; don't hold up startup for it.
+        app.state.drill_sweep = asyncio.create_task(restore_drill.remove_leftover_containers())
+
     scheduler = ArkiveScheduler(
         orchestrator, config,
         discovery=discovery,
         backup_engine=backup_engine,
         cloud_manager=cloud_manager,
         notifier=notifier,
+        verify_engine=verify_engine,
+        event_bus=event_bus,
+        restore_drill=restore_drill,
     )
 
     # Wire services to app.state
@@ -208,6 +263,8 @@ async def lifespan(app: FastAPI):
     app.state.restore_plan = restore_plan
     app.state.orchestrator = orchestrator
     app.state.scheduler = scheduler
+    app.state.verify_engine = verify_engine
+    app.state.restore_drill = restore_drill
 
     # Step 7b: Auto-unlock stale restic locks (part of self-healing, before scheduler)
     try:
@@ -220,6 +277,13 @@ async def lifespan(app: FastAPI):
                 config_json = t.get("config", "{}")
                 if config_json and config_json != "{}":
                     t["config"] = decrypt_config(config_json, str(config.config_dir))
+                if t.get("type") != "local":
+                    # Regenerate rclone.conf sections from the DB so cloud
+                    # targets work even if the file was lost or never written.
+                    try:
+                        await cloud_manager.write_target_config(t)
+                    except Exception as e:
+                        logger.warning("Could not write rclone config for target %s: %s", t.get("name", ""), e)
                 await backup_engine.unlock(t)
                 logger.info("Auto-unlocked target: %s", t.get("name", t.get("id", "unknown")))
             except Exception as e:
@@ -240,11 +304,22 @@ async def lifespan(app: FastAPI):
             if count == 0:
                 logger.info("First boot — running auto-discovery")
                 try:
-                    await discovery.scan()
+                    containers = await discovery.scan()
+                    await persist_discovery_results(db, containers)
                 except Exception as e:
                     logger.warning("Auto-discovery failed: %s", e)
 
     logger.info("Arkive v%s ready", __version__)
+
+    try:
+        await notifier.send(
+            "system.startup",
+            "Arkive Started",
+            f"Arkive v{__version__} on {await _display_hostname(app)} started.",
+            severity="info",
+        )
+    except Exception as e:
+        logger.debug("Startup notification failed (non-critical): %s", e)
 
     yield
 
@@ -256,7 +331,7 @@ async def lifespan(app: FastAPI):
         await notifier.send(
             "system.shutdown",
             "Arkive Shutting Down",
-            f"Arkive v{__version__} on {socket.gethostname()} is shutting down.",
+            f"Arkive v{__version__} on {await _display_hostname(app)} is shutting down.",
             severity="info",
         )
     except Exception as e:
@@ -346,14 +421,10 @@ def create_app() -> FastAPI:
     )
 
     # CORS — single-user appliance; explicit origins required when credentials are involved
+    config = ArkiveConfig()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://localhost:8200",
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:8200",
-        ],
+        allow_origins=config.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

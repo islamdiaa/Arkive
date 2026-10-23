@@ -1,9 +1,10 @@
 import { mockApi } from './mock';
+import { handleUnauthorized } from './session';
 
 const BASE_URL = '/api';
 
 // Enable demo mode only when explicitly requested via ?demo=true
-const DEMO_MODE = typeof window !== 'undefined' &&
+export const DEMO_MODE = typeof window !== 'undefined' &&
 	window.location.search.includes('demo=true');
 
 export interface BrowserSession {
@@ -26,7 +27,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 	if (!res.ok) {
 		const error = await res.json().catch(() => ({ message: res.statusText }));
-		throw new ApiError(res.status, error.message || res.statusText);
+		// Expired/invalidated browser session on an authenticated endpoint:
+		// send the user back to login instead of leaving every page erroring.
+		// /auth/* endpoints (login, session, setup) handle 401 themselves.
+		if (res.status === 401 && !path.startsWith('/auth/')) {
+			handleUnauthorized();
+		}
+		// Arkive's exception handlers put the human-readable reason in `message`;
+		// fall back to FastAPI's default `detail` string so it is never lost.
+		const message =
+			(typeof error?.message === 'string' && error.message) ||
+			(typeof error?.detail === 'string' && error.detail) ||
+			res.statusText;
+		throw new ApiError(res.status, message);
 	}
 
 	return res.json();
@@ -72,8 +85,8 @@ const realApi = {
 	deleteJob: (id: string) => request<any>(`/jobs/${id}`, { method: 'DELETE' }),
 	triggerJob: (id: string) => request<any>(`/jobs/${id}/run`, { method: 'POST' }),
 	listRuns: (jobId: string) => request<any>(`/jobs/${jobId}/history`),
-	getRun: (jobId: string, runId: string) => request<any>(`/jobs/${jobId}/runs/${runId}`),
-	cancelRun: (jobId: string, runId: string) => request<any>(`/jobs/${jobId}/runs/${runId}`, { method: 'DELETE' }),
+	getRun: (_jobId: string, runId: string) => request<any>(`/jobs/runs/${runId}`),
+	cancelRun: (jobId: string, _runId?: string) => request<any>(`/jobs/${jobId}/run`, { method: 'DELETE' }),
 
 	listTargets: () => request<any>('/targets'),
 	getTarget: (id: string) => request<any>(`/targets/${id}`),
@@ -96,7 +109,13 @@ const realApi = {
 	deleteChannel: (id: string) => request<any>(`/notifications/${id}`, { method: 'DELETE' }),
 	testChannel: (id: string) => request<any>(`/notifications/${id}/test`, { method: 'POST' }),
 
-	listActivity: (limit?: number) => request<any>(`/activity${limit ? `?limit=${limit}` : ''}`),
+	listActivity: (limit?: number, offset?: number) => {
+		const params = new URLSearchParams();
+		if (limit != null) params.set('limit', String(limit));
+		if (offset != null) params.set('offset', String(offset));
+		const qs = params.toString();
+		return request<any>(`/activity${qs ? `?${qs}` : ''}`);
+	},
 	getStorageStats: () => request<any>('/storage'),
 	runScan: () => request<any>('/discover/scan', { method: 'POST' }),
 	listContainers: () => request<any>('/discover/containers'),
@@ -110,6 +129,9 @@ const realApi = {
 	scanDirectories: () => request<any>('/directories/scan', { method: 'POST' }),
 	getLogs: (lines?: number) => request<any>(`/logs${lines ? `?lines=${lines}` : ''}`),
 	clearLogs: () => request<any>('/logs', { method: 'DELETE' }),
+
+	getVerification: () => request<any>('/verification'),
+	triggerVerification: () => request<any>('/verification/run', { method: 'POST' }),
 
 	createEventSource: () => new EventSource(`${BASE_URL}/events/stream`)
 };

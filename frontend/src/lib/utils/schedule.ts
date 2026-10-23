@@ -1,3 +1,5 @@
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 export function describeCron(expr: string): string {
   const normalized = expr.trim().replace(/\s+/g, ' ');
 
@@ -18,6 +20,18 @@ export function describeCron(expr: string): string {
   const everyHours = normalized.match(/^(\d+)\s+\*\/(\d+)\s+\*\s+\*\s+\*$/);
   if (everyHours) {
     return `Every ${everyHours[2]} hours at minute ${everyHours[1]}`;
+  }
+
+  const weeklyAt = normalized.match(/^(\d+)\s+(\d+)\s+\*\s+\*\s+([0-7])$/);
+  if (weeklyAt) {
+    const minute = Number(weeklyAt[1]);
+    const hour = Number(weeklyAt[2]);
+    if (minute < 60 && hour < 24) {
+      const day = WEEKDAYS[Number(weeklyAt[3]) % 7];
+      const date = new Date();
+      date.setHours(hour, minute, 0, 0);
+      return `Weekly on ${day} at ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+    }
   }
 
   const dailyAt = normalized.match(/^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$/);

@@ -152,13 +152,17 @@ def test_restore_request_validates_restore_to():
             paths=["../../etc/passwd"],
         )
 
-    # Reject missing restore_to entirely for user-initiated restores
+    # Omitted restore_to is allowed: the API substitutes a fresh directory under
+    # <config>/restores (see test_restore_defaults_restore_to_under_restore_dir).
+    assert RestoreRequest(snapshot_id="abc123", target="t1", paths=["/data"]).restore_to is None
+
+    # Control characters are rejected in restore_to and paths
     with pytest.raises(Exception):
-        RestoreRequest(
-            snapshot_id="abc123",
-            target="t1",
-            paths=["/data"],
-        )
+        RestoreRequest(snapshot_id="abc123", target="t1", paths=["/data"],
+                       restore_to="/config/restores/x\ny")
+    with pytest.raises(Exception):
+        RestoreRequest(snapshot_id="abc123", target="t1", paths=["/data\n--target=/"],
+                       restore_to="/config/restores/x")
 
 
 def test_restore_request_validates_snapshot_id():

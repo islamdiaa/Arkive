@@ -3,8 +3,10 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
+import sqlite3
 import string
 import threading
 import time
@@ -12,7 +14,12 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+logger = logging.getLogger("arkive.security")
+
 DEFAULT_KEYFILE_DIR = "/config"
+# Set to 1 to start with a new keyfile even though the database holds values
+# encrypted with a previous one (they become unreadable and must be re-entered).
+ALLOW_NEW_KEYFILE_ENV = "ARKIVE_ALLOW_NEW_KEYFILE"
 BROWSER_SESSION_TTL = 60 * 60 * 24 * 30
 BROWSER_SESSION_COOKIE = "arkive_session"
 
@@ -53,6 +60,102 @@ def _get_fernet() -> Fernet:
             key = keyfile.read_bytes().strip()
     _fernet_instance = Fernet(key)
     return _fernet_instance
+
+
+class KeyfileError(RuntimeError):
+    """The keyfile is missing, corrupt, or doesn't match the database."""
+
+
+def _encrypted_values(db_path: str | Path) -> list[str]:
+    """Values in the database encrypted with the keyfile.
+    Read-only; tolerates a fresh or partial schema."""
+    path = Path(db_path)
+    if not path.exists():
+        return []
+    values: list[str] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        for query in (
+            "SELECT value FROM settings WHERE value LIKE 'enc:v1:%'",
+            "SELECT config FROM storage_targets WHERE config LIKE 'enc:v1:%'",
+        ):
+            try:
+                values.extend(row[0] for row in conn.execute(query))
+            except sqlite3.Error:
+                continue
+        try:
+            rows = conn.execute(
+                "SELECT config FROM notification_channels WHERE config LIKE '%enc:v1:%'"
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        for (raw,) in rows:
+            try:
+                config = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(config, dict):
+                values.extend(v for v in config.values() if isinstance(v, str) and is_encrypted(v))
+    finally:
+        conn.close()
+    return values
+
+
+def verify_keyfile(config_dir: str | Path, db_path: str | Path) -> None:
+    """Refuse to run with a keyfile that can't decrypt the existing database.
+
+    A silently regenerated keyfile makes every stored secret (including the
+    restic password) unreadable, and a backup made after that point can only
+    be opened by whoever still has the old password. Raises KeyfileError unless
+    ARKIVE_ALLOW_NEW_KEYFILE=1.
+    """
+    keyfile = Path(config_dir) / ".keyfile"
+    allow_new = os.environ.get(ALLOW_NEW_KEYFILE_ENV, "").strip() == "1"
+    values = _encrypted_values(db_path)
+    count = len(values)
+    override_hint = (f"or set {ALLOW_NEW_KEYFILE_ENV}=1 to start with a new key and re-enter "
+                     "your storage credentials and encryption password")
+
+    if not keyfile.exists():
+        if count == 0:
+            return
+        message = (f"{keyfile} is missing, but the database holds {count} values encrypted with it "
+                   "(storage credentials, the backup encryption password). Restore the original "
+                   f".keyfile (it is in your recovery kit), {override_hint}.")
+        if allow_new:
+            logger.warning("%s Continuing because %s=1.", message, ALLOW_NEW_KEYFILE_ENV)
+            return
+        raise KeyfileError(message)
+
+    try:
+        fernet = Fernet(keyfile.read_bytes().strip())
+    except (ValueError, TypeError) as exc:
+        raise KeyfileError(f"{keyfile} is corrupt ({exc}). Restore it from your recovery kit.") from exc
+
+    # A value or two encrypted elsewhere (e.g. an imported config) is
+    # survivable; a keyfile that opens none of the stored secrets is not.
+    undecryptable = 0
+    for value in values:
+        try:
+            fernet.decrypt(value[len("enc:v1:"):].encode())
+            break
+        except InvalidToken:
+            undecryptable += 1
+    else:
+        if count == 0:
+            return
+        message = (f"{keyfile} does not match this database: none of its {count} stored secrets can be "
+                   f"decrypted with it. Restore the .keyfile that belongs to this database, {override_hint}.")
+        if allow_new:
+            logger.warning("%s Continuing because %s=1.", message, ALLOW_NEW_KEYFILE_ENV)
+            return
+        raise KeyfileError(message)
+    if undecryptable:
+        logger.warning("%d stored secret(s) can't be decrypted with %s; re-enter them in settings",
+                       undecryptable, keyfile)
 
 
 def _reset_fernet() -> None:

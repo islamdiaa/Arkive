@@ -76,14 +76,34 @@ async def refresh_snapshots(
         targets = [dict(t) for t in await cursor.fetchall()]
 
     total = 0
+    skipped: list[dict] = []
     for target in targets:
         target["config"] = decrypt_config(target.get("config", "{}"), str(config.config_dir))
-        snapshots = await backup_engine.snapshots(target)
+        try:
+            snapshots = await backup_engine.snapshots(target)
+        except Exception as exc:
+            skipped.append({"target_id": target["id"], "reason": f"listing failed: {exc}"})
+            continue
+        if snapshots is None:
+            skipped.append({"target_id": target["id"], "reason": "listing failed"})
+            continue
+
+        cursor = await db.execute("SELECT id FROM snapshots WHERE target_id = ?", (target["id"],))
+        cached_ids = {row["id"] for row in await cursor.fetchall()}
+        if not snapshots and (cached_ids or target.get("snapshot_count")):
+            # backup_engine.snapshots() returns [] both for an empty repo and for
+            # any restic error (locked repo, network blip). Don't wipe the cache
+            # and zero the stats on what is most likely a transient failure.
+            skipped.append({"target_id": target["id"], "reason": "no snapshots returned; keeping cached data"})
+            continue
+
         total_size = 0
+        seen_ids: set[str] = set()
         # Upsert into cache
         for snap in snapshots:
             short_id = snap.get("short_id", snap.get("id", "")[:8])
-            snapshot_size = snap.get("size", 0)
+            seen_ids.add(short_id)
+            snapshot_size = snap.get("size", 0) or 0
             await db.execute(
                 """INSERT OR REPLACE INTO snapshots (id, target_id, full_id, time, hostname, paths, tags, size_bytes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -92,6 +112,11 @@ async def refresh_snapshots(
                  json.dumps(snap.get("tags", [])), snapshot_size),
             )
             total_size += snapshot_size
+        # Drop cached snapshots that no longer exist in the repo (forgotten/pruned).
+        for stale_id in cached_ids - seen_ids:
+            await db.execute(
+                "DELETE FROM snapshots WHERE id = ? AND target_id = ?", (stale_id, target["id"])
+            )
         total += len(snapshots)
 
         # Update target stats
@@ -107,7 +132,10 @@ async def refresh_snapshots(
         )
 
     await db.commit()
-    return {"refreshed": total}
+    response: dict = {"refreshed": total}
+    if skipped:
+        response["skipped"] = skipped
+    return response
 
 
 @router.get("/{snapshot_id}", response_model=None)

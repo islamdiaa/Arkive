@@ -436,20 +436,47 @@ class TestHealthCheck:
         assert mock_cloud_manager.test_target.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_health_check_logs_activity(self, scheduler, mock_cloud_manager, mock_config):
-        """Health check creates an activity log entry."""
+    async def test_routine_health_check_is_quiet(self, scheduler, mock_cloud_manager, mock_config):
+        """A healthy target produces no activity entries (the check runs every 5 minutes)."""
         await _insert_target(mock_config.db_path, "t1", "Local", "local", 1, "{}")
         await scheduler._run_health_check()
+        await scheduler._run_health_check()
+
+        async with aiosqlite.connect(mock_config.db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM activity_log")
+            assert (await cursor.fetchone())[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_health_check_logs_and_notifies_status_change(
+        self, mock_orchestrator, mock_config, mock_cloud_manager,
+    ):
+        """A target going unreachable (and coming back) is logged; failure notifies."""
+        notifier = MagicMock()
+        notifier.send = AsyncMock()
+        sched = ArkiveScheduler(
+            orchestrator=mock_orchestrator, config=mock_config,
+            cloud_manager=mock_cloud_manager, notifier=notifier,
+        )
+        await _insert_target(mock_config.db_path, "t1", "Offsite", "local", 1, "{}")
+        await sched._run_health_check()  # unknown -> online: first check, quiet
+
+        mock_cloud_manager.test_target = AsyncMock(return_value={"status": "error", "message": "timeout"})
+        await sched._run_health_check()  # online -> error
+        mock_cloud_manager.test_target = AsyncMock(return_value={"status": "ok"})
+        await sched._run_health_check()  # error -> online
 
         async with aiosqlite.connect(mock_config.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT * FROM activity_log WHERE type = 'system' AND action = 'health_check'"
+                "SELECT message, severity FROM activity_log WHERE action = 'health_changed' ORDER BY id"
             )
-            row = await cursor.fetchone()
+            rows = [dict(r) for r in await cursor.fetchall()]
 
-        assert row is not None
-        assert "Health check completed" in row["message"]
+        assert [r["severity"] for r in rows] == ["warning", "info"]
+        assert "unreachable" in rows[0]["message"]
+        assert "reachable again" in rows[1]["message"]
+        notifier.send.assert_awaited_once()
+        assert notifier.send.await_args.args[0] == "target.error"
 
     @pytest.mark.asyncio
     async def test_health_check_skips_without_cloud_manager(self, mock_orchestrator, mock_config):

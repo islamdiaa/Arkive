@@ -1,11 +1,28 @@
 import type { Config } from 'tailwindcss';
 
+// Theme colours are CSS variables, which Tailwind can't split into channels,
+// so opacity modifiers (bg-danger/10, border-warning/30) generated nothing.
+// color-mix() applies the modifier to any colour; without one, <alpha-value>
+// is 1 and the colour is unchanged.
+type ColorTree = { [key: string]: string | ColorTree };
+
+function withAlpha(colors: ColorTree): ColorTree {
+  return Object.fromEntries(
+    Object.entries(colors).map(([name, value]) => [
+      name,
+      typeof value === 'string'
+        ? `color-mix(in srgb, ${value} calc(<alpha-value> * 100%), transparent)`
+        : withAlpha(value),
+    ]),
+  );
+}
+
 export default {
   darkMode: ['selector', '[data-theme="dark"]'],
   content: ['./src/**/*.{html,js,svelte,ts}'],
   theme: {
     extend: {
-      colors: {
+      colors: withAlpha({
         // Legacy flat tokens (backward compat)
         page: 'var(--page-bg)',
         surface: 'var(--surface)',
@@ -100,7 +117,7 @@ export default {
 
         // Flat legacy aliases still used by components
         elevated: 'var(--bg-elevated)',
-      },
+      }),
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'SF Mono', 'monospace'],

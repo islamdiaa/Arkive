@@ -8,7 +8,9 @@
     { href: '/settings/jobs', label: 'Backup Jobs', icon: '📋' },
     { href: '/settings/directories', label: 'Directories', icon: '📁' },
     { href: '/settings/notifications', label: 'Notifications', icon: '🔔' },
+    { href: '/settings/monitoring', label: 'Monitoring', icon: '📡' },
     { href: '/settings/security', label: 'Security', icon: '🔐' },
+    { href: '/settings/recovery-kit', label: 'Recovery Kit', icon: '🔑' },
   ];
 
   function linkClass(href: string, currentPath: string): string {
@@ -18,8 +20,22 @@
   }
 </script>
 
-<div class="flex h-full">
-  <nav class="w-56 border-r border-border p-4 space-y-1">
+<div class="flex flex-col md:flex-row h-full min-w-0">
+  <!-- Mobile: horizontal, scrollable tab strip -->
+  <nav class="md:hidden flex gap-1 overflow-x-auto border-b border-border px-3 py-2" aria-label="Settings">
+    {#each links as link}
+      <a
+        href={link.href}
+        class="flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-md text-sm transition-colors {linkClass(link.href, $page.url.pathname)}"
+      >
+        <span>{link.icon}</span>
+        {link.label}
+      </a>
+    {/each}
+  </nav>
+
+  <!-- Desktop: vertical side nav -->
+  <nav class="hidden md:block w-56 shrink-0 border-r border-border p-4 space-y-1" aria-label="Settings">
     <h2 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3 px-2">Settings</h2>
     {#each links as link}
       <a
@@ -31,7 +47,7 @@
       </a>
     {/each}
   </nav>
-  <div class="flex-1 overflow-y-auto">
+  <div class="flex-1 min-w-0 overflow-y-auto">
     <slot />
   </div>
 </div>

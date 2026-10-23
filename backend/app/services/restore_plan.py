@@ -1,10 +1,11 @@
 """Restore plan generator — creates PDF disaster recovery runbook."""
 
+import asyncio
 import json
 import logging
 import os
-import posixpath
 import socket
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from jinja2 import Environment, select_autoescape
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.db_dumper import GLOBALS_DB_NAME, dump_prefix, safe_name
 from app.services.repo_paths import build_repo_path
 
 logger = logging.getLogger("arkive.restore_plan")
@@ -106,7 +108,8 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
 
 {% if flash_available %}
 <h3>Step 6: Restore Flash Config (Unraid)</h3>
-<pre>tar -xzf /config/restore/config/dumps/flash_TIMESTAMP.tar.gz -C /boot/config/</pre>
+<pre>tar -xf /config/restore/config/dumps/flash_TIMESTAMP.tar -C /boot/config/</pre>
+<p>Older backups may be named <code>flash_TIMESTAMP.tar.gz</code>; the same <code>tar -xf</code> command auto-detects compression.</p>
 {% endif %}
 
 <h2>5. Container Inventory</h2>
@@ -178,6 +181,7 @@ class RestorePlanGenerator:
 
         # Build database restore commands
         databases = []
+        seen_databases: set[tuple] = set()
         for c in containers:
             dbs = json.loads(c.get("databases", "[]")) if isinstance(c.get("databases"), str) else c.get("databases", [])
             for d in dbs:
@@ -185,7 +189,26 @@ class RestorePlanGenerator:
                     db_type = d.get("db_type", "")
                     db_name = d.get("db_name", "")
                     container_name = d.get("container_name", c.get("name", ""))
-                    restore_cmd, full_cmd = self._get_restore_commands(db_type, db_name, container_name)
+                    # A companion DB is listed under both the app container and
+                    # the DB container; describe it once.
+                    key = (container_name, db_type, db_name, d.get("host_path"))
+                    if key in seen_databases:
+                        continue
+                    seen_databases.add(key)
+                    if db_type == "postgres" and (container_name, "globals") not in seen_databases:
+                        # Roles first, so the apps' login roles exist before their databases.
+                        seen_databases.add((container_name, "globals"))
+                        globals_cmd, globals_full = self._get_globals_restore_commands(container_name)
+                        databases.append({
+                            "container_name": container_name,
+                            "db_type": db_type,
+                            "db_name": "roles (pg_dumpall --globals-only)",
+                            "restore_cmd": globals_cmd,
+                            "full_restore_cmd": globals_full,
+                        })
+                    restore_cmd, full_cmd = self._get_restore_commands(
+                        db_type, db_name, container_name, d.get("host_path"),
+                    )
                     databases.append({
                         "container_name": container_name,
                         "db_type": db_type,
@@ -208,46 +231,129 @@ class RestorePlanGenerator:
             flash_available=platform == "unraid",
         )
 
-        # Write HTML
+        # Write HTML (atomically — a concurrent download may be streaming it)
         html_path = str(self.config.config_dir / "restore-plan.html")
-        Path(html_path).write_text(html)
+        await asyncio.to_thread(self._atomic_write_text, html_path, html)
 
-        # Convert to PDF
+        # Convert to PDF. WeasyPrint is CPU-heavy and synchronous, so render in a
+        # worker thread into a unique temp file and atomically swap it in.
         pdf_path = str(self.config.config_dir / "restore-plan.pdf")
         try:
-            from weasyprint import HTML
-            HTML(string=html).write_pdf(pdf_path)
+            await asyncio.to_thread(self._render_pdf, html, pdf_path)
         except Exception as e:
             logger.warning("PDF generation failed (WeasyPrint): %s — falling back to HTML", e)
             pdf_path = html_path
 
         return pdf_path
 
+    @staticmethod
+    def _temp_path_next_to(path: str, suffix: str) -> str:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".restore-plan.", suffix=suffix)
+        os.close(fd)
+        return tmp_path
+
+    @classmethod
+    def _atomic_write_text(cls, path: str, content: str) -> None:
+        tmp_path = cls._temp_path_next_to(path, ".html.tmp")
+        try:
+            Path(tmp_path).write_text(content)
+            os.chmod(tmp_path, 0o644)
+            os.replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @classmethod
+    def _render_pdf(cls, html: str, pdf_path: str) -> None:
+        from weasyprint import HTML
+
+        tmp_path = cls._temp_path_next_to(pdf_path, ".pdf.tmp")
+        try:
+            HTML(string=html).write_pdf(tmp_path)
+            os.chmod(tmp_path, 0o644)
+            os.replace(tmp_path, pdf_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
     def _repo_path(self, target: dict) -> str:
         """Return the operator-facing restic repository path for a target."""
         return build_repo_path(target)
 
-    def _get_restore_commands(self, db_type: str, db_name: str, container: str) -> tuple[str, str]:
-        """Get restore commands for a database type."""
+    @staticmethod
+    def _dump_glob(container: str, db_type: str, db_name: str, ext: str,
+                   host_path: str | None = None, kind: str = "database") -> str:
+        """Glob for a dump as DBDumper names it: <dump_prefix>_<UTC timestamp><ext>."""
+        return f"{dump_prefix(container, db_type, db_name, host_path, kind=kind)}_[0-9]*{ext}"
+
+    @staticmethod
+    def _legacy_note(container: str, label: str, ext: str) -> str:
+        """Where dumps written before file names carried an identity hash live."""
+        return f"\n# dumps from Arkive 0.3 and earlier: {safe_name(container)}_{safe_name(label)}_[0-9]*{ext}"
+
+    @staticmethod
+    def _plain_or_gzip(glob: str, ext: str, restore: str) -> str:
+        """Restore instructions for a dump written plain (``ext``) or gzipped (``ext``.gz),
+        depending on the dump_compression setting when it was taken."""
+        return (
+            f"# plain dump ({ext}):\n"
+            f"{restore} < {glob}\n"
+            f"# gzip dump ({ext}.gz):\n"
+            f"gunzip -c {glob}.gz | {restore}"
+        )
+
+    def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:
+        """Restore commands for a Postgres cluster's roles (run before the database dumps)."""
+        short = "psql -U postgres -d postgres < globals.sql  (restore before the databases)"
+        restore = f"docker exec -i {container} psql -U postgres -d postgres"
+        glob = self._dump_glob(container, "postgres", GLOBALS_DB_NAME, ".sql", kind="globals")
+        return short, self._plain_or_gzip(glob, ".sql", restore)
+
+    def _get_restore_commands(self, db_type: str, db_name: str, container: str,
+                              host_path: str | None = None) -> tuple[str, str]:
+        """Get restore commands for a database type.
+
+        Logical dumps are plain (``.sql``, ``.archive``) or gzipped (``.gz``)
+        depending on the dump_compression setting; both forms are shown, plus
+        the file name used before dump names carried an identity hash.
+        """
         if db_type == "postgres":
-            short = "psql -U postgres < dump.sql"
-            full = f"gunzip -c {container}_{db_name}_*.sql.gz | docker exec -i {container} psql -U postgres"
-            return short, full
+            short = "psql -U postgres -d postgres < dump.sql  (gzip: gunzip -c dump.sql.gz | psql ...)"
+            restore = f"docker exec -i {container} psql -U postgres -d postgres"
+            glob = self._dump_glob(container, db_type, db_name, ".sql")
+            return short, (self._plain_or_gzip(glob, ".sql", restore)
+                           + self._legacy_note(container, db_name, ".sql.gz"))
         elif db_type == "sqlite":
             short = f"sqlite3 /path/to/{db_name} '.restore backup.sqlite3'"
-            full = f"cp {container}_{db_name}_*.sqlite3 /mnt/user/appdata/{container}/data/{db_name}"
+            glob = self._dump_glob(container, db_type, db_name, ".sqlite3", host_path)
+            full = (f"cp {glob} /mnt/user/appdata/{container}/data/{db_name}"
+                    + self._legacy_note(container, db_name, ".sqlite3"))
             return short, full
         elif db_type in ("mariadb", "mysql"):
-            short = "mysql -u root < dump.sql"
-            full = f"gunzip -c {container}_{db_name}_*.sql.gz | docker exec -i {container} mysql -u root"
-            return short, full
+            short = "mysql -u root < dump.sql  (gzip: gunzip -c dump.sql.gz | mysql -u root)"
+            restore = f"docker exec -i {container} mysql -u root"
+            glob = self._dump_glob(container, db_type, db_name, ".sql")
+            return short, (self._plain_or_gzip(glob, ".sql", restore)
+                           + self._legacy_note(container, db_name, ".sql.gz"))
         elif db_type == "mongodb":
-            short = f"mongorestore --archive < dump.archive"
-            full = f"gunzip -c {container}_{db_name}_*.archive.gz | docker exec -i {container} mongorestore --archive"
-            return short, full
+            short = "mongorestore --archive < dump.archive  (gzip: gunzip -c dump.archive.gz | mongorestore --archive)"
+            restore = f"docker exec -i {container} mongorestore --archive"
+            glob = self._dump_glob(container, db_type, db_name, ".archive")
+            return short, (self._plain_or_gzip(glob, ".archive", restore)
+                           + self._legacy_note(container, db_name, ".archive.gz"))
         elif db_type == "redis":
             short = "cp dump.rdb /data/dump.rdb && redis-cli SHUTDOWN NOSAVE"
-            full = f"cp {container}_redis_*.rdb /mnt/user/appdata/{container}/data/dump.rdb"
+            glob = self._dump_glob(container, db_type, db_name or "redis", ".rdb")
+            full = (f"cp {glob} /mnt/user/appdata/{container}/data/dump.rdb"
+                    + self._legacy_note(container, "redis", ".rdb"))
             return short, full
         return "See documentation", "See documentation"
 

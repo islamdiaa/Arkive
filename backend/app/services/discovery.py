@@ -1,6 +1,6 @@
 """Container discovery engine using docker-py."""
 
-import json
+import asyncio
 import logging
 import os
 import re
@@ -11,6 +11,8 @@ import yaml
 
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredContainer, DiscoveredDatabase
+from app.services.db_dumper import postgres_user_from_env
+from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.discovery")
 
@@ -33,6 +35,27 @@ REDIS_PATTERNS = [
     re.compile(r"^bitnami/redis"), re.compile(r"^valkey/valkey"),
 ]
 
+# Every database in a Postgres cluster is dumped, not only the one named by the
+# container env. Enumerate connectable, non-template databases owned by the
+# connecting role (superusers are members of every role, so they see all);
+# databases a non-superuser cannot read would only fail every dump.
+PG_LIST_DATABASES_SQL = (
+    "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate "
+    "AND has_database_privilege(datname, 'CONNECT') AND pg_has_role(datdba, 'MEMBER') "
+    "ORDER BY 1"
+)
+# The "postgres" maintenance database is only dumped when it holds user tables
+# (or is the database the container is configured with).
+PG_HAS_USER_TABLES_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE c.relkind IN ('r', 'p') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+    "AND n.nspname NOT LIKE 'pg\\_%')"
+)
+PG_MAINTENANCE_DB = "postgres"
+# Keep a hung server from stalling discovery.
+_PSQL_ENV = {"PGCONNECT_TIMEOUT": "5", "PGOPTIONS": "-c statement_timeout=15000"}
+
 SQLITE_HEADER = b"SQLite format 3\x00"
 SKIP_DIRS = {
     "media", "movies", "tv", "downloads", "music", "audiobooks", "photos",
@@ -51,6 +74,12 @@ class DiscoveryEngine:
         self.docker = docker_client
         self.config = config
         self.profiles: list[dict] = []
+        # Per-scan cache of enumerated Postgres databases, keyed by container
+        # name + configured database (a companion DB container is reached from
+        # its app container too).
+        self._pg_database_cache: dict[str, list[DiscoveredDatabase]] = {}
+        # Per-scan coverage warnings keyed by Postgres container name.
+        self._pg_warnings: dict[str, list[str]] = {}
         self._load_profiles()
 
     def _load_profiles(self) -> None:
@@ -273,17 +302,103 @@ class DiscoveryEngine:
         return container_id.startswith(current_container_id)
 
     def _detect_postgres(self, container, env: dict, mounts: list[dict]) -> list[DiscoveredDatabase]:
-        """Detect Postgres databases from env vars."""
-        dbs = []
+        """Detect Postgres databases: the env-configured one plus every other
+        database in the cluster (see ``_postgres_databases``)."""
         db_name = env.get("POSTGRES_DB") or env.get("DB_DATABASE_NAME") or env.get("DB_NAME") or "postgres"
-        user = env.get("POSTGRES_USER") or env.get("DB_USERNAME") or "postgres"
-        dbs.append(DiscoveredDatabase(
-            container_name=container.name,
-            db_type="postgres",
-            db_name=db_name,
-            host_path=None,
-        ))
-        return dbs
+        return self._postgres_databases(container, env, db_name)
+
+    def _psql_query(self, container, user: str, database: str, sql: str) -> tuple[list[str] | None, str]:
+        """Run a read-only query with psql inside ``container``.
+
+        Returns ``(rows, "")`` on success, ``(None, error)`` on failure.
+        """
+        try:
+            exit_code, output = container.exec_run(
+                ["psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", sql],
+                environment=_PSQL_ENV, demux=True,
+            )
+        except Exception as e:
+            return None, redact_credentials(str(e))[:200] or type(e).__name__
+        stdout, stderr = output if isinstance(output, tuple) else (output, b"")
+        if exit_code != 0 or not isinstance(stdout, (bytes, bytearray)):
+            message = ""
+            if isinstance(stderr, (bytes, bytearray)):
+                message = stderr.decode(errors="replace").strip().splitlines()[-1:] or [""]
+                message = message[0]
+            return None, redact_credentials(message)[:200] or f"psql exited with code {exit_code}"
+        return [line for line in stdout.decode(errors="replace").splitlines() if line.strip()], ""
+
+    def _enumerate_postgres_databases(self, container, env: dict, configured_db: str) -> tuple[list[str] | None, str]:
+        """Database names in the container's cluster: ``(names, "")`` or ``(None, error)``."""
+        user = postgres_user_from_env(env)
+        error = ""
+        for connect_db in dict.fromkeys([configured_db, PG_MAINTENANCE_DB]):
+            names, error = self._psql_query(container, user, connect_db, PG_LIST_DATABASES_SQL)
+            if names is not None:
+                return names, ""
+        return None, error
+
+    def _add_pg_warning(self, container_name: str, message: str) -> None:
+        warnings = self.__dict__.setdefault("_pg_warnings", {}).setdefault(container_name, [])
+        if message not in warnings:
+            warnings.append(message)
+
+    def _postgres_databases(self, container, env: dict, configured_db: str) -> list[DiscoveredDatabase]:
+        """All databases to dump for a Postgres container.
+
+        The configured database always comes first (so nothing discovered
+        before enumeration existed disappears). Other databases come from
+        ``PG_LIST_DATABASES_SQL``; the ``postgres`` maintenance database only
+        when it contains user tables. A stopped container is not queried (its
+        dumps are skipped anyway). When listing fails on a running container,
+        only the configured database is returned and a coverage warning is
+        recorded for the container (``DiscoveredContainer.warnings``).
+        """
+        cache = self.__dict__.setdefault("_pg_database_cache", {})
+        cache_key = f"{container.name}\x00{configured_db}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        names = [configured_db]
+        if getattr(container, "status", None) != "running":
+            logger.debug("Postgres %s is not running; not listing its databases", container.name)
+        else:
+            enumerated, error = self._enumerate_postgres_databases(container, env, configured_db)
+            if enumerated is None:
+                logger.warning("Postgres %s: could not list databases (%s); using %s only",
+                               container.name, error, configured_db)
+                self._add_pg_warning(
+                    container.name,
+                    f"could not list databases in {container.name} ({error}); "
+                    f"only {configured_db} is being backed up",
+                )
+            else:
+                user = postgres_user_from_env(env)
+                for name in enumerated:
+                    if name in names:
+                        continue
+                    if name == PG_MAINTENANCE_DB:
+                        has_tables, error = self._psql_query(container, user, PG_MAINTENANCE_DB,
+                                                             PG_HAS_USER_TABLES_SQL)
+                        if has_tables is None:
+                            self._add_pg_warning(
+                                container.name,
+                                f"could not check the postgres database in {container.name} for tables "
+                                f"({error}); it is not being backed up",
+                            )
+                            continue
+                        if has_tables != ["t"]:
+                            logger.debug("Postgres %s: skipping empty maintenance database", container.name)
+                            continue
+                    names.append(name)
+
+        databases = [
+            DiscoveredDatabase(container_name=container.name, db_type="postgres", db_name=name, host_path=None)
+            for name in names
+        ]
+        cache[cache_key] = databases
+        return list(databases)
 
     def _detect_mysql(self, container, env: dict) -> list[DiscoveredDatabase]:
         """Detect MySQL/MariaDB databases from env vars."""
@@ -414,7 +529,6 @@ class DiscoveryEngine:
 
                 env_vars = db_def.get("env_vars", {})
                 db_name_keys = env_vars.get("db_name", ["POSTGRES_DB", "DB_DATABASE_NAME", "DB_NAME"])
-                user_keys = env_vars.get("db_user", ["POSTGRES_USER", "DB_USERNAME"])
 
                 db_name = None
                 for key in db_name_keys:
@@ -424,12 +538,7 @@ class DiscoveryEngine:
                 if not db_name:
                     db_name = db_def.get("default_db", "postgres")
 
-                dbs.append(DiscoveredDatabase(
-                    container_name=target_container.name,
-                    db_type="postgres",
-                    db_name=db_name,
-                    host_path=None,
-                ))
+                dbs.extend(self._postgres_databases(target_container, target_env, db_name))
 
             elif db_type in ("mysql", "mariadb"):
                 env_vars = db_def.get("env_vars", {})
@@ -492,8 +601,17 @@ class DiscoveryEngine:
         return None
 
     async def scan(self) -> list[DiscoveredContainer]:
-        """Scan all Docker containers and detect databases."""
+        """Scan all Docker containers and detect databases.
+
+        docker-py calls and the SQLite filesystem walk are blocking, so the
+        scan runs in a worker thread to keep the API responsive.
+        """
+        return await asyncio.to_thread(self._scan_blocking)
+
+    def _scan_blocking(self) -> list[DiscoveredContainer]:
         start = time.monotonic()
+        self._pg_database_cache = {}
+        self._pg_warnings = {}
         containers = self.docker.containers.list(all=True)
         all_containers = containers
         discovered = []
@@ -555,6 +673,16 @@ class DiscoveryEngine:
 
             except Exception as e:
                 logger.error("Error scanning container %s: %s", container.name, e)
+
+        # Report each Postgres coverage warning once: on the DB container's own
+        # entry, or on the first entry that references its databases.
+        by_name = {c.name: c for c in discovered}
+        for pg_name, messages in self._pg_warnings.items():
+            owner = by_name.get(pg_name) or next(
+                (c for c in discovered if any(d.container_name == pg_name for d in c.databases)), None,
+            )
+            if owner is not None:
+                owner.warnings.extend(m for m in messages if m not in owner.warnings)
 
         duration = time.monotonic() - start
         logger.info("Discovery scan completed: %d containers, %d databases in %.2fs",

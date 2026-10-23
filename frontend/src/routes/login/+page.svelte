@@ -4,6 +4,7 @@
 
 <script lang="ts">
 	import { api } from '$lib/api/client';
+	import { safeNext } from '$lib/api/session';
 	import { addToast, setupCompleted } from '$lib/stores/app';
 	import { applySession } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
@@ -11,6 +12,11 @@
 
 	let apiKey = '';
 	let loading = false;
+
+	function nextDestination(): string {
+		if (typeof window === 'undefined') return '/';
+		return safeNext(new URLSearchParams(window.location.search).get('next'));
+	}
 
 	onMount(async () => {
 		try {
@@ -20,7 +26,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto('/');
+				goto(nextDestination());
 			}
 		} catch {
 			// Ignore and let the user attempt login.
@@ -38,7 +44,7 @@
 			const session = await api.login(apiKey.trim());
 			applySession(session);
 			setupCompleted.set(true);
-			goto('/');
+			goto(nextDestination());
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Login failed' });
 		} finally {

@@ -48,13 +48,13 @@ class TestFlashBackupExecution:
         # Create the boot config directory so the existence check passes
         mock_config.boot_config_path.mkdir(parents=True, exist_ok=True)
 
-        # First call: tar -czf (success)
+        # First call: tar -cf (success)
         tar_result = MagicMock()
         tar_result.returncode = 0
         tar_result.stdout = ""
         tar_result.stderr = ""
 
-        # Second call: tar -tzf verify (success)
+        # Second call: tar -tf verify (success)
         verify_result = MagicMock()
         verify_result.returncode = 0
         verify_result.stdout = "./file1\n./file2\n"
@@ -99,7 +99,8 @@ class TestFlashBackupCleanup:
             str(mock_config.dump_dir / f"flash_2026010{i}_000000.tar.gz")
             for i in range(5, 0, -1)  # 5, 4, 3, 2, 1 — newest first
         ]
-        mock_glob.return_value = fake_files
+        # First glob: new uncompressed archives; second: legacy .tar.gz archives.
+        mock_glob.side_effect = [[], fake_files]
 
         fb = FlashBackup(config=mock_config, platform=Platform.UNRAID)
         fb._cleanup_old_backups()
@@ -110,3 +111,17 @@ class TestFlashBackupCleanup:
         # The 2 oldest files (index 3 and 4 in the list) should be removed
         assert fake_files[3] in removed_files
         assert fake_files[4] in removed_files
+
+    def test_cleanup_mixes_new_and_legacy_archives(self, mock_config, tmp_path):
+        """Retention counts uncompressed and legacy .tar.gz archives together, newest first."""
+        mock_config.flash_retention = 2
+        mock_config.dump_dir = tmp_path
+        for name in ("flash_20260101_000000.tar.gz", "flash_20260102_000000.tar.gz",
+                     "flash_20260103_000000.tar", "flash_20260104_000000.tar"):
+            (tmp_path / name).write_bytes(b"x")
+
+        FlashBackup(config=mock_config, platform=Platform.UNRAID)._cleanup_old_backups()
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "flash_20260103_000000.tar", "flash_20260104_000000.tar",
+        ]

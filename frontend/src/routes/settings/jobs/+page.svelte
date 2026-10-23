@@ -11,6 +11,13 @@
 	import ConfirmDangerModal from '$lib/components/ui/ConfirmDangerModal.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import { describeCron } from '$lib/utils/schedule';
+	import {
+		JOB_TYPES,
+		JOB_TYPE_LABELS,
+		JOB_TYPES_OVERVIEW,
+		jobTypeDescription,
+		jobTypeLabel,
+	} from '$lib/utils/job-types';
 
 	let jobs: any[] = [];
 	let loading = true;
@@ -126,16 +133,20 @@
 				</div>
 				<div>
 					<label for="new-job-type" class="block text-sm text-text-secondary mb-1">Type</label>
-					<select id="new-job-type" bind:value={newType} class="input">
-						<option value="full">Full Backup</option>
-						<option value="db_dump">Database Dump</option>
-						<option value="flash">Flash Backup</option>
+					<select id="new-job-type" bind:value={newType} class="input" aria-describedby="new-job-type-help">
+						{#each JOB_TYPES as t}
+							<option value={t}>{JOB_TYPE_LABELS[t]}</option>
+						{/each}
 					</select>
 				</div>
 				<div>
 					<label for="new-job-schedule" class="block text-sm text-text-secondary mb-1">Schedule (cron)</label>
 					<input id="new-job-schedule" type="text" bind:value={newSchedule} class="input font-mono" />
 				</div>
+			</div>
+			<div id="new-job-type-help" class="mt-3 rounded-md border border-border-muted bg-bg-elevated/50 px-3 py-2 text-xs text-text-secondary space-y-1">
+				<p><span class="font-medium text-text">{jobTypeLabel(newType)}:</span> {jobTypeDescription(newType)}</p>
+				<p>{JOB_TYPES_OVERVIEW}</p>
 			</div>
 			<button on:click={addJob} disabled={!newName} class="btn-primary mt-4 disabled:opacity-50">Create</button>
 		</div>
@@ -161,10 +172,16 @@
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2 mb-1">
 								<p class="text-sm font-medium text-text">{job.name}</p>
-								<StatusBadge status={job.enabled ? 'success' : 'warning'} size="sm" />
+								{#if !job.enabled}
+									<span class="text-xs text-text-secondary">Paused</span>
+								{/if}
+								{#if job.last_run?.status}
+									<span class="text-xs text-text-secondary">Last run:</span>
+									<StatusBadge status={job.last_run.status} size="sm" />
+								{/if}
 							</div>
 							<p class="text-xs text-text-secondary">
-								{job.type}
+								<span title={jobTypeDescription(job.type)}>{jobTypeLabel(job.type)}</span>
 								&middot;
 								<code class="font-mono">{job.schedule}</code>
 							</p>

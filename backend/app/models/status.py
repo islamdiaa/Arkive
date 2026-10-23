@@ -1,27 +1,61 @@
 """Pydantic models for system status."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StatusResponse(BaseModel):
+    """Full status response matching all fields the frontend dashboard reads.
+
+    The dashboard reads both structured sub-objects (targets, databases, storage)
+    and flat convenience fields (containers_discovered, databases_found, etc.).
+    Both must be present so the frontend helper functions can resolve values.
+    """
+
+    # Core identity
+    version: str = "0.0.0"
+    uptime_seconds: int = 0
+    setup_completed: bool = False
+    # False only in the minimal payload served to unauthenticated callers.
+    authenticated: bool = True
+    platform: str = "linux"
+    hostname: str = ""
+
+    # Overall health
     status: str = "ok"
-    version: str
-    hostname: str
-    uptime_seconds: int
-    platform: str
-    setup_completed: bool
+    health: str = "healthy"
+
+    # Flat aggregate counts the dashboard reads directly
+    containers_discovered: int = 0
+    databases_found: int = 0
+    targets_configured: int = 0
+    total_snapshots: int = 0
+    storage_used_bytes: int = 0
+
+    # Structured sub-objects
+    targets: dict = Field(default_factory=lambda: {"total": 0, "healthy": 0})
+    databases: dict = Field(default_factory=lambda: {"total": 0, "healthy": 0})
+    storage: dict = Field(default_factory=lambda: {"total_bytes": 0})
+
+    # Backup timing
     last_backup: dict | None = None
-    next_backup: dict | None = None
-    targets: dict = {"total": 0, "healthy": 0}
-    databases: dict = {"total": 0, "healthy": 0}
-    storage: dict = {"total_bytes": 0}
-    coverage: dict = {
-        "readiness": "minimal",
-        "migration_ready": False,
-        "appdata_protected": False,
-        "flash_protected": False,
-        "watched_directories": 0,
-        "protected_directories": [],
-        "recommended_directories": [],
-        "warnings": [],
-    }
+    last_backup_status: str | None = None
+    next_backup: str | None = None
+
+    # Health checks
+    checks: dict = Field(default_factory=dict)
+
+    # Verification / Trust Score
+    trust_score: int = 0
+    last_verified_at: str | None = None
+    verification_status: dict | None = None
+
+    # Coverage
+    coverage: dict | None = None
+
+    # Jobs without a recent good backup: {"stale", "checked_at", "stale_jobs": [...]}
+    backup_freshness: dict | None = None
+    # False until the user confirms saving a recovery kit for the current password.
+    recovery_kit_confirmed: bool = False
+    # Latest finished restore drill: {"id", "status", "started_at", "completed_at",
+    # "databases_tested", "databases_passed", "databases_failed"} or None.
+    last_drill: dict | None = None

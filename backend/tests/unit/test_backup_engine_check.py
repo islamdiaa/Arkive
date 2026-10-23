@@ -181,8 +181,8 @@ async def test_check_uses_correct_restic_command(engine):
 
 
 @pytest.mark.asyncio
-async def test_check_timeout_is_600_seconds(engine):
-    """check() uses a 600-second timeout for potentially long integrity checks."""
+async def test_check_timeout_allows_long_checks(engine):
+    """check() uses a one-hour timeout; with --retry-lock it may first wait for a running backup."""
     fake_result = MagicMock()
     fake_result.returncode = 0
     fake_result.stdout = ""
@@ -200,7 +200,7 @@ async def test_check_timeout_is_600_seconds(engine):
         local_target = {"id": "t-local", "type": "local", "config": {"path": "/data/local"}}
         await engine.check(local_target)
 
-    assert captured_kwargs.get("timeout") == 600
+    assert captured_kwargs.get("timeout") == 3600
 
 
 @pytest.mark.asyncio

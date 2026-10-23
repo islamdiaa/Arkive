@@ -254,13 +254,35 @@ test.describe.serial('API Smoke Tests', () => {
         name: 'Test Discord',
         url: 'https://discord.com/api/webhooks/test/test',
         enabled: true,
-        events: ['backup_success', 'backup_failure'],
+        events: ['backup.success', 'backup.failed'],
       },
     });
     expect(res.status()).toBe(201);
     const body = await res.json();
     expect(body).toHaveProperty('id');
     expect(body).toHaveProperty('name', 'Test Discord');
+  });
+
+  test('POST /api/notifications rejects unknown event types', async ({ request }) => {
+    test.skip(!apiKey, 'Skipped: no API key');
+    const res = await request.post(`${API}/notifications`, {
+      headers: authHeaders(apiKey),
+      data: {
+        type: 'discord',
+        name: 'Bad Events',
+        url: 'https://discord.com/api/webhooks/test/test',
+        events: ['backup_success'],
+      },
+    });
+    expect(res.status()).toBe(422);
+  });
+
+  test('GET /api/notifications/events lists the event catalog', async ({ request }) => {
+    test.skip(!apiKey, 'Skipped: no API key');
+    const res = await request.get(`${API}/notifications/events`, { headers: authHeaders(apiKey) });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.events.map((e: any) => e.value)).toContain('backup.stale');
   });
 
   test('DELETE /api/notifications/:id deletes a channel', async ({ request }) => {

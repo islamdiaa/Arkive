@@ -13,12 +13,18 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
+  // The dev server compiles each route on first request; on a cold or busy
+  // machine (CI runners, the first spec) that can exceed the 5s default.
+  expect: { timeout: 10_000 },
   retries: process.env.CI ? 2 : 0,
   // Tests share one backend process and mutable auth/rate-limit state.
   // Keep one worker to avoid cross-project lockout races.
   workers: 1,
   fullyParallel: false,
-  reporter: [['list'], ['html', { open: 'never' }]],
+  // Outputs live under .playwright/ (gitignored). CI uploads the HTML report
+  // from .playwright/report on failure.
+  outputDir: '.playwright/test-results',
+  reporter: [['list'], ['html', { open: 'never', outputFolder: '.playwright/report' }]],
 
   use: {
     baseURL: 'http://127.0.0.1:5173',
@@ -108,7 +114,7 @@ export default defineConfig({
     {
       command: './tests/e2e/start-backend.sh',
       port: 8200,
-      reuseExistingServer: true,
+      reuseExistingServer: !process.env.CI,
       timeout: 45_000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -116,7 +122,7 @@ export default defineConfig({
     {
       command: './tests/e2e/start-frontend.sh',
       port: 5173,
-      reuseExistingServer: true,
+      reuseExistingServer: !process.env.CI,
       timeout: 45_000,
       stdout: 'pipe',
       stderr: 'pipe',

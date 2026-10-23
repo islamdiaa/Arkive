@@ -1,5 +1,6 @@
 """Restore API routes."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -21,8 +22,9 @@ from pydantic import BaseModel
 from app.core.dependencies import get_backup_engine, get_config, get_db, get_restore_plan, require_auth
 from app.core.security import decrypt_config
 from app.models.restore import RestoreRequest
-from app.services.orchestrator import LOCK_FILE, RESTORE_LOCK_FILE, _get_proc_start_time
+from app.services.orchestrator import _get_proc_start_time
 from app.services.repo_paths import build_repo_path
+from app.utils.mounts import read_only_mount_for
 
 logger = logging.getLogger("arkive.restore")
 
@@ -31,6 +33,72 @@ class RestoreTestRequest(BaseModel):
     snapshot_id: str
     target_id: str
     path: str | None = None
+
+
+# Restore-integrity tests pick a file at random; cap its size so a multi-GB
+# dump or disk image can't fill the disk or stall the worker while hashing.
+MAX_RESTORE_TEST_BYTES = 256 * 1024 * 1024
+
+
+def _entry_size(entry: dict) -> int | None:
+    size = entry.get("size")
+    return size if isinstance(size, int) and size >= 0 else None
+
+
+def _is_small_file(entry: dict) -> bool:
+    if entry.get("type") != "file":
+        return False
+    size = _entry_size(entry)
+    return size is None or size <= MAX_RESTORE_TEST_BYTES
+
+
+async def _pick_restore_test_file(backup_engine, target: dict, snapshot_id: str) -> str | None:
+    """Pick a random small file from the snapshot root or up to two levels below."""
+    entries = await backup_engine.ls(target, snapshot_id, "/")
+    files = [e for e in entries if _is_small_file(e)]
+    if files:
+        return "/" + random.choice(files)["name"]  # nosec B311
+    dirs = [e for e in entries if e.get("type") in ("dir", "directory")]
+    for d in random.sample(dirs, min(len(dirs), 5)):  # nosec B311
+        subpath = "/" + d["name"]
+        sub_entries = await backup_engine.ls(target, snapshot_id, subpath)
+        sub_files = [e for e in sub_entries if _is_small_file(e)]
+        if sub_files:
+            return subpath + "/" + random.choice(sub_files)["name"]  # nosec B311
+        sub_dirs = [e for e in sub_entries if e.get("type") in ("dir", "directory")]
+        for sd in random.sample(sub_dirs, min(len(sub_dirs), 3)):  # nosec B311
+            deep_path = subpath + "/" + sd["name"]
+            deep_entries = await backup_engine.ls(target, snapshot_id, deep_path)
+            deep_files = [e for e in deep_entries if _is_small_file(e)]
+            if deep_files:
+                return deep_path + "/" + random.choice(deep_files)["name"]  # nosec B311
+    return None
+
+
+def _locate_and_hash(tmpdir: str, expected_name: str) -> tuple[str | None, str, int]:
+    """Find the restored file under tmpdir and SHA-256 it (blocking; run in a thread)."""
+    restored_file = None
+    first_file = None
+    for dirpath, _, filenames in os.walk(tmpdir):
+        for fname in filenames:
+            candidate = os.path.join(dirpath, fname)
+            if first_file is None:
+                first_file = candidate
+            if fname == expected_name:
+                restored_file = candidate
+                break
+        if restored_file:
+            break
+    restored_file = restored_file or first_file
+    if not restored_file:
+        return None, "", 0
+    sha256 = hashlib.sha256()
+    file_size = 0
+    with open(restored_file, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            sha256.update(chunk)
+            file_size += len(chunk)
+    return restored_file, sha256.hexdigest(), file_size
 
 
 def _repo_path_for_target(target: dict) -> str:
@@ -257,68 +325,92 @@ async def restore_files(
                 "dry_run": True,
             }
 
-    await db.execute(
-        """INSERT INTO restore_runs
-           (id, target_id, snapshot_id, paths, restore_to, status, started_at)
-           VALUES (?, ?, ?, ?, ?, 'running', ?)""",
-        (
-            restore_id,
-            body.target,
-            body.snapshot_id,
-            json.dumps(body.paths if body.paths else []),
-            body.restore_to,
-            started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        ),
-    )
-    await db.execute(
-        """INSERT INTO activity_log (type, action, message, details, severity)
-           VALUES ('restore', 'run_started', ?, ?, 'info')""",
-        (
-            "Manual restore started",
-            json.dumps(
-                {
-                    "restore_id": restore_id,
-                    "target_id": body.target,
-                    "snapshot_id": body.snapshot_id,
-                    "restore_to": body.restore_to,
-                }
-            ),
-        ),
-    )
-    await db.commit()
+    restore_to = body.restore_to or str(Path(config.restore_dir) / f"restore-{restore_id}")
 
+    # Arkive is meant to run with the data it backs up mounted read-only; a
+    # restore into such a mount would fail file-by-file deep inside restic.
+    destinations = [restore_to] + [
+        os.path.join(restore_to, p.lstrip("/")) for p in (body.paths or []) if p.strip("/")
+    ]
+    for destination in destinations:
+        read_only_mount = read_only_mount_for(destination)
+        if read_only_mount:
+            raise HTTPException(
+                400,
+                f"Cannot restore to {destination}: {read_only_mount} is mounted read-only in the "
+                f"Arkive container. Restore to {config.restore_dir} (the default) and copy the files "
+                f"into place, or mount {read_only_mount} read-write.",
+            )
+
+    # Take the lock before recording anything: a 409 (backup running / another
+    # restore) must not leave a restore_runs row stuck in 'running'.
     _acquire_restore_lock()
     try:
-        result = await backup_engine.restore(
-            target=target,
-            snapshot_id=body.snapshot_id,
-            paths=body.paths if body.paths else None,
-            restore_to=body.restore_to,
-        )
-    except Exception as exc:
-        duration = int(time.monotonic() - started_monotonic)
-        message = str(exc)
+        if not body.restore_to:
+            await asyncio.to_thread(Path(restore_to).mkdir, parents=True, exist_ok=True)
+
         await db.execute(
-            """UPDATE restore_runs
-               SET status = 'failed', completed_at = ?, duration_seconds = ?, error_message = ?
-               WHERE id = ?""",
+            """INSERT INTO restore_runs
+               (id, target_id, snapshot_id, paths, restore_to, status, started_at)
+               VALUES (?, ?, ?, ?, ?, 'running', ?)""",
             (
-                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                max(duration, 0),
-                message,
                 restore_id,
+                body.target,
+                body.snapshot_id,
+                json.dumps(body.paths if body.paths else []),
+                restore_to,
+                started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             ),
         )
         await db.execute(
             """INSERT INTO activity_log (type, action, message, details, severity)
-               VALUES ('restore', 'completed', ?, ?, 'warning')""",
+               VALUES ('restore', 'run_started', ?, ?, 'info')""",
             (
-                f"Restore failed: {message}",
-                json.dumps({"restore_id": restore_id, "status": "failed"}),
+                "Manual restore started",
+                json.dumps(
+                    {
+                        "restore_id": restore_id,
+                        "target_id": body.target,
+                        "snapshot_id": body.snapshot_id,
+                        "restore_to": restore_to,
+                    }
+                ),
             ),
         )
         await db.commit()
-        raise
+
+        try:
+            result = await backup_engine.restore(
+                target=target,
+                snapshot_id=body.snapshot_id,
+                paths=body.paths if body.paths else None,
+                restore_to=restore_to,
+            )
+        except BaseException as exc:
+            duration = int(time.monotonic() - started_monotonic)
+            interrupted = isinstance(exc, asyncio.CancelledError)
+            message = "Restore interrupted" if interrupted else str(exc)
+            await db.execute(
+                """UPDATE restore_runs
+                   SET status = 'failed', completed_at = ?, duration_seconds = ?, error_message = ?
+                   WHERE id = ?""",
+                (
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    max(duration, 0),
+                    message,
+                    restore_id,
+                ),
+            )
+            await db.execute(
+                """INSERT INTO activity_log (type, action, message, details, severity)
+                   VALUES ('restore', 'completed', ?, ?, 'warning')""",
+                (
+                    f"Restore failed: {message}",
+                    json.dumps({"restore_id": restore_id, "status": "failed"}),
+                ),
+            )
+            await db.commit()
+            raise
     finally:
         _release_restore_lock()
 
@@ -355,6 +447,7 @@ async def restore_files(
         "restore_id": restore_id,
         "status": result_status,
         "snapshot_id": body.snapshot_id,
+        "restore_to": restore_to,
         "message": result.get("output") or result.get("error", ""),
     }
 
@@ -387,23 +480,46 @@ async def test_restore_integrity(
     file_path = body.path
     tmpdir = None
     try:
-        # If no path provided, browse the snapshot root and pick a random file
         if not file_path:
             try:
-                entries = await backup_engine.ls(target, snapshot_id, "/")
+                file_path = await _pick_restore_test_file(backup_engine, target, snapshot_id)
             except Exception as e:
                 logger.exception("Failed to list snapshot files: %s", e)
                 return {"status": "failed", "error": "Failed to list snapshot files"}
+            if not file_path:
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"No files found in snapshot (restore tests only use files up to "
+                        f"{MAX_RESTORE_TEST_BYTES // (1024 * 1024)} MB)"
+                    ),
+                }
+        else:
+            # Refuse oversized user-selected files when the listing reports a size.
+            parent = os.path.dirname(file_path.rstrip("/")) or "/"
+            try:
+                siblings = await backup_engine.ls(target, snapshot_id, parent)
+            except Exception:
+                siblings = []
+            match = next(
+                (e for e in siblings if e.get("name") == os.path.basename(file_path.rstrip("/"))),
+                None,
+            )
+            size = _entry_size(match) if match else None
+            if size is not None and size > MAX_RESTORE_TEST_BYTES:
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"File is too large for a restore test ({size} bytes; "
+                        f"limit {MAX_RESTORE_TEST_BYTES} bytes)"
+                    ),
+                }
 
-            files = [e for e in entries if e.get("type") == "file"]
-            if not files:
-                return {"status": "failed", "error": "No files found in snapshot root"}
-            # Non-security sampling for integrity check, not cryptographic use
-            chosen = random.choice(files)  # nosec B311
-            file_path = "/" + chosen["name"]
-
-        # Create temp directory and restore the single file
-        tmpdir = tempfile.mkdtemp(prefix="arkive-test-")
+        # Restore into the persistent restores/ dir (not the container's /tmp,
+        # which lives in docker.img on Unraid).
+        restore_root = Path(config.restore_dir)
+        await asyncio.to_thread(restore_root.mkdir, parents=True, exist_ok=True)
+        tmpdir = tempfile.mkdtemp(prefix="arkive-test-", dir=str(restore_root))
         try:
             result = await backup_engine.restore(
                 target=target,
@@ -421,47 +537,18 @@ async def test_restore_integrity(
                 "error": result.get("error") or result.get("output", "Restore returned non-success status"),
             }
 
-        # Find the restored file in tmpdir
-        restored_file = None
-        for dirpath, _, filenames in os.walk(tmpdir):
-            for fname in filenames:
-                candidate = os.path.join(dirpath, fname)
-                # Match by filename from path
-                if fname == os.path.basename(file_path):
-                    restored_file = candidate
-                    break
-            if restored_file:
-                break
-
-        # If exact name match didn't find it, just pick the first file
-        if not restored_file:
-            for dirpath, _, filenames in os.walk(tmpdir):
-                for fname in filenames:
-                    restored_file = os.path.join(dirpath, fname)
-                    break
-                if restored_file:
-                    break
-
+        restored_file, digest, file_size = await asyncio.to_thread(
+            _locate_and_hash, tmpdir, os.path.basename(file_path)
+        )
         if not restored_file:
             return {"status": "failed", "error": "Restored file not found in temp directory"}
-
-        # Compute SHA-256
-        sha256 = hashlib.sha256()
-        file_size = 0
-        with open(restored_file, "rb") as f:
-            while True:
-                chunk = f.read(65536)
-                if not chunk:
-                    break
-                sha256.update(chunk)
-                file_size += len(chunk)
 
         duration_ms = round((time.monotonic() - start) * 1000)
 
         return {
             "status": "success",
             "file": file_path,
-            "sha256": sha256.hexdigest(),
+            "sha256": digest,
             "size_bytes": file_size,
             "duration_ms": duration_ms,
         }
@@ -473,7 +560,7 @@ async def test_restore_integrity(
         return {"status": "failed", "error": "Internal error during restore operation"}
     finally:
         if tmpdir and os.path.exists(tmpdir):
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, tmpdir, True)
 
 
 @router.get("/plan")

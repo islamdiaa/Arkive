@@ -19,11 +19,12 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 ARG TARGETARCH
+ARG VERSION=0.4.0
 
 # OCI image metadata
 LABEL org.opencontainers.image.title="Arkive" \
       org.opencontainers.image.description="Automated disaster recovery for Unraid servers" \
-      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/kemetlabs/Arkive" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Arkive" \
@@ -78,7 +79,9 @@ COPY profiles/ /app/profiles/
 COPY --from=frontend-builder /build/build/ /app/frontend/build/
 
 # Set PYTHONPATH so `from app.xxx` imports resolve correctly
-ENV PYTHONPATH=/app/backend
+ENV PYTHONPATH=/app/backend \
+    PYTHONUNBUFFERED=1 \
+    ARKIVE_VERSION=${VERSION}
 
 # Create non-root user and set ownership
 RUN groupadd --system arkive && useradd --system --gid arkive --create-home arkive \
@@ -97,4 +100,4 @@ USER arkive
 
 # Entry point with tini for proper signal handling
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8200", "--workers", "1", "--no-server-header"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8200", "--workers", "1", "--no-server-header", "--log-config", "/app/backend/logging.json"]

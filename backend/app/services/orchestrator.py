@@ -14,59 +14,41 @@ from typing import Any
 import aiosqlite
 
 from app.core.config import ArkiveConfig
+from app.core.context import current_run_id
 from app.core.event_bus import EventBus
 from app.core.security import decrypt_config
-from app.services.backup_engine import BackupEngine
+from app.services.backup_engine import EXCLUDE_MARKER, BackupEngine
 from app.services.cloud_manager import CloudManager
-from app.services.db_dumper import DBDumper
+from app.services.db_dumper import (
+    PARTIAL_SUFFIX, DBDumper, DumpResult, cleanup_dump_dir, dump_prefix, legacy_dump_prefix,
+)
 from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
+from app.services.lock_manager import BackupLockManager
+from app.services.lock_manager import _get_proc_start_time  # noqa: F401 — re-export for backward compat
 from app.services.notifier import Notifier
+from app.services.repo_paths import build_repo_path
+from app.services.retention import read_retention_settings
+from app.utils.mounts import host_path_for
 
 logger = logging.getLogger("arkive.orchestrator")
+
+# Job types that refresh each artifact. Unknown/custom types behave like "full".
+DATABASE_JOB_TYPES = {"full", "db_dump", "custom"}
+FLASH_JOB_TYPES = {"full", "flash", "custom"}
+# Dump methods that exec into the database container (need it running).
+EXEC_DUMP_TYPES = {"postgres", "mariadb", "mysql", "mongodb", "redis"}
+_EXCLUDE_MARKER_TEXT = "Arkive storage directory — excluded from Arkive backups.\n"
 
 LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "backup.lock"
 RESTORE_LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "restore.lock"
 
 
-def _get_proc_start_time(pid: int) -> str | None:
-    """Read process start time (field 22) from /proc/{pid}/stat.
-
-    This value (in clock ticks since boot) uniquely identifies a process
-    instance even after PID recycling in Docker containers.
-    Returns None if the process doesn't exist or /proc is unavailable.
-    """
-    try:
-        with open(f"/proc/{pid}/stat", "r") as f:
-            fields = f.read().split(")")[-1].split()
-            # Field 22 in stat is starttime (0-indexed from after the comm field)
-            # After splitting on ")", fields[0] is state, fields[19] is starttime
-            return fields[19] if len(fields) > 19 else None
-    except (OSError, IndexError):
-        return None
-
-
 def cleanup_stale_backup_lock(config_dir: Path | None = None) -> bool:
     """Remove a stale backup.lock proactively on startup or before manual runs."""
-    config_root = config_dir or Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config"))
-    lock_file = config_root / "backup.lock"
-    if not lock_file.exists():
-        return False
-
-    try:
-        lock_data = json.loads(lock_file.read_text())
-        pid = lock_data.get("pid")
-        stored_start = lock_data.get("proc_start_time")
-        if pid and stored_start:
-            current_start = _get_proc_start_time(int(pid))
-            if current_start is not None and current_start == stored_start:
-                return False
-        lock_file.unlink(missing_ok=True)
-        return True
-    except Exception:
-        lock_file.unlink(missing_ok=True)
-        return True
+    mgr = BackupLockManager(config_dir)
+    return mgr.cleanup_stale_backup_lock()
 
 
 DEFAULT_MIN_DISK_BYTES = 1 * 1024 ** 3   # 1 GB
@@ -174,6 +156,16 @@ _PHASE_ORDER = [
 class BackupOrchestrator:
     """Coordinates the full backup pipeline."""
 
+    # How long a scheduled run waits for a running backup/restore to finish
+    # before it is recorded as skipped.
+    scheduled_lock_wait_seconds: float = 3 * 3600
+    lock_poll_seconds: float = 15
+    # Discovery retries while the Docker daemon is unreachable.
+    discovery_attempts: int = 3
+    discovery_retry_seconds: float = 20
+    # Dumps older than this are removed (containers that no longer exist).
+    dump_max_age_days: int = 7
+
     def __init__(
         self,
         discovery: DiscoveryEngine | None,
@@ -193,16 +185,13 @@ class BackupOrchestrator:
         self.notifier = notifier
         self.event_bus = event_bus
         self.config = config
+        self.lock_manager = BackupLockManager(config.config_dir)
         self._cancel_requested = False
         self._active_runs: dict[str, bool] = {}
 
     def _lock_conflict_message(self) -> str:
         """Return the best available explanation for a lock acquisition failure."""
-        if RESTORE_LOCK_FILE.exists():
-            return "Restore operation in progress"
-        if LOCK_FILE.exists():
-            return "Another backup is already running"
-        return "Backup could not start because the lock could not be acquired"
+        return self.lock_manager.lock_conflict_message()
 
     async def _mark_run_conflict(self, run_id: str, job_id: str, trigger: str, message: str) -> str:
         """Persist a terminal run when startup is blocked by a lock conflict."""
@@ -238,106 +227,12 @@ class BackupOrchestrator:
         return terminal_status
 
     def _acquire_lock(self, run_id: str | None = None) -> bool:
-        """Acquire backup lock atomically. Returns False if already locked.
-
-        Uses O_CREAT | O_EXCL for atomic creation to prevent TOCTOU race
-        conditions between concurrent backup triggers.
-        """
-        # Check for stale lock first
-        if LOCK_FILE.exists():
-            try:
-                lock_data = json.loads(LOCK_FILE.read_text())
-                pid = lock_data.get("pid")
-                if pid and os.path.exists(f"/proc/{pid}"):
-                    # PID exists — but is it the SAME process that took the lock?
-                    stored_start = lock_data.get("proc_start_time")
-                    if stored_start:
-                        current_start = _get_proc_start_time(pid)
-                        if current_start == stored_start:
-                            return False  # Same process still running
-                        # Different start time → PID was recycled
-                        logger.warning(
-                            "Lock PID %s recycled (start %s→%s), removing stale lock",
-                            pid, stored_start, current_start,
-                        )
-                    else:
-                        # Legacy lock without start time — fall back to PID-only check
-                        return False
-                # Process dead or PID recycled — remove stale lock
-                if pid:
-                    logger.warning("Removing stale lock from PID %s", pid)
-                try:
-                    LOCK_FILE.unlink()
-                except OSError:
-                    pass
-            except Exception:
-                # Corrupt lock file — remove and retry
-                try:
-                    LOCK_FILE.unlink()
-                except OSError:
-                    pass
-
-        # Refuse backup if a restore is in progress
-        if RESTORE_LOCK_FILE.exists():
-            # Check if restore lock is stale
-            try:
-                lock_data = json.loads(RESTORE_LOCK_FILE.read_text())
-                pid = lock_data.get("pid")
-                if pid:
-                    stored_start = lock_data.get("proc_start_time")
-                    if not stored_start:
-                        # Legacy lock without proc_start_time — treat as live (conservative)
-                        logger.warning("Cannot start backup — restore operation in progress")
-                        return False
-                    current_start = _get_proc_start_time(int(pid))
-                    if current_start is not None and current_start == stored_start:
-                        # Process genuinely alive — restore is running
-                        logger.warning("Cannot start backup — restore operation in progress")
-                        return False
-                    # Process dead or PID recycled — stale lock
-                    logger.warning("Removing stale restore lock from PID %s", pid)
-                RESTORE_LOCK_FILE.unlink(missing_ok=True)
-            except (json.JSONDecodeError, OSError, ValueError):
-                RESTORE_LOCK_FILE.unlink(missing_ok=True)
-            # Fall through to acquire backup lock normally
-
-        lock_payload: dict[str, Any] = {
-            "pid": os.getpid(),
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        lock_payload["proc_start_time"] = _get_proc_start_time(os.getpid()) or ""
-        if run_id:
-            lock_payload["run_id"] = run_id
-
-        # Atomic file creation — O_EXCL fails if file already exists,
-        # preventing race between concurrent callers.
-        try:
-            LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(str(LOCK_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                os.write(fd, json.dumps(lock_payload).encode())
-            finally:
-                os.close(fd)
-        except FileExistsError:
-            # Another process beat us to the lock
-            return False
-        except OSError as e:
-            logger.error("Failed to acquire lock: %s", e)
-            return False
-
-        # Double-check: did a restore lock appear between our pre-check and O_EXCL create?
-        if RESTORE_LOCK_FILE.exists():
-            LOCK_FILE.unlink(missing_ok=True)
-            return False
-
-        return True
+        """Acquire backup lock atomically. Returns False if already locked."""
+        return self.lock_manager.acquire_backup_lock(run_id)
 
     def _release_lock(self) -> None:
         """Release backup lock."""
-        try:
-            LOCK_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+        self.lock_manager.release_backup_lock()
 
     def _is_cancelled(self, run_id: str) -> bool:
         return self._cancel_requested or self._active_runs.get(run_id, False)
@@ -353,14 +248,74 @@ class BackupOrchestrator:
             return True
         return False
 
+    async def _acquire_lock_waiting(self, run_id: str, wait_seconds: float) -> bool:
+        """Acquire the backup lock, waiting up to ``wait_seconds`` for it.
+
+        Scheduled jobs that fire while another backup (or a restore) is running
+        queue behind it instead of being skipped — with the default schedules
+        the flash and DB jobs both fire at 06:00 and one of them used to be
+        skipped every single day.
+        """
+        if self._acquire_lock(run_id):
+            return True
+        if wait_seconds <= 0:
+            return False
+        logger.info("Backup run %s waiting up to %ds for the running operation to finish: %s",
+                    run_id, int(wait_seconds), self._lock_conflict_message())
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            await asyncio.sleep(min(self.lock_poll_seconds, max(deadline - time.monotonic(), 0)))
+            if self._acquire_lock(run_id):
+                logger.info("Backup run %s acquired the lock after waiting", run_id)
+                return True
+        return False
+
+    async def _discover_with_retry(self) -> list:
+        """Run discovery, retrying while the Docker daemon is unreachable."""
+        last_error: Exception | None = None
+        for attempt in range(1, self.discovery_attempts + 1):
+            try:
+                return await self.discovery.scan()
+            except Exception as e:
+                last_error = e
+                if attempt < self.discovery_attempts:
+                    logger.warning("Discovery attempt %d/%d failed, retrying in %ds: %s",
+                                   attempt, self.discovery_attempts, self.discovery_retry_seconds, e)
+                    await asyncio.sleep(self.discovery_retry_seconds)
+        assert last_error is not None
+        raise last_error
+
+    # A drop to zero databases keeps warning for this long after the last run
+    # that found some (then it's taken as intentional, e.g. containers removed).
+    database_loss_window_days = 30
+
+    async def _previous_database_count(self, job_id: str, run_id: str) -> int:
+        """Databases found by this job's most recent run that found any.
+
+        Comparing only with the immediately preceding run would warn once and
+        then accept 5 -> 0 -> 0 as normal.
+        """
+        async with aiosqlite.connect(self.config.db_path) as db:
+            cursor = await db.execute(
+                """SELECT databases_discovered FROM job_runs
+                   WHERE job_id = ? AND id != ? AND status IN ('success', 'partial')
+                     AND databases_discovered > 0
+                     AND started_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+                   ORDER BY started_at DESC LIMIT 1""",
+                (job_id, run_id, f"-{self.database_loss_window_days} days"),
+            )
+            row = await cursor.fetchone()
+        return int(row[0] or 0) if row else 0
+
     async def run_backup(self, job_id: str, trigger: str = "manual",
                          skip_databases: bool = False, skip_flash: bool = False,
                          dry_run: bool = False, run_id: str | None = None,
+                         lock_wait_seconds: float | None = None,
                          **kwargs) -> dict:
         """Execute the full backup pipeline.
 
         Pipeline steps:
-        1. Acquire lock
+        1. Acquire lock (scheduled runs wait for a running backup to finish)
         2. Create job_run record
         3. Discovery scan
         4. Dump databases
@@ -369,10 +324,25 @@ class BackupOrchestrator:
         7. Upload to each target via restic
         8. Retention cleanup
         9. Notify + release lock
+
+        The job type selects which artifacts are refreshed: ``db_dump`` jobs
+        re-dump databases, ``flash`` jobs re-archive the flash drive, ``full``
+        jobs do both. Every snapshot covers the same paths (dump directory +
+        watched directories), so each one is a complete restore point and
+        restic retention groups them together.
         """
         if run_id is None:
             run_id = str(uuid.uuid4())[:8]
-        if not self._acquire_lock(run_id):
+        if lock_wait_seconds is None:
+            lock_wait_seconds = self.scheduled_lock_wait_seconds if trigger == "scheduled" else 0
+
+        # Set correlation ID so every log line in this run is tagged.
+        # Initialize token to None so the finally block never hits NameError
+        # if an exception occurs before current_run_id.set() completes.
+        _run_id_token = None
+        _run_id_token = current_run_id.set(run_id)
+
+        if not await self._acquire_lock_waiting(run_id, lock_wait_seconds):
             message = self._lock_conflict_message()
             logger.warning("Backup run %s could not start: %s", run_id, message)
             terminal_status = await self._mark_run_conflict(run_id, job_id, trigger, message)
@@ -385,12 +355,20 @@ class BackupOrchestrator:
                 "error_category": "conflict",
                 "user_action": "Wait for the current backup/restore operation to finish",
             })
+            current_run_id.reset(_run_id_token)
             return {"status": "conflict", "message": message, "run_id": run_id}
 
         self._cancel_requested = False
         self._active_runs[run_id] = False
         job: dict = {}
         start_time = time.monotonic()
+        # Problems that don't abort the run but must not be reported as success.
+        warnings: list[str] = []
+        # Dump cleanup only ages out dumps of vanished databases when this run's
+        # discovery saw the whole picture (see _dump_cleanup_policy).
+        cleanup_max_age: int | None = None
+        protect_prefixes: set[str] = set()
+        legacy_prefixes: dict[str, str] = {}
 
         try:
             # Load job config
@@ -401,6 +379,18 @@ class BackupOrchestrator:
                 if not job:
                     return {"status": "error", "message": f"Job {job_id} not found"}
                 job = dict(job)
+
+            job_type = job.get("type") or "full"
+            include_databases = (
+                not skip_databases
+                and bool(job.get("include_databases", True))
+                and job_type in DATABASE_JOB_TYPES
+            )
+            include_flash = (
+                not skip_flash
+                and bool(job.get("include_flash", True))
+                and job_type in FLASH_JOB_TYPES
+            )
 
             # Create run record (skip if already created by caller)
             async with aiosqlite.connect(self.config.db_path) as db:
@@ -417,19 +407,47 @@ class BackupOrchestrator:
                 "run_id": run_id, "job_id": job_id, "trigger": trigger,
             })
 
-            # Step 3: Discovery (skip if Docker not available)
+            # Step 3: Discovery
             await self._update_progress(run_id, "discovering")
             containers = []
             all_databases = []
-            if self.discovery:
-                containers = await self.discovery.scan()
-                for c in containers:
-                    all_databases.extend(c.databases)
+            discovery_ok = False
+            if include_databases:
+                if self.discovery:
+                    try:
+                        containers = await self._discover_with_retry()
+                    except Exception as e:
+                        logger.error("Container discovery failed: %s", e)
+                        warnings.append(f"container discovery failed, databases were not dumped ({e})")
+                        await self._record_discovery_outcome(run_id, False)
+                    else:
+                        discovery_ok = True
+                        for c in containers:
+                            all_databases.extend(c.databases)
+                            warnings.extend(getattr(c, "warnings", None) or [])
+                        all_databases = DBDumper.dedupe(all_databases)
+                        async with aiosqlite.connect(self.config.db_path) as db:
+                            await persist_discovery_results(db, containers)
+                else:
+                    # Only possible in dev mode — production refuses to start
+                    # without the Docker socket.
+                    logger.info("Docker not available — skipping container discovery")
+
+            if discovery_ok:
                 async with aiosqlite.connect(self.config.db_path) as db:
-                    await persist_discovery_results(db, containers)
+                    await db.execute(
+                        "UPDATE job_runs SET databases_discovered = ? WHERE id = ?",
+                        (len(all_databases), run_id),
+                    )
                     await db.commit()
-            else:
-                logger.info("Docker not available — skipping container discovery")
+                await self._record_discovery_outcome(run_id, True)
+                if not all_databases:
+                    previous = await self._previous_database_count(job_id, run_id)
+                    if previous:
+                        warnings.append(f"no databases discovered (a recent run found {previous})")
+
+            cleanup_max_age, protect_prefixes, legacy_prefixes = self._dump_cleanup_policy(
+                discovery_ok, containers, all_databases)
 
             if self._is_cancelled(run_id):
                 return await self._cancel(run_id)
@@ -455,9 +473,26 @@ class BackupOrchestrator:
 
             # Step 4: Dump databases
             dump_results = []
-            if not skip_databases and job.get("include_databases", True) and all_databases and self.db_dumper:
+            skipped_dbs: list[str] = []
+            if include_databases and all_databases and self.db_dumper:
                 await self._update_progress(run_id, "dumping_databases")
-                dump_results = await self.db_dumper.dump_all(all_databases)
+                # Exec-based dumps need a running container. Stopped containers
+                # are skipped (their on-disk data is static) rather than failed.
+                container_status = {c.name: c.status for c in containers}
+                to_dump = []
+                for d in all_databases:
+                    status = container_status.get(d.container_name, "running")
+                    if d.db_type in EXEC_DUMP_TYPES and status != "running":
+                        skipped_dbs.append(f"{d.container_name}/{d.db_name}")
+                        dump_results.append(DumpResult(
+                            container_name=d.container_name, db_type=d.db_type, db_name=d.db_name,
+                            dump_path="", dump_size_bytes=0, integrity_check="skipped",
+                            status="skipped", error=f"Container is {status}, not running",
+                        ))
+                    else:
+                        to_dump.append(d)
+                if to_dump:
+                    dump_results.extend(await self.db_dumper.dump_all(to_dump))
 
                 # Record dump results
                 async with aiosqlite.connect(self.config.db_path) as db:
@@ -469,21 +504,45 @@ class BackupOrchestrator:
                             (run_id, dr.container_name, dr.db_type, dr.db_name,
                              dr.dump_size_bytes, dr.integrity_check, dr.status, dr.dump_path, dr.error),
                         )
-                    dumped = sum(1 for d in dump_results if d.status == "success")
-                    failed = sum(1 for d in dump_results if d.status == "failed")
+                    # Roles/globals dumps are recorded per run but aren't databases.
+                    database_results = [d for d in dump_results if d.kind == "database"]
+                    dumped = sum(1 for d in database_results if d.status == "success")
+                    failed = sum(1 for d in database_results if d.status == "failed")
                     await db.execute(
                         """UPDATE job_runs SET databases_discovered = ?, databases_dumped = ?, databases_failed = ?
                         WHERE id = ?""",
                         (len(all_databases), dumped, failed, run_id),
                     )
                     await db.commit()
+                if skipped_dbs:
+                    logger.info("Skipped %d database(s) in stopped containers: %s",
+                                len(skipped_dbs), ", ".join(skipped_dbs))
+                # A stopped database is only covered by a dump made while it
+                # ran; one that never had a dump isn't backed up at all.
+                undumped = [
+                    f"{d.container_name}/{d.db_name}" for d in all_databases
+                    if f"{d.container_name}/{d.db_name}" in skipped_dbs
+                    and not self._has_dump(d)
+                ]
+                if undumped:
+                    warnings.append("database(s) in stopped containers have never been dumped: "
+                                    + ", ".join(undumped))
+
+            # Keep only the newest dump per database (older generations live
+            # in earlier snapshots) and drop dumps of containers that are gone,
+            # so each snapshot reflects the current state.
+            try:
+                cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
+                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
+            except Exception as e:
+                logger.warning("Pre-upload dump cleanup failed: %s", e)
 
             if self._is_cancelled(run_id):
                 return await self._cancel(run_id)
 
             # Step 5: Flash backup
             flash_result = None
-            if not skip_flash and job.get("include_flash", True):
+            if include_flash:
                 await self._update_progress(run_id, "flash_backup")
                 flash_result = await self.flash_backup.backup()
                 if flash_result.status == "success":
@@ -501,11 +560,18 @@ class BackupOrchestrator:
             await self._self_backup()
 
             # Step 7: Upload to targets
+            # Open a single DB connection for the entire upload + retention +
+            # snapshot-refresh phase to avoid opening a new connection per target.
             targets_json = json.loads(job.get("targets", "[]"))
-            if not targets_json:
-                # Get all enabled targets
-                async with aiosqlite.connect(self.config.db_path) as db:
-                    db.row_factory = aiosqlite.Row
+            total_bytes = 0
+            target_failures = []
+            resolved_targets: list[dict] = []
+
+            async with aiosqlite.connect(self.config.db_path) as db:
+                db.row_factory = aiosqlite.Row
+
+                if not targets_json:
+                    # Get all enabled targets
                     cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                     targets_rows = await cursor.fetchall()
                     targets_json = []
@@ -514,84 +580,100 @@ class BackupOrchestrator:
                         td["config"] = decrypt_config(td.get("config", "{}"), str(self.config.config_dir))
                         targets_json.append(td)
 
-            total_bytes = 0
-            target_failures = []
-            resolved_targets: list[dict] = []
-            for target in targets_json:
-                if self._is_cancelled(run_id):
-                    return await self._cancel(run_id)
+                if not targets_json:
+                    warnings.append("no enabled storage targets, nothing was uploaded")
 
-                if isinstance(target, str):
-                    async with aiosqlite.connect(self.config.db_path) as db:
-                        db.row_factory = aiosqlite.Row
+                # Resolve backup paths once (same for every target)
+                backup_paths = [str(self.config.dump_dir)]
+                dirs_json = json.loads(job.get("directories", "[]"))
+                resolved_job_paths: list[str] = []
+                for entry in dirs_json:
+                    if isinstance(entry, str) and os.path.isabs(entry):
+                        resolved_job_paths.append(entry)
+                        continue
+
+                    cursor = await db.execute(
+                        "SELECT path FROM watched_directories WHERE id = ? AND enabled = 1",
+                        (entry,),
+                    )
+                    row = await cursor.fetchone()
+                    if row and row["path"] not in resolved_job_paths:
+                        resolved_job_paths.append(row["path"])
+
+                backup_paths.extend(resolved_job_paths)
+
+                # Also include enabled watched directories
+                cursor = await db.execute(
+                    "SELECT path FROM watched_directories WHERE enabled = 1"
+                )
+                for row in await cursor.fetchall():
+                    if row["path"] not in backup_paths:
+                        backup_paths.append(row["path"])
+
+                # restic silently drops source paths that don't exist; surface
+                # them instead of reporting a backup that misses a directory.
+                missing_paths = [p for p in backup_paths if not os.path.exists(p)]
+                if missing_paths:
+                    backup_paths = [p for p in backup_paths if p not in missing_paths]
+                    warnings.append(f"backup path(s) not found: {', '.join(missing_paths)}")
+
+                excludes = json.loads(job.get("exclude_patterns", "[]"))
+                excludes.extend(await self._internal_excludes(db))
+                tags = [f"job:{job_id}", f"run:{run_id}"]
+
+                for target in targets_json:
+                    if self._is_cancelled(run_id):
+                        return await self._cancel(run_id)
+
+                    if isinstance(target, str):
                         cursor = await db.execute("SELECT * FROM storage_targets WHERE id = ?", (target,))
                         t = await cursor.fetchone()
                         if t:
                             target = dict(t)
                             target["config"] = decrypt_config(target.get("config", "{}"), str(self.config.config_dir))
                         else:
+                            warnings.append(f"storage target {target} no longer exists")
                             continue
 
-                await self._update_progress(run_id, f"uploading:{target.get('name', target.get('id', ''))}")
+                    await self._update_progress(run_id, f"uploading:{target.get('name', target.get('id', ''))}")
 
-                # Init repo if needed
-                await self.backup_engine.init_repo(target)
+                    if target.get("type") != "local":
+                        # rclone reads credentials from rclone.conf; regenerate
+                        # the section so a missing/stale entry can't break uploads.
+                        try:
+                            await self.cloud_manager.write_target_config(target)
+                        except Exception as e:
+                            logger.warning("Could not write rclone config for %s: %s",
+                                           target.get("name", target.get("id", "")), e)
 
-                # Collect paths to backup
-                backup_paths = [str(self.config.dump_dir)]
-                dirs_json = json.loads(job.get("directories", "[]"))
-                async with aiosqlite.connect(self.config.db_path) as db:
-                    db.row_factory = aiosqlite.Row
-                    resolved_job_paths: list[str] = []
-                    for entry in dirs_json:
-                        if isinstance(entry, str) and os.path.isabs(entry):
-                            resolved_job_paths.append(entry)
-                            continue
+                    # Init repo if needed
+                    await self.backup_engine.init_repo(target)
 
-                        cursor = await db.execute(
-                            "SELECT path FROM watched_directories WHERE id = ? AND enabled = 1",
-                            (entry,),
-                        )
-                        row = await cursor.fetchone()
-                        if row and row["path"] not in resolved_job_paths:
-                            resolved_job_paths.append(row["path"])
-
-                    backup_paths.extend(resolved_job_paths)
-
-                    # Also include enabled watched directories
-                    cursor = await db.execute(
-                        "SELECT path FROM watched_directories WHERE enabled = 1"
+                    result = await self.backup_engine.backup(
+                        target,
+                        backup_paths,
+                        excludes,
+                        tags,
+                        cancel_check=lambda rid=run_id: self._is_cancelled(rid),
                     )
-                    for row in await cursor.fetchall():
-                        if row["path"] not in backup_paths:
-                            backup_paths.append(row["path"])
 
-                excludes = json.loads(job.get("exclude_patterns", "[]"))
-                tags = [f"job:{job_id}", f"run:{run_id}"]
+                    if result.get("status") == "cancelled":
+                        return await self._cancel(run_id)
 
-                result = await self.backup_engine.backup(
-                    target,
-                    backup_paths,
-                    excludes,
-                    tags,
-                    cancel_check=lambda rid=run_id: self._is_cancelled(rid),
-                )
-
-                if result.get("status") == "cancelled":
-                    return await self._cancel(run_id)
-
-                # Record target result
-                upload_bytes = result.get("total_bytes_processed", 0)
-                total_bytes += upload_bytes
-                target_status = result.get("status", "failed")
-                target_error = result.get("error") or result.get("output") or ""
-                if target_status != "success":
+                    # Record target result
+                    upload_bytes = result.get("total_bytes_processed", 0)
+                    total_bytes += upload_bytes
+                    target_status = result.get("status", "failed")
+                    target_error = result.get("error") or result.get("output") or ""
                     target_name = target.get("name", target.get("id", "unknown"))
-                    if target_error:
-                        target_failures.append(f"{target_name}: {target_error}")
-                    else:
-                        target_failures.append(target_name)
-                async with aiosqlite.connect(self.config.db_path) as db:
+                    if target_status == "partial":
+                        # Snapshot was written but some files could not be read.
+                        warnings.append(f"{target_name}: some files could not be read ({target_error[:200]})")
+                    elif target_status != "success":
+                        if target_error:
+                            target_failures.append(f"{target_name}: {target_error}")
+                        else:
+                            target_failures.append(target_name)
                     await db.execute(
                         """INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id, upload_bytes, error)
                         VALUES (?, ?, ?, ?, ?, ?)""",
@@ -599,45 +681,37 @@ class BackupOrchestrator:
                          result.get("snapshot_id", ""), upload_bytes, target_error or None),
                     )
                     await db.commit()
-                resolved_targets.append(target)
+                    if target_status in ("success", "partial"):
+                        resolved_targets.append(target)
 
-            # Step 8: Retention cleanup
-            await self._update_progress(run_id, "retention_cleanup")
-            # Read retention settings from DB
-            keep_daily = 7
-            keep_weekly = 4
-            keep_monthly = 6
-            async with aiosqlite.connect(self.config.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT key, value FROM settings WHERE key IN ('keep_daily', 'keep_weekly', 'keep_monthly')"
-                )
-                for row in await cursor.fetchall():
-                    try:
-                        val = int(row["value"])
-                        if row["key"] == "keep_daily":
-                            keep_daily = val
-                        elif row["key"] == "keep_weekly":
-                            keep_weekly = val
-                        elif row["key"] == "keep_monthly":
-                            keep_monthly = val
-                    except (ValueError, TypeError):
-                        pass
+                # Step 8: Retention cleanup
+                await self._update_progress(run_id, "retention_cleanup")
+                keep_daily, keep_weekly, keep_monthly = await read_retention_settings(db)
+
             for target in resolved_targets:
-                await self.backup_engine.forget(
+                # Forget only; the weekly system retention job prunes. Pruning
+                # after every run rewrites pack files, which is slow and costly
+                # on cloud targets.
+                forget_result = await self.backup_engine.forget(
                     target,
                     keep_daily=keep_daily,
                     keep_weekly=keep_weekly,
                     keep_monthly=keep_monthly,
+                    prune=False,
                 )
+                if forget_result.get("status") != "success":
+                    logger.warning("Retention (forget) failed for target %s: %s",
+                                   target.get("name", target.get("id", "")),
+                                   forget_result.get("error") or forget_result.get("output"))
 
             # Step 8b: Refresh snapshot cache
             await self._update_progress(run_id, "refreshing_snapshots")
-            for target in resolved_targets:
-                try:
-                    snapshots = await self.backup_engine.snapshots(target)
-                    target_id = target.get("id", "")
-                    async with aiosqlite.connect(self.config.db_path) as db:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                for target in resolved_targets:
+                    try:
+                        snapshots = await self.backup_engine.snapshots(target)
+                        target_id = target.get("id", "")
                         # Collect current snapshot short IDs from restic
                         current_ids = set()
                         for snap in snapshots:
@@ -654,12 +728,14 @@ class BackupOrchestrator:
                                  snap.get("size", 0)),
                             )
 
-                        # Remove stale snapshots from DB that restic no longer has
+                        # Remove stale snapshots from DB that restic no longer has.
+                        # An empty listing usually means restic failed, so keep
+                        # the cache rather than wiping it.
                         cursor = await db.execute(
                             "SELECT id FROM snapshots WHERE target_id = ?", (target_id,)
                         )
                         db_ids = {row[0] for row in await cursor.fetchall()}
-                        stale_ids = db_ids - current_ids
+                        stale_ids = db_ids - current_ids if current_ids else set()
                         if stale_ids:
                             placeholders = ",".join("?" for _ in stale_ids)  # nosec B608
                             await db.execute(
@@ -669,49 +745,57 @@ class BackupOrchestrator:
                             logger.info("Removed %d stale snapshot records for target %s",
                                         len(stale_ids), target_id)
 
-                        total_size = sum(s.get("size", 0) for s in snapshots)
-                        await db.execute(
-                            "UPDATE storage_targets SET snapshot_count = ?, total_size_bytes = ? WHERE id = ?",
-                            (len(snapshots), total_size, target_id),
-                        )
-                        await db.execute(
-                            "INSERT OR REPLACE INTO size_history (date, target_id, total_size_bytes, snapshot_count) VALUES (?, ?, ?, ?)",
-                            (date.today().isoformat(), target_id, total_size, len(snapshots)),
-                        )
+                        if snapshots:
+                            total_size = sum(s.get("size", 0) for s in snapshots)
+                            await db.execute(
+                                "UPDATE storage_targets SET snapshot_count = ?, total_size_bytes = ? WHERE id = ?",
+                                (len(snapshots), total_size, target_id),
+                            )
+                            await db.execute(
+                                "INSERT OR REPLACE INTO size_history (date, target_id, total_size_bytes, snapshot_count) VALUES (?, ?, ?, ?)",
+                                (date.today().isoformat(), target_id, total_size, len(snapshots)),
+                            )
                         await db.commit()
-                except Exception as e:
-                    logger.warning("Failed to refresh snapshots for target %s: %s",
-                                   target.get("name", target.get("id", "")), e)
+                    except Exception as e:
+                        logger.warning("Failed to refresh snapshots for target %s: %s",
+                                       target.get("name", target.get("id", "")), e)
 
             # Step 9: Complete — check if any targets failed
             duration = int(time.monotonic() - start_time)
-            database_failures = sum(1 for d in dump_results if d.status != "success")
+            database_failures = sum(1 for d in dump_results if d.status == "failed" and d.kind == "database")
+            roles_failures = [d.container_name for d in dump_results if d.status == "failed" and d.kind != "database"]
             flash_failed = flash_result is not None and flash_result.status == "failed"
             substep_failures = []
             if database_failures:
-                substep_failures.append(f"{database_failures} database dump(s)")
+                substep_failures.append(f"{database_failures} database dump(s) failed")
+            if roles_failures:
+                substep_failures.append(f"roles dump failed for {', '.join(roles_failures)}")
             if flash_failed:
                 flash_error = (flash_result.error or "").strip() if flash_result is not None else ""
                 if flash_error:
                     substep_failures.append(f"flash backup: {flash_error}")
                 else:
-                    substep_failures.append("flash backup")
+                    substep_failures.append("flash backup failed")
+            substep_failures.extend(warnings)
 
             if target_failures:
-                final_status = "partial" if total_bytes > 0 else "failed"
-                status_msg = f"Backup completed with failures ({', '.join(target_failures)})"
+                final_status = "partial" if resolved_targets else "failed"
+                status_msg = f"Backup completed with failures ({'; '.join(target_failures + substep_failures)})"
             elif substep_failures:
                 final_status = "partial"
-                status_msg = f"Backup completed with failures ({', '.join(substep_failures)})"
+                status_msg = f"Backup completed with problems ({'; '.join(substep_failures)})"
             else:
                 final_status = "success"
                 status_msg = f"Backup completed in {duration}s"
+                if skipped_dbs:
+                    status_msg += f" ({len(skipped_dbs)} database(s) in stopped containers skipped)"
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await db.execute(
                     """UPDATE job_runs SET status = ?, completed_at = ?,
-                    duration_seconds = ?, total_size_bytes = ? WHERE id = ?""",
-                    (final_status, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), duration, total_bytes, run_id),
+                    duration_seconds = ?, total_size_bytes = ?, error_message = ? WHERE id = ?""",
+                    (final_status, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), duration,
+                     total_bytes, None if final_status == "success" else status_msg[:2000], run_id),
                 )
                 # Activity log
                 severity = "info" if final_status == "success" else "warning"
@@ -720,7 +804,8 @@ class BackupOrchestrator:
                     VALUES ('backup', 'completed', ?, ?, ?)""",
                     (status_msg,
                      json.dumps({"run_id": run_id, "job_id": job_id, "duration": duration,
-                                 "status": final_status, "failed_targets": target_failures}),
+                                 "status": final_status, "failed_targets": target_failures,
+                                 "warnings": substep_failures}),
                      severity),
                 )
                 await db.commit()
@@ -730,13 +815,17 @@ class BackupOrchestrator:
                 "status": final_status, "total_bytes": total_bytes,
             })
 
-            event_type = "backup.success" if final_status == "success" else "backup.failed"
+            event_type, title, severity = {
+                "success": ("backup.success", "Backup Completed", "success"),
+                "partial": ("backup.partial", "Backup Incomplete", "warning"),
+            }.get(final_status, ("backup.failed", "Backup Failed", "error"))
             try:
                 await self.notifier.send(
                     event_type,
-                    "Backup Completed" if final_status == "success" else "Backup Completed with Failures",
-                    status_msg,
-                    severity="success" if final_status == "success" else "warning",
+                    title,
+                    f"{job.get('name', job_id)}: {status_msg}",
+                    severity=severity,
+                    job_id=job_id,
                 )
             except Exception as notify_err:
                 logger.warning("Post-backup notification failed (non-critical): %s", notify_err)
@@ -771,6 +860,7 @@ class BackupOrchestrator:
                     "Backup Failed",
                     f"Backup '{job.get('name', job_id)}' failed: {str(e)[:200]}",
                     severity="error",
+                    job_id=job_id,
                 )
             except Exception as notify_err:
                 logger.warning("Failure notification failed (non-critical): %s", notify_err)
@@ -779,14 +869,17 @@ class BackupOrchestrator:
                     "error_category": error_category}
 
         finally:
-            # Clean up old dump files even on failure to prevent cascading disk-full issues
-            if self.db_dumper:
-                try:
-                    self.db_dumper.cleanup_old_dumps(keep_last=3)
-                except Exception as e:
-                    logger.warning("Dump cleanup failed: %s", e)
+            # Clean up old dump files even on failure (or when Docker is down)
+            # to prevent cascading disk-full issues.
+            try:
+                cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
+                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
+            except Exception as e:
+                logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
             self._active_runs.pop(run_id, None)
+            if _run_id_token is not None:
+                current_run_id.reset(_run_id_token)
 
     async def cancel(self) -> None:
         """Request cancellation of the current backup."""
@@ -795,16 +888,138 @@ class BackupOrchestrator:
             self._active_runs[run_id] = True
 
     async def _cancel(self, run_id: str) -> dict:
-        """Handle backup cancellation."""
+        """Handle backup cancellation.
+
+        Lock release and run cleanup are handled by the finally block
+        in run_backup() -- do NOT release the lock here.
+        """
         async with aiosqlite.connect(self.config.db_path) as db:
             await db.execute(
                 "UPDATE job_runs SET status = 'cancelled', completed_at = ? WHERE id = ?",
                 (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), run_id),
             )
             await db.commit()
-        self._release_lock()
         await self.event_bus.publish("backup:cancelled", {"run_id": run_id})
         return {"status": "cancelled", "run_id": run_id}
+
+    def _dump_cleanup_policy(self, discovery_ok: bool, containers: list, all_databases: list
+                             ) -> tuple[int | None, set[str], dict[str, str]]:
+        """(max_age_days, protect_prefixes, legacy_prefixes) for dump cleanup.
+
+        Dumps are aged out only for databases that are gone, which this run can
+        only know when discovery saw everything: it ran, found databases,
+        reported no warnings, and every container with exec-dumped databases
+        was running (a stopped Postgres can't list its databases). Otherwise
+        cleanup only keeps the newest dump per database, so a stopped
+        container, a weekly database job or an outage never costs the last
+        dump of anything.
+        """
+        protect: set[str] = set()
+        legacy: dict[str, str] = {}
+        for d in all_databases:
+            prefix = dump_prefix(d.container_name, d.db_type, d.db_name, d.host_path)
+            protect.add(prefix)
+            legacy[prefix] = legacy_dump_prefix(d.container_name, d.db_name)
+            if d.db_type == "postgres":
+                protect.add(dump_prefix(d.container_name, "postgres", "globals", kind="globals"))
+        stopped_exec = any(
+            getattr(c, "status", "running") != "running"
+            and any(db.db_type in EXEC_DUMP_TYPES for db in getattr(c, "databases", []) or [])
+            for c in containers
+        )
+        complete = (discovery_ok and bool(all_databases) and not stopped_exec
+                    and not any(getattr(c, "warnings", None) for c in containers))
+        return (self.dump_max_age_days if complete else None), protect, legacy
+
+    def _has_dump(self, db) -> bool:
+        """Whether the dump directory holds a finished dump of ``db``."""
+        prefixes = (
+            dump_prefix(db.container_name, db.db_type, db.db_name, db.host_path) + "_",
+            legacy_dump_prefix(db.container_name, db.db_name) + "_",
+        )
+        try:
+            return any(
+                p.name.startswith(prefixes) and not p.name.endswith(PARTIAL_SUFFIX)
+                for p in self.config.dump_dir.iterdir()
+            )
+        except OSError:
+            return False
+
+    async def _record_discovery_outcome(self, run_id: str, ok: bool) -> None:
+        """Best effort: freshness bookkeeping must never fail a backup."""
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                await db.execute("UPDATE job_runs SET discovery_ok = ? WHERE id = ?", (1 if ok else 0, run_id))
+                await db.commit()
+        except Exception as e:
+            logger.debug("Could not record discovery outcome: %s", e)
+
+    async def _internal_excludes(self, db) -> list[str]:
+        """Exclusions that keep Arkive's own storage out of its snapshots.
+
+        A watched parent directory (e.g. /mnt/user/appdata holding Arkive's
+        config and a local repository) must not re-ingest a repository or the
+        restore scratch space. Three layers, because the same folder is often
+        visible under two paths (/config/restores is also
+        /mnt/user/appdata/arkive/restores through the /mnt/user mount):
+        exact --exclude paths, their Docker host-path aliases, and an
+        exclusion marker inside each Arkive-owned directory (the repository
+        folder itself, never the target's configured parent, which may hold
+        real data).
+        """
+        storage = [str(self.config.restore_dir)]
+        try:
+            cursor = await db.execute("SELECT id, type, config FROM storage_targets WHERE type = 'local'")
+            rows = await cursor.fetchall()
+        except Exception as e:
+            logger.warning("Could not list local targets for exclusion: %s", e)
+            rows = []
+        for row in rows:
+            try:
+                config = decrypt_config(row[2] or "{}", str(self.config.config_dir))
+            except Exception:
+                continue
+            storage.append(build_repo_path({"id": row[0], "type": row[1], "config": config}))
+        # Dumps still being written (crash leftovers) are never uploaded.
+        partials = f"{self.config.dump_dir}/*{PARTIAL_SUFFIX}"
+        aliases = await asyncio.to_thread(self._prepare_storage_exclusions, storage, partials)
+        return list(dict.fromkeys(storage + [partials] + aliases))
+
+    def _prepare_storage_exclusions(self, storage: list[str], partials: str) -> list[str]:
+        """Write exclusion markers into Arkive-owned dirs; return host-path
+        aliases of the excluded paths that are visible inside the container.
+        Blocking (filesystem + Docker API)."""
+        for path in storage:
+            directory = Path(path)
+            try:
+                if directory.is_dir() and not (directory / EXCLUDE_MARKER).exists():
+                    (directory / EXCLUDE_MARKER).write_text(_EXCLUDE_MARKER_TEXT)
+            except OSError as e:
+                logger.debug("Could not write exclusion marker in %s: %s", path, e)
+        # Pre-release builds wrote the marker into a local target's configured
+        # directory, which may be a parent of real data; remove it when it is
+        # provably ours (exact text), so it can't hide that data.
+        for path in storage[1:]:
+            marker = Path(path).parent / EXCLUDE_MARKER
+            try:
+                if marker.is_file() and marker.read_text() == _EXCLUDE_MARKER_TEXT:
+                    marker.unlink()
+                    logger.info("Removed Arkive exclusion marker from %s", marker.parent)
+            except OSError as e:
+                logger.debug("Could not inspect %s: %s", marker, e)
+
+        docker_client = getattr(self.backup_engine, "docker_client", None)
+        aliases: list[str] = []
+        for path in storage + [partials]:
+            base, pattern = (path[: -len(f"/*{PARTIAL_SUFFIX}")], f"/*{PARTIAL_SUFFIX}") \
+                if path.endswith(f"/*{PARTIAL_SUFFIX}") else (path, "")
+            try:
+                host_path = host_path_for(base, docker_client)
+            except Exception:
+                host_path = None
+            if host_path and host_path != base and os.path.exists(host_path):
+                aliases.append(host_path + pattern)
+        return aliases
 
     async def _update_progress(self, run_id: str, phase: str) -> None:
         """Publish progress update via SSE."""
@@ -855,8 +1070,8 @@ class BackupOrchestrator:
 
     def is_running(self) -> bool:
         """Check if a backup is currently running."""
-        return LOCK_FILE.exists()
+        return self.lock_manager.is_backup_running()
 
     def is_restore_running(self) -> bool:
         """Check if a restore operation is in progress."""
-        return RESTORE_LOCK_FILE.exists()
+        return self.lock_manager.is_restore_running()

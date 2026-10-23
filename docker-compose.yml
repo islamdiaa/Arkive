@@ -18,4 +18,3 @@ services:
       - /mnt/user/appdata/arkive/cache:/cache
     environment:
       - TZ=America/New_York
-      # - ARKIVE_LICENSE_KEY=  # Optional: license key for paid tiers (v0.3+)

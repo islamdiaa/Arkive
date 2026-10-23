@@ -34,6 +34,25 @@ _NON_TRANSIENT_AUTH_PATTERNS = [
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 5  # seconds
 
+# Wait for a competing restic lock (backup vs. prune/check/verify) instead of
+# failing immediately with "repository is already locked".
+RETRY_LOCK = "10m"
+# restic backup exit code: snapshot created, but some source files could not
+# be read (permission denied, vanished mid-backup).
+RESTIC_EXIT_INCOMPLETE = 3
+# Directories containing this file (Arkive's own repositories, restore scratch
+# space) are skipped when they appear inside a watched directory.
+EXCLUDE_MARKER = ".arkive-exclude"
+
+
+# restic host names that are really Docker container IDs (the hostname inside
+# a container), written before host names were resolved properly.
+_CONTAINER_ID_HOST_RE = re.compile(r"^[0-9a-f]{12}$")
+
+
+class ResticError(RuntimeError):
+    """A restic command failed (as opposed to returning an empty result)."""
+
 
 def _is_transient_error(stderr: str) -> bool:
     """Check if a restic error is likely transient and retryable."""
@@ -198,13 +217,11 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
-        cmd = ["restic", "backup", "-r", repo, "--json"]
-        resolved_host = (hostname or "").strip()
-        if not resolved_host:
-            resolved_host = resolve_hostname(
-                settings={"server_name": await self._get_server_name()},
-                docker_client=self.docker_client,
-            )
+        cmd = [
+            "restic", "backup", "-r", repo, "--json", "--retry-lock", RETRY_LOCK,
+            "--exclude-caches", "--exclude-if-present", EXCLUDE_MARKER,
+        ]
+        resolved_host = (hostname or "").strip() or await self.current_hostname()
         if resolved_host:
             cmd.extend(["--host", resolved_host])
         if tags:
@@ -228,9 +245,7 @@ class BackupEngine:
                 timeout=3600,
                 cancel_check=cancel_check,
             )
-            if last_result.returncode == 0:
-                break
-            if last_result.returncode == -2:
+            if last_result.returncode in (0, RESTIC_EXIT_INCOMPLETE, -2):
                 break
             if attempt < MAX_RETRIES and _is_transient_error(last_result.stderr):
                 wait_time = RETRY_BACKOFF_BASE * attempt
@@ -247,19 +262,40 @@ class BackupEngine:
         if result.returncode == -2:
             logger.warning("Backup cancelled for %s", target.get("name"))
             return {"status": "cancelled", "error": result.stderr}
-        if result.returncode != 0:
+        if result.returncode not in (0, RESTIC_EXIT_INCOMPLETE):
             logger.error("Backup failed for %s: %s", target.get("name"), result.stderr)
             return {"status": "failed", "error": result.stderr}
 
-        # Parse JSON output for snapshot summary
+        # Parse JSON output for snapshot summary and per-file errors
         snapshot_info = {}
+        file_errors: list[str] = []
         for line in result.stdout.strip().split("\n"):
             try:
                 data = json.loads(line)
-                if data.get("message_type") == "summary":
-                    snapshot_info = data
             except json.JSONDecodeError:
                 continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("message_type") == "summary":
+                snapshot_info = data
+            elif data.get("message_type") == "error" and len(file_errors) < 20:
+                err = data.get("error")
+                message = err.get("message") if isinstance(err, dict) else err
+                item = data.get("item") or ""
+                file_errors.append(f"{item}: {message}" if item else str(message))
+
+        if result.returncode == RESTIC_EXIT_INCOMPLETE:
+            detail = "; ".join(file_errors) or result.stderr.strip()[:500]
+            logger.warning("Backup for %s is incomplete — some files could not be read: %s",
+                           target.get("name"), detail)
+            return {
+                "status": "partial",
+                "error": f"Some files could not be read: {detail}",
+                "snapshot_id": snapshot_info.get("snapshot_id", ""),
+                "total_bytes_processed": snapshot_info.get("total_bytes_processed", 0),
+                "files_new": snapshot_info.get("files_new", 0),
+                "files_changed": snapshot_info.get("files_changed", 0),
+            }
 
         return {
             "status": "success",
@@ -270,8 +306,9 @@ class BackupEngine:
         }
 
     async def forget(self, target: dict, keep_daily: int = 7,
-                     keep_weekly: int = 4, keep_monthly: int = 6) -> dict:
-        """Run restic forget with retention policy and prune."""
+                     keep_weekly: int = 4, keep_monthly: int = 6,
+                     prune: bool = True) -> dict:
+        """Run restic forget with retention policy, optionally pruning unused data."""
         password = await self._get_password()
         if not password:
             logger.error("No encryption password configured — cannot run forget")
@@ -291,22 +328,38 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
-        result = await run_command([
-            "restic", "forget", "-r", repo,
+        cmd = [
+            "restic", "forget", "-r", repo, "--retry-lock", RETRY_LOCK,
             "--keep-daily", str(keep_daily),
             "--keep-weekly", str(keep_weekly),
             "--keep-monthly", str(keep_monthly),
-            "--prune", "--json",
-        ], env=env, timeout=3600)
+        ]
+        if prune:
+            cmd.append("--prune")
+        cmd.append("--json")
+        result = await run_command(cmd, env=env, timeout=3600 * 4 if prune else 900)
 
         return {"status": "success" if result.returncode == 0 else "failed",
-                "output": result.stdout[:500]}
+                "output": result.stdout[:500],
+                "error": result.stderr[:500] if result.returncode != 0 else None}
 
-    async def snapshots(self, target: dict) -> list[dict]:
-        """List snapshots for a target."""
+    async def current_hostname(self) -> str:
+        """Host name recorded in snapshots (stable across container re-creates).
+
+        May query the Docker daemon, so it runs off the event loop.
+        """
+        return await asyncio.to_thread(
+            resolve_hostname,
+            settings={"server_name": await self._get_server_name()},
+            docker_client=self.docker_client,
+        )
+
+    async def list_snapshots(self, target: dict) -> list[dict]:
+        """List snapshots for a target; raises ResticError when restic fails,
+        so callers can tell an unreachable repository from an empty one."""
         password = await self._get_password()
         if not password:
-            return []
+            raise ResticError("No encryption password configured")
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
 
@@ -318,16 +371,75 @@ class BackupEngine:
             env=env, timeout=120,
         )
         if result.returncode != 0:
-            return []
+            raise ResticError(result.stderr.strip()[:500] or f"restic exited with {result.returncode}")
 
         try:
             snapshots = json.loads(result.stdout) or []
-            for snapshot in snapshots:
-                if isinstance(snapshot, dict):
-                    snapshot["size"] = _snapshot_size_bytes(snapshot)
-            return snapshots
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            raise ResticError(f"Unreadable restic output: {exc}") from exc
+        for snapshot in snapshots:
+            if isinstance(snapshot, dict):
+                snapshot["size"] = _snapshot_size_bytes(snapshot)
+        return snapshots
+
+    async def snapshots(self, target: dict) -> list[dict]:
+        """List snapshots for a target ([] when the listing fails)."""
+        try:
+            return await self.list_snapshots(target)
+        except ResticError:
             return []
+
+    async def normalize_legacy_hostnames(self, target: dict, marker_path: str,
+                                         owned_snapshot_ids: set[str]) -> dict:
+        """Re-label this instance's snapshots recorded under a container ID.
+
+        Older versions recorded the container hostname (its ID, which changes on
+        every re-create), so each re-create started a new restic retention
+        group and old groups were never thinned out. A snapshot is only touched
+        when this instance's own run history recorded creating it
+        (``owned_snapshot_ids``, full or short IDs) — a container-ID host name
+        and Arkive's dump path don't prove ownership in a shared repository.
+        The data is unchanged; only snapshot metadata is rewritten.
+        """
+        host = (await self.current_hostname()).strip()
+        if not host or _CONTAINER_ID_HOST_RE.match(host):
+            return {"status": "skipped", "rewritten": 0, "reason": "current host name is not stable"}
+        try:
+            snapshots = await self.list_snapshots(target)
+        except ResticError as exc:
+            return {"status": "failed", "rewritten": 0, "error": str(exc)}
+        owned = {i for i in owned_snapshot_ids if i}
+
+        def _is_owned(snap_id: str) -> bool:
+            return snap_id in owned or snap_id[:8] in owned
+
+        legacy = [
+            snap["id"] for snap in snapshots
+            if isinstance(snap, dict) and snap.get("id")
+            and _CONTAINER_ID_HOST_RE.match(str(snap.get("hostname") or ""))
+            and snap.get("hostname") != host
+            and marker_path in (snap.get("paths") or [])
+            and _is_owned(str(snap["id"]))
+        ]
+        if not legacy:
+            return {"status": "success", "rewritten": 0}
+        logger.info("Re-labelling %d of this instance's snapshots from container-ID host names to %s; "
+                    "the next retention pass then applies one policy to the merged history",
+                    len(legacy), host)
+
+        password = await self._get_password()
+        env = self._get_restic_env(password)
+        if target.get("type") != "local":
+            env["RCLONE_CONFIG"] = str(self.config.rclone_config)
+        result = await run_command(
+            ["restic", "rewrite", "-r", self._repo_path(target), "--retry-lock", RETRY_LOCK,
+             "--new-host", host, "--forget", "--", *legacy],
+            env=env, timeout=3600,
+        )
+        if result.returncode != 0:
+            return {"status": "failed", "rewritten": 0, "error": result.stderr.strip()[:500]}
+        logger.info("Re-labelled %d snapshots from container-ID host names to %s", len(legacy), host)
+        return {"status": "success", "rewritten": len(legacy), "host": host}
 
     async def restore(self, target: dict, snapshot_id: str,
                       paths: list[str] | None = None,
@@ -394,8 +506,8 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
         result = await run_command(
-            ["restic", "check", "-r", repo, "--json"],
-            env=env, timeout=600,
+            ["restic", "check", "-r", repo, "--json", "--retry-lock", RETRY_LOCK],
+            env=env, timeout=3600,
         )
         return {
             "status": "success" if result.returncode == 0 else "failed",
@@ -403,14 +515,20 @@ class BackupEngine:
             "error": result.stderr[:500] if result.returncode != 0 and result.stderr else None,
         }
 
-    async def ls(self, target: dict, snapshot_id: str, path: str = "/") -> list[dict]:
-        """List files in a snapshot."""
+    async def ls(self, target: dict, snapshot_id: str, path: str = "/", strict: bool = False) -> list[dict]:
+        """List files in a snapshot.
+
+        Returns [] when listing fails, unless ``strict``: then ResticError is
+        raised so an unreadable repository isn't mistaken for an empty folder.
+        """
         # Validate inputs to prevent injection
         snapshot_id = _validate_snapshot_id(snapshot_id)
         _validate_path(path)
 
         password = await self._get_password()
         if not password:
+            if strict:
+                raise ResticError("No encryption password configured")
             return []
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
@@ -423,6 +541,8 @@ class BackupEngine:
             env=env, timeout=120,
         )
         if result.returncode != 0:
+            if strict:
+                raise ResticError(result.stderr.strip()[:500] or f"restic ls exited with {result.returncode}")
             return []
 
         entries = []

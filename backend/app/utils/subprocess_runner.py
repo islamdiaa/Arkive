@@ -2,8 +2,13 @@
 
 import asyncio
 import logging
+import os
+import signal
+import sys
 import time
 from dataclasses import dataclass
+
+from app.utils.redact import redact_command, redact_credentials
 
 logger = logging.getLogger("arkive.subprocess")
 
@@ -17,6 +22,30 @@ class CommandResult:
     command: str
 
 
+def _kill_process_group(pid: int) -> None:
+    """Kill the entire process group rooted at *pid*.
+
+    Uses SIGKILL via os.killpg so that child processes spawned by the
+    subprocess are also terminated.  Silently ignores ProcessLookupError
+    (process already exited).
+    """
+    try:
+        if hasattr(os, 'killpg'):
+            # POSIX: kill entire process group
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        else:
+            # Windows: no process groups, kill single process only
+            os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        # Fallback: the process may not be a group leader on some platforms
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 async def run_command(
     cmd: list[str],
     timeout: int = 300,
@@ -26,10 +55,19 @@ async def run_command(
     cancel_check=None,
     cancel_poll_interval: float = 0.5,
 ) -> CommandResult:
-    """Run a subprocess command asynchronously with timeout."""
-    cmd_str = " ".join(cmd)
+    """Run a subprocess command asynchronously with timeout.
+
+    The rendered command string used for logging (and returned in
+    ``CommandResult.command``) has secret-bearing arguments masked; secrets
+    should still be passed via ``env`` or ``input_data`` rather than argv.
+    """
+    cmd_str = redact_command(cmd)
     logger.debug("Running: %s", cmd_str)
     start = time.monotonic()
+
+    # On POSIX, start the child in its own process group so that on
+    # timeout/cancel we can kill the whole tree (parent + children).
+    preexec = os.setsid if sys.platform != "win32" else None
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -39,6 +77,7 @@ async def run_command(
             stderr=asyncio.subprocess.PIPE,
             env=env,
             cwd=cwd,
+            preexec_fn=preexec,
         )
 
         communicate_task = asyncio.create_task(
@@ -51,7 +90,8 @@ async def run_command(
             if cancel_check and cancel_check():
                 logger.warning("Command cancelled: %s", cmd_str)
                 try:
-                    process.kill()
+                    if process.pid is not None:
+                        _kill_process_group(process.pid)
                     await process.wait()
                 except Exception:
                     pass
@@ -87,7 +127,8 @@ async def run_command(
             command=cmd_str,
         )
         if result.returncode != 0:
-            logger.warning("Command failed (rc=%d): %s\nstderr: %s", result.returncode, cmd_str, result.stderr[:500])
+            redacted_stderr = redact_credentials(result.stderr[:500])
+            logger.warning("Command failed (rc=%d): %s\nstderr: %s", result.returncode, cmd_str, redacted_stderr)
         else:
             logger.debug("Command succeeded in %.2fs: %s", duration, cmd_str)
         return result
@@ -96,7 +137,8 @@ async def run_command(
         duration = time.monotonic() - start
         logger.error("Command timed out after %ds: %s", timeout, cmd_str)
         try:
-            process.kill()
+            if process.pid is not None:
+                _kill_process_group(process.pid)
             await process.wait()
         except Exception:
             pass
@@ -109,7 +151,7 @@ async def run_command(
         )
     except Exception as e:
         duration = time.monotonic() - start
-        logger.error("Command error: %s — %s", cmd_str, str(e))
+        logger.error("Command error: %s — %s", cmd_str, redact_credentials(str(e)))
         return CommandResult(
             returncode=-1,
             stdout="",

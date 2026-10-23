@@ -561,27 +561,27 @@ class TestOrchestratorLocking:
     """Test backup lock behavior for concurrent execution safety."""
 
     def test_lock_acquisition_and_release(self, tmp_path):
-        from app.services.orchestrator import BackupOrchestrator, LOCK_FILE
+        from app.services.orchestrator import BackupOrchestrator
 
-        with patch("app.services.orchestrator.LOCK_FILE", tmp_path / "backup.lock"):
-            orch = BackupOrchestrator(
-                discovery=None, db_dumper=None,
-                flash_backup=MagicMock(), backup_engine=MagicMock(),
-                cloud_manager=MagicMock(), notifier=MagicMock(),
-                event_bus=MagicMock(), config=MagicMock(),
-            )
-            lock_file = tmp_path / "backup.lock"
+        config = MagicMock()
+        config.config_dir = tmp_path
+        orch = BackupOrchestrator(
+            discovery=None, db_dumper=None,
+            flash_backup=MagicMock(), backup_engine=MagicMock(),
+            cloud_manager=MagicMock(), notifier=MagicMock(),
+            event_bus=MagicMock(), config=config,
+        )
+        lock_file = tmp_path / "backup.lock"
 
-            with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-                assert orch._acquire_lock("run1") is True
-                assert lock_file.exists()
+        assert orch._acquire_lock("run1") is True
+        assert lock_file.exists()
 
-                # Second acquisition should fail (lock held by current process)
-                assert orch._acquire_lock("run2") is False
+        # Second acquisition should fail (lock held by current process)
+        with patch("app.services.lock_manager._is_process_alive", return_value=True):
+            assert orch._acquire_lock("run2") is False
 
-                orch._release_lock()
-                # After release, lock file should be gone
-                # (but _release_lock uses LOCK_FILE constant, so we patch it)
+        orch._release_lock()
+        assert not lock_file.exists()
 
     def test_stale_lock_detection(self, tmp_path):
         """Stale locks from dead processes are cleaned up."""
@@ -590,15 +590,16 @@ class TestOrchestratorLocking:
 
         lock_file = tmp_path / "backup.lock"
         # Write a lock with a PID that doesn't exist
-        lock_file.write_text(json.dumps({"pid": 999999999}))
+        lock_file.write_text(json.dumps({"pid": 999999999, "proc_start_time": "12345"}))
 
+        config = MagicMock()
+        config.config_dir = tmp_path
         orch = BackupOrchestrator(
             discovery=None, db_dumper=None,
             flash_backup=MagicMock(), backup_engine=MagicMock(),
             cloud_manager=MagicMock(), notifier=MagicMock(),
-            event_bus=MagicMock(), config=MagicMock(),
+            event_bus=MagicMock(), config=config,
         )
 
-        with patch("app.services.orchestrator.LOCK_FILE", lock_file):
-            # Should succeed because PID 999999999 doesn't exist
-            assert orch._acquire_lock("run1") is True
+        # Should succeed because PID 999999999 doesn't exist
+        assert orch._acquire_lock("run1") is True

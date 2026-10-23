@@ -210,6 +210,99 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_restore_runs_started_at ON restore_runs(started_at DESC)",
     ],
+    3: [
+        """CREATE TABLE IF NOT EXISTS verification_runs (
+            id TEXT PRIMARY KEY,
+            target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE,
+            started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            completed_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            trust_score INTEGER DEFAULT 0,
+            files_checked INTEGER DEFAULT 0,
+            files_passed INTEGER DEFAULT 0,
+            databases_checked INTEGER DEFAULT 0,
+            databases_passed INTEGER DEFAULT 0,
+            restic_check_passed INTEGER DEFAULT 0,
+            error_message TEXT
+        )""",
+        """CREATE INDEX IF NOT EXISTS idx_verification_runs_target_started
+            ON verification_runs(target_id, started_at DESC)""",
+    ],
+    4: [
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_target_id ON snapshots(target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_log_type ON activity_log(type, timestamp DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_job_runs_job_started ON job_runs(job_id, started_at DESC)",
+        # The 5-minute target health check used to write an activity entry on
+        # every run (~290/day), drowning real events. It now only records
+        # status changes; drop the routine entries.
+        "DELETE FROM activity_log WHERE type = 'system' AND action = 'health_check'",
+        # Foreign keys were never enabled on runtime connections, so deleting a
+        # job or target left orphans behind. Cascades work now; clean up old ones.
+        "DELETE FROM job_run_targets WHERE run_id NOT IN (SELECT id FROM job_runs)",
+        "DELETE FROM job_run_databases WHERE run_id NOT IN (SELECT id FROM job_runs)",
+        "DELETE FROM verification_runs WHERE target_id NOT IN (SELECT id FROM storage_targets)",
+    ],
+    5: [
+        # Restore drills: database dumps are restored from a snapshot and loaded
+        # into a throwaway instance to prove they actually restore.
+        """CREATE TABLE IF NOT EXISTS restore_drills (
+            id TEXT PRIMARY KEY,
+            trigger TEXT NOT NULL DEFAULT 'scheduled',
+            status TEXT NOT NULL DEFAULT 'running',
+            target_id TEXT,
+            snapshot_id TEXT,
+            started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            completed_at TEXT,
+            duration_seconds INTEGER,
+            databases_tested INTEGER NOT NULL DEFAULT 0,
+            databases_passed INTEGER NOT NULL DEFAULT 0,
+            databases_failed INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_restore_drills_started ON restore_drills(started_at DESC)",
+        """CREATE TABLE IF NOT EXISTS restore_drill_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            drill_id TEXT NOT NULL REFERENCES restore_drills(id) ON DELETE CASCADE,
+            container_name TEXT NOT NULL,
+            db_type TEXT NOT NULL,
+            db_name TEXT,
+            dump_file TEXT,
+            dump_size_bytes INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            detail TEXT,
+            duration_seconds REAL NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_restore_drill_results_drill ON restore_drill_results(drill_id)",
+        """CREATE INDEX IF NOT EXISTS idx_restore_drill_results_db
+            ON restore_drill_results(container_name, db_name)""",
+        # Channels that asked for backup failures also want to hear about the
+        # failure modes that were added alongside them.
+        *[
+            f"""UPDATE notification_channels
+                SET events = json_insert(events, '$[#]', '{event}')
+                WHERE json_valid(events)
+                  AND EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                              WHERE value = 'backup.failed')
+                  AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                                  WHERE value = '{event}')"""  # nosec B608 - constant event names
+            for event in ("backup.stale", "drill.failed", "verification.failed", "target.error")
+        ],
+    ],
+    6: [
+        # Partial runs used to be sent as backup.failed; they now have their
+        # own event. Keep channels that wanted failures hearing about them.
+        """UPDATE notification_channels
+            SET events = json_insert(events, '$[#]', 'backup.partial')
+            WHERE json_valid(events)
+              AND EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                          WHERE value = 'backup.failed')
+              AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                              WHERE value = 'backup.partial')""",
+        # Whether a run's container discovery worked (NULL: not attempted or
+        # recorded before this column). A failed discovery records zero
+        # databases, which must not read as "this system has no databases".
+        "ALTER TABLE job_runs ADD COLUMN discovery_ok INTEGER",
+    ],
 }
 
 async def run_migrations(db_path: str | Path) -> int:

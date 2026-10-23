@@ -35,7 +35,7 @@ class TestDbDumper:
 
         def exec_run(cmd, **kwargs):
             captured["cmd"] = cmd
-            return 0, iter([(b"-- pg dump --\n", b"")])
+            return 0, iter([(b"-- pg dump --\n-- PostgreSQL database dump complete\n", b"")])
 
         container.exec_run.side_effect = exec_run
         docker_client.containers.get.return_value = container
@@ -73,7 +73,7 @@ class TestDbDumper:
         def exec_run(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("environment", {})
-            return 0, iter([(b"-- mariadb dump --\n", b"")])
+            return 0, iter([(b"-- mariadb dump --\n-- Dump completed\n", b"")])
 
         container.exec_run.side_effect = exec_run
         docker_client.containers.get.return_value = container
@@ -88,6 +88,7 @@ class TestDbDumper:
             "mariadb-dump",
             "-u",
             "root",
+            "--single-transaction",
             "--databases",
             "appdb",
         ]

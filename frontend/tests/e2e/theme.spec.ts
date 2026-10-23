@@ -7,10 +7,16 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { stubSseTokenForDemoMode } from './fixtures/api-mocks';
 
 const DASHBOARD_URL = '/?demo=true';
 
 test.describe('Theme', () => {
+  test.beforeEach(async ({ page }) => {
+    // Keep the demo dashboard from being bounced to /login mid-test.
+    await stubSseTokenForDemoMode(page);
+  });
+
   test('Dark theme is the default', async ({ page }) => {
     await page.addInitScript(() => {
       localStorage.removeItem('arkive_theme');

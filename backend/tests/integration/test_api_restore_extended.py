@@ -249,23 +249,43 @@ async def test_restore_failed_result_returns_and_persists_error_message(client, 
         RESTORE_LOCK_FILE.unlink(missing_ok=True)
 
 
-async def test_restore_requires_explicit_safe_restore_destination(client, tmp_path):
-    """POST /api/restore rejects missing or unsafe restore_to values."""
+async def test_restore_defaults_restore_to_under_restore_dir(client, tmp_path):
+    """POST /api/restore without restore_to restores into <config>/restores/restore-<id>."""
     data = await do_setup(client)
     api_key = data["api_key"]
     target_id = await _create_target(client, api_key, tmp_path)
 
-    missing = await client.post(
-        "/api/restore",
-        json={
-            "target": target_id,
-            "snapshot_id": "snap-missing",
-            "paths": ["/data/important"],
-        },
-        headers=auth_headers(api_key),
-    )
-    assert missing.status_code == 422
-    assert "restore_to" in missing.text
+    app = client._transport.app
+    original_engine = app.state.backup_engine
+    mock_engine = AsyncMock()
+    mock_engine.restore = AsyncMock(return_value={"status": "success", "output": "restored", "error": None})
+    app.state.backup_engine = mock_engine
+    try:
+        resp = await client.post(
+            "/api/restore",
+            json={
+                "target": target_id,
+                "snapshot_id": "snap-default",
+                "paths": ["/data/important"],
+            },
+            headers=auth_headers(api_key),
+        )
+    finally:
+        app.state.backup_engine = original_engine
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    restore_root = str(app.state.config.restore_dir)
+    assert body["restore_to"] == f"{restore_root}/restore-{body['restore_id']}"
+    assert mock_engine.restore.await_args.kwargs["restore_to"] == body["restore_to"]
+    assert os.path.isdir(body["restore_to"])
+
+
+async def test_restore_rejects_unsafe_restore_destination(client, tmp_path):
+    """POST /api/restore rejects restore_to values outside the safe restore roots."""
+    data = await do_setup(client)
+    api_key = data["api_key"]
+    target_id = await _create_target(client, api_key, tmp_path)
 
     unsafe = await client.post(
         "/api/restore",

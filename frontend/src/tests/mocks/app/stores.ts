@@ -1,8 +1,5 @@
-import { writable, readable } from 'svelte/store';
+import { writable } from 'svelte/store';
 
-export const page = readable({
-	url: new URL('http://localhost'),
-	params: {},
-});
-
-export const navigating = readable(null);
+export const page = writable({ url: new URL('http://localhost') });
+export const navigating = writable(null);
+export const updated = writable(false);

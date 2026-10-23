@@ -29,7 +29,7 @@ async def test_restore_plan_preview(client):
 
 
 async def test_restore_nonexistent_target(client):
-    """POST /api/restore without a valid restore request fails model validation first."""
+    """POST /api/restore with an unknown target returns 404 (restore_to defaults safely)."""
     data = await do_setup(client)
     resp = await client.post(
         "/api/restore",
@@ -40,7 +40,7 @@ async def test_restore_nonexistent_target(client):
         },
         headers=auth_headers(data["api_key"]),
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 404
 
 
 async def test_restore_plan_pdf_service_unavailable(client):
@@ -59,12 +59,11 @@ async def test_restore_plan_pdf_service_unavailable(client):
 
 
 async def test_restore_missing_target_field(client):
-    """POST /api/restore without restore_to now fails schema validation before lookup."""
+    """POST /api/restore without the required target field fails schema validation."""
     data = await do_setup(client)
     resp = await client.post(
         "/api/restore",
         json={
-            "target": "does_not_exist",
             "snapshot_id": "snap123",
             "paths": ["/data"],
         },

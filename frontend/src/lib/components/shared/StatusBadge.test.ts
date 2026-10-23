@@ -113,6 +113,21 @@ describe('StatusBadge', () => {
 		expect(badge?.textContent).toContain('S');
 	});
 
+	it('renders restore drill passed status as success', () => {
+		const { container } = render(StatusBadge, { props: { status: 'passed' } });
+		const badge = container.querySelector('span');
+		expect(badge?.className).toContain('bg-success-bg');
+		expect(badge?.textContent).toContain('ok');
+		expect(badge?.textContent).not.toContain('?');
+	});
+
+	it('renders restore drill skipped status as neutral without fallback icon', () => {
+		const { container } = render(StatusBadge, { props: { status: 'skipped' } });
+		const badge = container.querySelector('span');
+		expect(badge?.className).toContain('bg-neutral-bg');
+		expect(badge?.textContent).not.toContain('?');
+	});
+
 	it('has pill shape (rounded-full)', () => {
 		const { container } = render(StatusBadge, { props: { status: 'success' } });
 		const badge = container.querySelector('span');

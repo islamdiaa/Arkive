@@ -1,8 +1,8 @@
 """System status API routes — no auth required for healthcheck."""
 
+import asyncio
 import json
 import logging
-import os
 import shutil
 import time
 import sqlite3
@@ -11,8 +11,10 @@ import aiosqlite
 from fastapi import APIRouter, Depends, Request
 
 from app import __version__
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, request_has_valid_credentials
+from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
+from app.services.freshness import evaluate_freshness
 from app.services.host_identity import resolve_hostname
 
 logger = logging.getLogger("arkive.status")
@@ -105,6 +107,45 @@ async def _fetch_setting(db: aiosqlite.Connection, key: str) -> str | None:
     return row["value"] if row and row["value"] is not None else None
 
 
+async def recovery_kit_confirmed(db: aiosqlite.Connection) -> bool:
+    """True once the user confirmed saving a recovery kit generated after the
+    current encryption password was set."""
+    try:
+        cursor = await db.execute(
+            "SELECT key, value, updated_at FROM settings "
+            "WHERE key IN ('recovery_kit_confirmed_at', 'encryption_password')"
+        )
+        rows = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return False
+    confirmed = rows.get("recovery_kit_confirmed_at")
+    if not confirmed or not confirmed[0]:
+        return False
+    password = rows.get("encryption_password")
+    return not password or (password[1] or "") <= confirmed[0]
+
+
+async def latest_drill(db: aiosqlite.Connection) -> dict | None:
+    """Most recent finished restore drill, or None."""
+    try:
+        cursor = await db.execute(
+            """SELECT id, status, started_at, completed_at, databases_tested,
+                      databases_passed, databases_failed
+               FROM restore_drills
+               WHERE status != 'running'
+               ORDER BY started_at DESC, rowid DESC
+               LIMIT 1"""
+        )
+        row = await cursor.fetchone()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return None
+    if not row:
+        return None
+    keys = ("id", "status", "started_at", "completed_at", "databases_tested",
+            "databases_passed", "databases_failed")
+    return {key: row[i] for i, key in enumerate(keys)}
+
+
 async def _check_db_health(db: aiosqlite.Connection) -> dict:
     """Check DB connectivity with a simple query."""
     try:
@@ -113,6 +154,35 @@ async def _check_db_health(db: aiosqlite.Connection) -> dict:
         return {"ok": True, "message": "connected"}
     except Exception as e:
         return {"ok": False, "message": f"DB error: {e}"}
+
+
+async def compute_trust_score(db: aiosqlite.Connection) -> int:
+    """Compute overall trust score from latest per-target verification runs.
+
+    Returns the average score of the most recent completed run per target,
+    or 0 when no completed runs exist. Shared by status and verification APIs.
+    """
+    try:
+        # Latest *finished* run per target that still exists: an in-progress or
+        # skipped run must not hide the last real score, and runs of deleted
+        # targets must not drag the average down forever.
+        cursor = await db.execute(
+            """SELECT trust_score
+               FROM verification_runs vr
+               INNER JOIN (
+                   SELECT target_id, MAX(rowid) AS latest_rowid
+                   FROM verification_runs
+                   WHERE status NOT IN ('running', 'skipped')
+                   GROUP BY target_id
+               ) lpt ON vr.target_id = lpt.target_id AND vr.rowid = lpt.latest_rowid
+               WHERE vr.target_id IN (SELECT id FROM storage_targets)"""
+        )
+        scored_rows = await cursor.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        return 0
+    if not scored_rows:
+        return 0
+    return round(sum(r["trust_score"] for r in scored_rows) / len(scored_rows))
 
 
 async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
@@ -202,6 +272,10 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     - ok: all checks pass
     - degraded: non-critical checks failing (disk warning, targets unhealthy)
     - error: critical checks failing (DB down, scheduler stopped, disk critical)
+
+    Unauthenticated callers (Docker HEALTHCHECK, the login page) get a minimal
+    payload; the full dashboard data (paths, hostname, backup history, disk
+    usage) requires a valid API key or browser session — or setup mode.
     """
     checks = {}
     issues = []
@@ -245,6 +319,15 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     # Setup check
     api_key_hash = await _fetch_setting(db, "api_key_hash")
     setup_completed = api_key_hash is not None
+
+    if setup_completed and not request_has_valid_credentials(request, api_key_hash):
+        return {
+            "status": overall_status,
+            "health": _health_alias(overall_status),
+            "version": __version__,
+            "setup_completed": True,
+            "authenticated": False,
+        }
 
     # Platform
     runtime_platform = getattr(getattr(request.app, "state", None), "platform", None)
@@ -301,6 +384,17 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     ):
         overall_status = "degraded"
 
+    # Backup freshness: a job without a recent good backup is an error — this
+    # is what catches backups that silently stopped happening.
+    backup_freshness = await evaluate_freshness(db)
+    if backup_freshness["stale"]:
+        overall_status = "error"
+
+    # A failed restore drill means a dump in the repository did not restore.
+    last_drill = await latest_drill(db)
+    if last_drill and last_drill["status"] == "failed" and overall_status == "ok":
+        overall_status = "degraded"
+
     # Storage
     try:
         cursor = await db.execute("SELECT COALESCE(SUM(total_size_bytes), 0) as total FROM storage_targets")
@@ -315,6 +409,32 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_snapshots = 0
 
+    # Verification / Trust Score
+    trust_score = 0
+    last_verified_at = None
+    verification_status_obj = None
+    try:
+        cursor = await db.execute(
+            """SELECT status, started_at, completed_at
+               FROM verification_runs
+               WHERE status NOT IN ('running', 'skipped')
+                 AND target_id IN (SELECT id FROM storage_targets)
+               ORDER BY started_at DESC
+               LIMIT 1"""
+        )
+        latest_vr = await cursor.fetchone()
+        if latest_vr:
+            vr_status = latest_vr["status"]
+            last_verified_at = latest_vr["completed_at"] or latest_vr["started_at"]
+            trust_score = await compute_trust_score(db)
+            verification_status_obj = {
+                "trust_score": trust_score,
+                "last_verified_at": last_verified_at,
+                "verification_passing": vr_status == "passed",
+            }
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        pass
+
     user_shares_path = str(getattr(
         getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
     ))
@@ -324,20 +444,53 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         user_shares_path=user_shares_path,
     )
 
-    return {
-        "status": overall_status,
-        "health": _health_alias(overall_status),
-        "version": __version__,
-        "hostname": resolve_hostname(app=request.app, settings={"server_name": server_name or ""}),
-        "uptime_seconds": int(time.time() - _start_time),
-        "platform": platform,
-        "setup_completed": setup_completed,
-        "checks": checks,
-        "last_backup": last_backup,
-        "next_backup": _get_next_backup(request),
-        "targets": {"total": total_targets, "healthy": healthy_targets},
-        "databases": {"total": total_databases, "healthy": healthy_databases},
-        "storage": {"total_bytes": total_bytes},
-        "total_snapshots": total_snapshots,
-        "coverage": coverage,
-    }
+    # Derive flat convenience fields for the frontend dashboard
+    last_backup_status = last_backup["status"] if last_backup else None
+
+    # Count discovered containers from the discovered_containers table
+    try:
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM discovered_containers")
+        containers_discovered = (await cursor.fetchone())["cnt"]
+    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        containers_discovered = 0
+
+    # resolve_hostname may call the Docker API (blocking) — keep it off the loop.
+    try:
+        hostname = await asyncio.to_thread(
+            resolve_hostname, app=request.app, settings={"server_name": server_name or ""}
+        )
+    except Exception:
+        hostname = server_name or ""
+
+    return StatusResponse(
+        status=overall_status,
+        health=_health_alias(overall_status),
+        version=__version__,
+        hostname=hostname,
+        uptime_seconds=int(time.time() - _start_time),
+        platform=platform,
+        setup_completed=setup_completed,
+        checks=checks,
+        last_backup=last_backup,
+        last_backup_status=last_backup_status,
+        next_backup=_get_next_backup(request),
+        targets={"total": total_targets, "healthy": healthy_targets},
+        databases={"total": total_databases, "healthy": healthy_databases},
+        storage={"total_bytes": total_bytes},
+        containers_discovered=containers_discovered,
+        databases_found=total_databases,
+        targets_configured=total_targets,
+        total_snapshots=total_snapshots,
+        storage_used_bytes=total_bytes,
+        trust_score=trust_score,
+        last_verified_at=last_verified_at,
+        verification_status=verification_status_obj,
+        coverage=coverage,
+        backup_freshness={
+            "stale": backup_freshness["stale"],
+            "checked_at": backup_freshness["checked_at"],
+            "stale_jobs": backup_freshness["stale_jobs"],
+        },
+        recovery_kit_confirmed=await recovery_kit_confirmed(db),
+        last_drill=last_drill,
+    )

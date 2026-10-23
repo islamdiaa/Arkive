@@ -11,6 +11,9 @@ export interface DashboardData {
   activity: any[];
   storage: any;
   error: string | null;
+  /** Set when the jobs request failed, so the UI never claims "no jobs". */
+  jobsError: string | null;
+  activityError: string | null;
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
@@ -20,6 +23,8 @@ export async function loadDashboard(): Promise<DashboardData> {
     activity: [],
     storage: null,
     error: null,
+    jobsError: null,
+    activityError: null,
   };
 
   try {
@@ -31,12 +36,16 @@ export async function loadDashboard(): Promise<DashboardData> {
   try {
     const j = await api.listJobs();
     result.jobs = j.items || j.jobs || [];
-  } catch {}
+  } catch (e: any) {
+    result.jobsError = e?.message || String(e);
+  }
 
   try {
     const a = await api.listActivity(10);
     result.activity = a.activities || [];
-  } catch {}
+  } catch (e: any) {
+    result.activityError = e?.message || String(e);
+  }
 
   try {
     result.storage = await api.getStorageStats();

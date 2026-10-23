@@ -32,6 +32,67 @@ LIVE_PATH_MARKERS = {
 
 
 # ---------------------------------------------------------------------------
+# Stray files from mocked configs
+# ---------------------------------------------------------------------------
+
+_MOCK_ARTIFACT_PREFIX = "<MagicMock"
+_TRACE_ARTIFACTS = os.environ.get("ARKIVE_TRACE_MOCK_ARTIFACTS") == "1"
+
+
+def _mock_artifacts() -> set[str]:
+    return {p.name for p in Path.cwd().iterdir() if p.name.startswith(_MOCK_ARTIFACT_PREFIX)}
+
+
+_artifacts_at_start = _mock_artifacts()
+
+
+@pytest.fixture(autouse=True)
+def _trace_mock_path_artifacts():
+    """With ARKIVE_TRACE_MOCK_ARTIFACTS=1 (and no -n), fail the test that
+    creates a file named after a MagicMock — code under test opened
+    ``config.<path>`` on a mocked config with no real path. Off by default:
+    concurrent pytest processes share the working directory."""
+    if not _TRACE_ARTIFACTS:
+        yield
+        return
+    before = _mock_artifacts()
+    yield
+    created = sorted(_mock_artifacts() - before)
+    if created:
+        pytest.fail(f"test created files from mocked config paths: {created}")
+
+
+# ---------------------------------------------------------------------------
+# Local-target persistence check
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _neutralize_ephemeral_path_check():
+    """Tests run inside a container where tmp_path sits on the overlay root,
+    which the local-target validation correctly flags as non-persistent. Treat
+    every path as persistent for the whole session (session scope so that
+    module-scoped client fixtures are covered too); tests can opt back in to
+    the real check with the ``real_ephemeral_check`` fixture."""
+    import app.api.targets as targets_mod
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(targets_mod, "ephemeral_path_reason", lambda *a, **k: None)
+    yield
+    mp.undo()
+
+
+@pytest.fixture
+def real_ephemeral_check(monkeypatch):
+    """Restore the real persistent-storage check for this test."""
+    import app.api.targets as targets_mod
+    from app.utils.mounts import ephemeral_path_reason
+
+    monkeypatch.setattr(targets_mod, "ephemeral_path_reason", ephemeral_path_reason)
+    return ephemeral_path_reason
+
+
+# ---------------------------------------------------------------------------
 # Async test client — isolated DB, no scheduler/Docker dependencies
 # ---------------------------------------------------------------------------
 
@@ -69,6 +130,7 @@ async def build_test_client(config_dir: Path):
     import app.core.database as db_mod
 
     await db_mod.init_db(db_path)
+    await db_mod.run_migrations(db_path)
 
     # Ensure encryption keyfile exists in the temp config dir and set module cache
     from app.core.security import _load_fernet_from_dir, _reset_fernet
@@ -209,6 +271,101 @@ def test_api_key():
 
 
 # ---------------------------------------------------------------------------
+# Enhanced Docker mock with container simulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_docker_client_enhanced():
+    """Docker mock with container exec, env, and mount simulation."""
+    docker_client = MagicMock()
+    docker_client.containers = MagicMock()
+    docker_client.containers.list = MagicMock(return_value=[])
+
+    def make_container(name="test-container", image="postgres:16", status="running",
+                       env=None, mounts=None):
+        container = MagicMock()
+        container.name = name
+        container.status = status
+        container.image.tags = [image]
+        env_list = [f"{k}={v}" for k, v in (env or {}).items()]
+        container.attrs = {
+            "Config": {"Env": env_list},
+            "Mounts": mounts or [],
+        }
+        container.exec_run = MagicMock(return_value=(0, b""))
+        return container
+
+    docker_client._make_container = make_container
+    return docker_client
+
+
+# ---------------------------------------------------------------------------
+# Isolated temp DB with migrations
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def db_for_tests(tmp_path):
+    """Create an isolated temp database with full schema for unit tests."""
+    from app.core.database import init_db, run_migrations
+
+    db_path = tmp_path / "test_arkive.db"
+    await init_db(db_path)
+    await run_migrations(db_path)
+    return db_path
+
+
+# ---------------------------------------------------------------------------
+# Event bus mock
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def event_bus_mock():
+    """AsyncMock event bus with publish tracking."""
+    bus = AsyncMock()
+    bus.publish = AsyncMock()
+    bus._published = []
+
+    async def _track_publish(event_type, data):
+        bus._published.append({"event": event_type, "data": data})
+
+    bus.publish.side_effect = _track_publish
+    return bus
+
+
+# ---------------------------------------------------------------------------
+# Log capture for assertions
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def logging_context():
+    """Capture log output for assertion in tests."""
+    import logging
+
+    class LogCapture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+        @property
+        def messages(self):
+            return [self.format(r) for r in self.records]
+
+        def has_message_containing(self, text):
+            return any(text in msg for msg in self.messages)
+
+    handler = LogCapture()
+    handler.setLevel(logging.DEBUG)
+    yield handler
+
+
+# ---------------------------------------------------------------------------
 # Daemon thread cleanup — prevents aiosqlite hangs on exit
 # ---------------------------------------------------------------------------
 
@@ -219,7 +376,19 @@ def pytest_sessionfinish(session, exitstatus):
     aiosqlite spawns a daemon thread per connection that blocks on
     SimpleQueue.get(). When connections are GC'd without explicit close(),
     the thread never receives the stop sentinel and blocks process exit.
+
+    Also fails the session when tests left files named after a MagicMock in
+    the working directory (rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 to find
+    the test).
     """
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        stray = sorted(_mock_artifacts() - _artifacts_at_start)
+        if stray:
+            print(f"\nTests created files from mocked config paths in {Path.cwd()}: {stray}\n"
+                  "Rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 (without -n) to find the test.")
+            if session.exitstatus == 0:
+                session.exitstatus = 1
+            exitstatus = session.exitstatus
     alive = [
         t for t in threading.enumerate()
         if t.is_alive() and t != threading.main_thread() and t.daemon

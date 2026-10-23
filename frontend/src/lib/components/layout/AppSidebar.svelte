@@ -35,7 +35,9 @@
     { label: 'Jobs', href: '/settings/jobs' },
     { label: 'Directories', href: '/settings/directories' },
     { label: 'Notifications', href: '/settings/notifications' },
+    { label: 'Monitoring', href: '/settings/monitoring' },
     { label: 'Security', href: '/settings/security' },
+    { label: 'Recovery Kit', href: '/settings/recovery-kit' },
   ];
 
   let settingsExpanded = false;

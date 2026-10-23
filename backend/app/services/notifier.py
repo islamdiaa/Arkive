@@ -1,7 +1,17 @@
 """Notification service using Apprise for 90+ notification services.
 
-Includes per-channel rate limiting, repeated error suppression with cooldown,
-and recovery alerts.
+Includes per-channel rate limiting, deduplication of repeated alerts with a
+short cooldown, and recovery alerts.
+
+Throttle semantics:
+- Repeated alerts are deduplicated per ``(channel, event_type, scope)`` for
+  ``THROTTLE_COOLDOWN`` seconds. ``scope`` is the caller-supplied ``dedupe_key``
+  or ``job_id`` (empty when neither is given), so a failure of one job never
+  suppresses the alert for a different job.
+- A success for a scope clears that scope's failure cooldown, so
+  failure -> success -> failure always alerts twice.
+- Recovery alerts (a success after a failure for the same scope) bypass the
+  cooldown and the hourly rate limit — they are always delivered.
 """
 
 import json
@@ -18,8 +28,31 @@ from app.core.security import decrypt_value, is_encrypted
 logger = logging.getLogger("arkive.notifier")
 
 # Throttle constants
-THROTTLE_COOLDOWN = 86400  # 24 hours per spec
+THROTTLE_COOLDOWN = 3600  # 1 hour dedupe window for repeated alerts
+DEDUPE_WINDOW = THROTTLE_COOLDOWN
 MAX_PER_HOUR = 10
+
+# Success events and the failure events they recover from.
+RECOVERY_PAIRS = {
+    "backup.success": "backup.failed",
+    "restore.success": "restore.failed",
+}
+
+
+# Problem events that aren't named "*.failed" but that a success recovers
+# from, mapped to the failure event they are tracked as.
+PROBLEM_ALIASES = {
+    "backup.partial": "backup.failed",
+}
+
+
+def _failure_counterpart(event_type: str) -> str | None:
+    """Return the failure event a success event recovers from, if any."""
+    if event_type in RECOVERY_PAIRS:
+        return RECOVERY_PAIRS[event_type]
+    if event_type.endswith(".success"):
+        return event_type[: -len(".success")] + ".failed"
+    return None
 
 
 class Notifier:
@@ -30,14 +63,14 @@ class Notifier:
         self.event_bus = event_bus
 
         # Throttle state
-        # (channel_id, event_type) -> timestamp of last sent notification
-        self._last_sent: dict[tuple[str, str], float] = {}
+        # (channel_id, event_type, scope) -> timestamp of last sent notification
+        self._last_sent: dict[tuple[str, str, str], float] = {}
         # channel_id -> list of send timestamps (for per-hour rate limiting)
         self._send_counts: dict[str, list[float]] = {}
-        # (channel_id, event_type) -> count of suppressed notifications
-        self._suppressed_counts: dict[tuple[str, str], int] = {}
-        # event_type -> last status ("success" / "failed")
-        self._last_event_status: dict[str, str] = {}
+        # (channel_id, event_type, scope) -> count of suppressed notifications
+        self._suppressed_counts: dict[tuple[str, str, str], int] = {}
+        # (failure_event_type, scope) -> last status ("success" / "failed")
+        self._last_event_status: dict[tuple[str, str], str] = {}
 
     def _is_rate_limited(self, channel_id: str) -> bool:
         """Check if a channel has exceeded its per-hour rate limit."""
@@ -54,36 +87,24 @@ class Notifier:
 
         return len(self._send_counts[channel_id]) >= MAX_PER_HOUR
 
-    def _is_throttled(self, channel_id: str, event_type: str) -> bool:
-        """Check if a (channel, event_type) pair is within cooldown."""
-        key = (channel_id, event_type)
-        last = self._last_sent.get(key)
+    def _is_throttled(self, channel_id: str, event_type: str, scope: str = "") -> bool:
+        """Check if a (channel, event_type, scope) triple is within cooldown."""
+        last = self._last_sent.get((channel_id, event_type, scope))
         if last is None:
             return False
         return (time.time() - last) < THROTTLE_COOLDOWN
 
-    def _check_recovery(self, event_type: str) -> bool:
-        """Check if this event represents a recovery from a previous failure.
-
-        Returns True if the event_type indicates success and the corresponding
-        failure event was the last status seen.
-        """
-        # Map success events to their failure counterparts
-        recovery_pairs = {
-            "backup.success": "backup.failed",
-            "restore.success": "restore.failed",
-        }
-
-        failure_event = recovery_pairs.get(event_type)
+    def _check_recovery(self, event_type: str, scope: str = "") -> bool:
+        """True if ``event_type`` is a success following a failure for ``scope``."""
+        failure_event = _failure_counterpart(event_type)
         if failure_event is None:
             return False
+        return self._last_event_status.get((failure_event, scope)) == "failed"
 
-        return self._last_event_status.get(failure_event) == "failed"
-
-    def _record_send(self, channel_id: str, event_type: str) -> None:
+    def _record_send(self, channel_id: str, event_type: str, scope: str = "") -> None:
         """Record that a notification was sent for throttle tracking."""
         now = time.time()
-        key = (channel_id, event_type)
+        key = (channel_id, event_type, scope)
 
         self._last_sent[key] = now
 
@@ -94,11 +115,25 @@ class Notifier:
         # Clear suppressed count since we just sent
         self._suppressed_counts.pop(key, None)
 
-    async def send(self, event_type: str, title: str, body: str, severity: str = "info") -> list[dict]:
+    def _clear_failure_cooldown(self, failure_event: str, scope: str) -> None:
+        """A success resets the failure cooldown for that scope on every channel."""
+        for key in [k for k in self._last_sent if k[1] == failure_event and k[2] == scope]:
+            self._last_sent.pop(key, None)
+            self._suppressed_counts.pop(key, None)
+
+    async def send(
+        self,
+        event_type: str,
+        title: str,
+        body: str,
+        severity: str = "info",
+        job_id: str | None = None,
+        dedupe_key: str | None = None,
+    ) -> list[dict]:
         """Send notification to all channels subscribed to this event type.
 
-        Applies per-channel rate limiting, cooldown-based deduplication,
-        and recovery alert detection before sending.
+        ``job_id`` / ``dedupe_key`` (optional, keyword) scope deduplication and
+        recovery tracking so alerts for different jobs are independent.
         """
         results = []
         try:
@@ -107,8 +142,20 @@ class Notifier:
             logger.warning("Apprise not installed, skipping notifications")
             return results
 
+        scope = str(dedupe_key or job_id or "")
+        failure_event = _failure_counterpart(event_type)
+        is_success = failure_event is not None
+        is_failure = (event_type.endswith(".failed") or "failed" in event_type.split(".")[-1]
+                      or event_type in PROBLEM_ALIASES)
+
         # Check for recovery before processing channels
-        is_recovery = self._check_recovery(event_type)
+        is_recovery = self._check_recovery(event_type, scope)
+        if is_success and failure_event:
+            # A success always re-arms failure alerts for this scope.
+            self._clear_failure_cooldown(failure_event, scope)
+            for problem, tracked_as in PROBLEM_ALIASES.items():
+                if tracked_as == failure_event:
+                    self._clear_failure_cooldown(problem, scope)
 
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -135,32 +182,33 @@ class Notifier:
                     logger.error("Decryption failed for channel %s — skipping", channel_id)
                     results.append({"channel_id": channel_id, "status": "failed", "error": "Credential decryption failed"})
                     continue
-            key = (channel_id, event_type)
+            key = (channel_id, event_type, scope)
 
-            # --- Per-channel rate limit check ---
-            if self._is_rate_limited(channel_id):
-                logger.info(
-                    "Rate limited: channel %s exceeded %d/hour",
-                    channel_id, MAX_PER_HOUR,
-                )
-                results.append({
-                    "channel_id": channel_id,
-                    "status": "rate_limited",
-                })
-                continue
+            if not is_recovery:
+                # --- Per-channel rate limit check ---
+                if self._is_rate_limited(channel_id):
+                    logger.info(
+                        "Rate limited: channel %s exceeded %d/hour",
+                        channel_id, MAX_PER_HOUR,
+                    )
+                    results.append({
+                        "channel_id": channel_id,
+                        "status": "rate_limited",
+                    })
+                    continue
 
-            # --- Cooldown / deduplication check ---
-            if self._is_throttled(channel_id, event_type):
-                self._suppressed_counts[key] = self._suppressed_counts.get(key, 0) + 1
-                logger.info(
-                    "Throttled: channel %s, event %s (suppressed %d)",
-                    channel_id, event_type, self._suppressed_counts[key],
-                )
-                results.append({
-                    "channel_id": channel_id,
-                    "status": "throttled",
-                })
-                continue
+                # --- Cooldown / deduplication check ---
+                if self._is_throttled(channel_id, event_type, scope):
+                    self._suppressed_counts[key] = self._suppressed_counts.get(key, 0) + 1
+                    logger.info(
+                        "Throttled: channel %s, event %s, scope %s (suppressed %d)",
+                        channel_id, event_type, scope or "-", self._suppressed_counts[key],
+                    )
+                    results.append({
+                        "channel_id": channel_id,
+                        "status": "throttled",
+                    })
+                    continue
 
             # --- Build final body with suppressed summary if applicable ---
             final_body = body
@@ -190,7 +238,7 @@ class Notifier:
                 results.append({"channel_id": channel_id, "status": status})
 
                 if sent:
-                    self._record_send(channel_id, event_type)
+                    self._record_send(channel_id, event_type, scope)
 
                 # Update last_sent and last_status in DB
                 async with aiosqlite.connect(self.config.db_path) as db:
@@ -205,12 +253,10 @@ class Notifier:
                 results.append({"channel_id": channel_id, "status": "failed", "error": str(e)})
 
         # Track event status for recovery detection
-        if "failed" in event_type:
-            self._last_event_status[event_type] = "failed"
-        elif "success" in event_type:
-            # Clear the failure status for the corresponding failure event
-            failure_event = event_type.replace(".success", ".failed")
-            self._last_event_status[failure_event] = "success"
+        if is_success and failure_event:
+            self._last_event_status[(failure_event, scope)] = "success"
+        elif is_failure:
+            self._last_event_status[(PROBLEM_ALIASES.get(event_type, event_type), scope)] = "failed"
 
         # Also publish to event bus for SSE
         await self.event_bus.publish("notification", {

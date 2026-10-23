@@ -12,8 +12,8 @@ router = APIRouter(prefix="/activity", tags=["activity"], dependencies=[Depends(
 
 @router.get("")
 async def list_activity(
-    limit: int = Query(default=50, le=200),
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     type: str | None = None,
     severity: str | None = None,
     db: aiosqlite.Connection = Depends(get_db),
@@ -43,7 +43,10 @@ async def list_activity(
     entries = []
     for row in rows:
         entry = dict(row)
-        entry["details"] = json.loads(entry.get("details", "{}"))
+        try:
+            entry["details"] = json.loads(entry.get("details") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            entry["details"] = {}
         entries.append(entry)
 
     return {

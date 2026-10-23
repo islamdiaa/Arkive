@@ -3,13 +3,18 @@
 </svelte:head>
 
 <script lang="ts">
+  import Header from '$lib/components/layout/Header.svelte';
   import { api } from '$lib/api/client';
   import { addToast } from '$lib/stores/app';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { settingsSchema } from '$lib/schemas/settings';
   import SectionCard from '$lib/components/ui/SectionCard.svelte';
   import FormInput from '$lib/components/ui/FormInput.svelte';
   import FormSelect from '$lib/components/ui/FormSelect.svelte';
+  import FormToggle from '$lib/components/ui/FormToggle.svelte';
+  import CronEditor from '$lib/components/shared/CronEditor.svelte';
+  import { saveSettings } from '$lib/api/settings';
+  import { describeCron } from '$lib/utils/schedule';
 
   let serverName = '';
   let timezone = 'UTC';
@@ -18,6 +23,11 @@
   let keepWeekly = 4;
   let keepMonthly = 6;
   let logLevel = 'INFO';
+  let dumpCompression = 'none';
+  let drillEnabled = true;
+  let drillSchedule = '0 7 * * 0';
+  let drillMaxDatabases: number | string = 3;
+  let drillMaxDumpMb: number | string = 2048;
   let saving = false;
   let saved = false;
   let loading = true;
@@ -26,7 +36,27 @@
 
   // Track original values for dirty detection
   let originalValues = '';
-  $: isDirty = !loading && originalValues !== JSON.stringify({ serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel });
+  function snapshot(): string {
+    return JSON.stringify({
+      serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel,
+      dumpCompression, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
+    });
+  }
+  $: currentValues = JSON.stringify({
+    serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel,
+    dumpCompression, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
+  });
+  $: isDirty = !loading && originalValues !== currentValues;
+
+  // Human-readable drill schedule, hidden when it would just repeat the cron string.
+  $: drillScheduleText = describeCron(drillSchedule) === drillSchedule.trim().replace(/\s+/g, ' ')
+    ? ''
+    : describeCron(drillSchedule);
+
+  const dumpCompressionOptions = [
+    { value: 'none', label: 'Uncompressed — recommended: restic compresses and deduplicates, much smaller daily repository growth' },
+    { value: 'gzip', label: 'gzip — smaller local dump folder, larger repository growth' },
+  ];
 
   const timezones = [
     'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
@@ -52,34 +82,51 @@
       keepWeekly = data.keep_weekly || 4;
       keepMonthly = data.keep_monthly || 6;
       logLevel = data.log_level || 'INFO';
-      originalValues = JSON.stringify({ serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel });
+      dumpCompression = data.dump_compression === 'gzip' ? 'gzip' : 'none';
+      drillEnabled = data.restore_drill_enabled !== false && data.restore_drill_enabled !== 'false';
+      drillSchedule = data.restore_drill_schedule || '0 7 * * 0';
+      drillMaxDatabases = Number(data.restore_drill_max_databases) || 3;
+      drillMaxDumpMb = Number(data.restore_drill_max_dump_mb) || 2048;
+      originalValues = snapshot();
     } catch (e: any) {
       error = e.message || 'Failed to load settings';
     }
     loading = false;
+    // Deep link from the dashboard's drills panel (/settings/general#restore-drills):
+    // the settings layout scrolls an inner container, so scroll the section into view.
+    if (window.location.hash === '#restore-drills') {
+      await tick();
+      document.getElementById('restore-drills')?.scrollIntoView({ block: 'start' });
+    }
   });
 
   async function save() {
-    const result = settingsSchema.safeParse({
+    const values = {
       server_name: serverName, timezone,
       retention_days: retentionDays,
       keep_daily: keepDaily, keep_weekly: keepWeekly, keep_monthly: keepMonthly,
       log_level: logLevel,
-    });
+      dump_compression: dumpCompression,
+      restore_drill_enabled: drillEnabled,
+      restore_drill_schedule: drillSchedule.trim(),
+      // Empty number inputs become 0/NaN here so validation rejects them.
+      restore_drill_max_databases: Number(drillMaxDatabases),
+      restore_drill_max_dump_mb: Number(drillMaxDumpMb),
+    };
+    const result = settingsSchema.safeParse(values);
     if (!result.success) {
       errors = Object.fromEntries(result.error.issues.map(e => [e.path.map(String).join('.') || '_root', e.message]));
+      const first = result.error.issues[0];
+      addToast({ type: 'error', message: `${first.path.map(String).join('.') || 'Settings'}: ${first.message}` });
       return;
     }
     errors = {};
     saving = true;
     try {
-      await api.updateSettings({
-        server_name: serverName, timezone, retention_days: retentionDays,
-        keep_daily: keepDaily, keep_weekly: keepWeekly, keep_monthly: keepMonthly,
-        log_level: logLevel,
-      });
+      // Bulk PUT /api/settings with string values ({settings: {...}}).
+      await saveSettings(values);
       saved = true;
-      originalValues = JSON.stringify({ serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel });
+      originalValues = snapshot();
       addToast({ type: 'success', message: 'Settings saved' });
       setTimeout(() => saved = false, 3000);
     } catch (e: any) {
@@ -88,6 +135,8 @@
     saving = false;
   }
 </script>
+
+<Header title="General Settings" />
 
 <div class="p-6 space-y-6">
   <div>
@@ -155,6 +204,62 @@
         />
       </div>
     </SectionCard>
+
+    <SectionCard title="Database Dumps" description="How Arkive writes database dumps before each backup">
+      <FormSelect
+        id="dump-compression"
+        label="Dump Compression"
+        bind:value={dumpCompression}
+        options={dumpCompressionOptions}
+      />
+      <p class="text-xs text-text-secondary">
+        Uncompressed dumps let restic deduplicate unchanged data between days, so each new snapshot only stores what changed. gzip scrambles the whole file on every change, so each backup uploads nearly the full dump again. Existing dumps in either format stay restorable.
+      </p>
+    </SectionCard>
+
+    <div id="restore-drills" class="scroll-mt-6">
+      <SectionCard title="Restore Drills" description="Prove your database dumps actually restore, not just that they exist">
+        <p class="text-sm text-text-secondary">
+          A drill restores recent database dumps from the latest snapshot and loads them into a temporary, network-isolated copy of each database's own container image to prove they restore. Results appear on the dashboard, and a failed drill sends a “Restore drill failed” notification.
+        </p>
+        <FormToggle
+          id="restore-drill-enabled"
+          checked={drillEnabled}
+          label={drillEnabled ? 'Scheduled drills enabled' : 'Scheduled drills disabled'}
+          description="You can always run a drill manually from the dashboard"
+          on:change={(e) => (drillEnabled = e.detail.checked)}
+        />
+        <div class={drillEnabled ? '' : 'opacity-60'}>
+          <CronEditor bind:value={drillSchedule} label="Drill schedule" />
+          {#if drillScheduleText}
+            <p class="text-xs text-text-secondary mt-1">{drillScheduleText}</p>
+          {/if}
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <FormInput
+            id="restore-drill-max-databases"
+            label="Databases per drill"
+            type="number"
+            bind:value={drillMaxDatabases}
+            error={errors.restore_drill_max_databases}
+            hint="How many databases each drill restores (1–100)"
+            mono={true}
+          />
+          <FormInput
+            id="restore-drill-max-dump-mb"
+            label="Max dump size (MB)"
+            type="number"
+            bind:value={drillMaxDumpMb}
+            error={errors.restore_drill_max_dump_mb}
+            hint="Larger dumps are skipped to keep drills quick"
+            mono={true}
+          />
+        </div>
+        {#if errors.restore_drill_schedule}
+          <p class="text-xs text-danger" role="alert">{errors.restore_drill_schedule}</p>
+        {/if}
+      </SectionCard>
+    </div>
 
     <SectionCard title="Logging" description="Control verbosity of application logs">
       <div class="max-w-xs">

@@ -8,6 +8,7 @@ from app.api import (
     databases,
     directories,
     discover,
+    drills,
     events,
     jobs,
     logs,
@@ -18,6 +19,7 @@ from app.api import (
     status,
     storage,
     targets,
+    verification,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -37,3 +39,5 @@ api_router.include_router(discover.router)
 api_router.include_router(databases.router)
 api_router.include_router(directories.router)
 api_router.include_router(events.router)
+api_router.include_router(verification.router)
+api_router.include_router(drills.router)

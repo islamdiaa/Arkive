@@ -13,6 +13,9 @@ class DiscoveredContainer(BaseModel):
     ports: list[str] = []
     mounts: list[dict] = []
     compose_project: str | None = None
+    # Coverage problems found while scanning (e.g. Postgres databases could not
+    # be listed, so only the configured one is backed up). Not persisted.
+    warnings: list[str] = []
 
 
 class DiscoveredDatabase(BaseModel):

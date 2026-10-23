@@ -20,7 +20,9 @@
 		{ label: 'Settings — Schedule', href: '/settings/schedule' },
 		{ label: 'Settings — Directories', href: '/settings/directories' },
 		{ label: 'Settings — Notifications', href: '/settings/notifications' },
+		{ label: 'Settings — Monitoring', href: '/settings/monitoring' },
 		{ label: 'Settings — Security', href: '/settings/security' },
+		{ label: 'Settings — Recovery Kit', href: '/settings/recovery-kit' },
 	];
 
 	let query = '';

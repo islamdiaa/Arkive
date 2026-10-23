@@ -787,29 +787,66 @@ def restic(ctx):
 
 
 def _get_target_env(target_id: str, db_path: Path) -> dict:
-    """Load target config from DB and build restic environment variables."""
+    """Load a target from the DB and build the restic environment for it.
+
+    Uses the same repository path the backup engine uses (``build_repo_path``)
+    and the restic encryption password from settings. Previously the target's
+    own ``password`` (e.g. the SFTP login password) was passed as
+    RESTIC_PASSWORD and the repository was ``config['path']`` (or empty for
+    cloud targets), so every ``arkive restic …`` command hit the wrong repo.
+    """
+    from app.core.security import decrypt_config, decrypt_value
+    from app.services.repo_paths import build_repo_path
+
+    config_dir = db_path.parent
     conn = _get_db_connection(db_path)
-    cursor = conn.execute("SELECT config FROM storage_targets WHERE id = ?", (target_id,))
-    row = cursor.fetchone()
-    conn.close()
+    try:
+        cursor = conn.execute("SELECT id, type, config FROM storage_targets WHERE id = ?", (target_id,))
+        row = cursor.fetchone()
+        password_row = None
+        if row:
+            for key in ("encryption_password", "restic_password"):
+                password_row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+                if password_row and password_row["value"]:
+                    break
+    finally:
+        conn.close()
 
     if not row:
         click.echo(click.style(f"Error: Target '{target_id}' not found.", fg="red"), err=True)
         sys.exit(EXIT_CONFIG_ERROR)
 
-    config_str = row["config"]
+    keyfile = config_dir / ".keyfile"
+    if not keyfile.exists():
+        click.echo(click.style(f"Error: Encryption keyfile not found at {keyfile}.", fg="red"), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
+    from app.core.security import _load_fernet_from_dir
+    _load_fernet_from_dir(str(config_dir))  # pin the key used by decrypt_value below
 
-    # Try to decrypt config if encrypted
     try:
-        from app.core.security import decrypt_config
-        config = decrypt_config(config_str)
-    except Exception:
-        try:
-            config = json.loads(config_str) if config_str else {}
-        except (json.JSONDecodeError, TypeError):
-            config = {}
+        target_config = decrypt_config(row["config"] or "", str(config_dir))
+    except Exception as exc:
+        click.echo(click.style(f"Error: Could not decrypt target config: {exc}", fg="red"), err=True)
+        sys.exit(EXIT_CONFIG_ERROR)
 
-    return _build_restic_env(config)
+    password = ""
+    if password_row and password_row["value"]:
+        try:
+            password = decrypt_value(password_row["value"])
+        except Exception as exc:
+            click.echo(click.style(f"Error: Could not decrypt encryption password: {exc}", fg="red"), err=True)
+            sys.exit(EXIT_CONFIG_ERROR)
+    if not password:
+        click.echo(click.style("Error: No encryption password configured (run setup first).", fg="red"), err=True)
+        sys.exit(EXIT_NOT_SETUP)
+
+    target = {"id": row["id"], "type": row["type"], "config": target_config}
+    env = os.environ.copy()
+    env["RESTIC_REPOSITORY"] = build_repo_path(target)
+    env["RESTIC_PASSWORD"] = password
+    if row["type"] != "local":
+        env["RCLONE_CONFIG"] = str(config_dir / "rclone.conf")
+    return env
 
 
 def _run_restic(args: list[str], env: dict, json_flag: bool = True) -> subprocess.CompletedProcess:

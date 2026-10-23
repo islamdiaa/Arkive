@@ -65,3 +65,32 @@ async def test_dump_database_not_found(client):
         headers=auth_headers(data["api_key"]),
     )
     assert resp.status_code == 404
+
+
+async def test_manual_dump_waits_for_no_backup(client):
+    """A manual dump while a backup holds the lock is refused (it would race
+    the backup's dump-directory cleanup); otherwise it runs and releases."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.services.lock_manager import BackupLockManager
+
+    api_key = await _seed_container_with_db(client)
+    app = client._transport.app
+    lock_manager = BackupLockManager(get_config().config_dir)
+    app.state.orchestrator = SimpleNamespace(lock_manager=lock_manager)
+    dumper = SimpleNamespace(dump_single=AsyncMock(return_value=SimpleNamespace(
+        container_name="testcontainer", db_name="mydb", db_type="mysql", dump_size_bytes=10,
+        integrity_check="ok", dump_path="/config/dumps/x.sql", duration_seconds=0.1,
+        status="success", error=None)))
+    app.state.db_dumper = dumper
+
+    assert lock_manager.acquire_backup_lock("scheduled-run")
+    resp = await client.post("/api/databases/testcontainer/mydb/dump", headers=auth_headers(api_key))
+    assert resp.status_code == 409
+    dumper.dump_single.assert_not_awaited()
+    lock_manager.release_backup_lock()
+
+    resp = await client.post("/api/databases/testcontainer/mydb/dump", headers=auth_headers(api_key))
+    assert resp.status_code == 200 and resp.json()["status"] == "success"
+    assert not lock_manager.is_backup_running()

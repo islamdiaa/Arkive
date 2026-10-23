@@ -1,12 +1,16 @@
 """Structured JSON logging configuration with sensitive value filtering."""
 
+import json
 import logging
 import logging.handlers
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
+
+from app.core.context import CorrelationFilter
 
 
 # Patterns that indicate sensitive values in log messages.
@@ -38,6 +42,26 @@ class _SensitiveFilter(logging.Filter):
         return True
 
 
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line with a UTC timestamp.
+
+    Values are properly escaped (the previous %-template produced invalid
+    JSON whenever a message contained quotes) and exceptions are included.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "level": record.levelname,
+            "run_id": getattr(record, "run_id", "-"),
+            "component": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     """Configure structured JSON logging to stdout and file.
 
@@ -55,29 +79,29 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
     root.handlers.clear()
     root.setLevel(log_level)
 
-    # Sensitive value filter applied to all handlers
+    # Filters applied to all handlers
     sensitive_filter = _SensitiveFilter()
+    correlation_filter = CorrelationFilter()
 
-    # JSON formatter for structured output
-    fmt = logging.Formatter(
-        '{"timestamp":"%(asctime)s","level":"%(levelname)s","component":"%(name)s","message":"%(message)s"}',
-        datefmt="%Y-%m-%dT%H:%M:%SZ",
-    )
+    # JSON formatter for structured output — includes run_id correlation
+    fmt = JsonFormatter()
 
     # Console handler (stdout)
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(log_level)
     console.setFormatter(fmt)
     console.addFilter(sensitive_filter)
+    console.addFilter(correlation_filter)
     root.addHandler(console)
 
-    # File handler with rotation (50 MB, 30 backups = max 1.5 GB log storage)
+    # File handler with rotation (20 MB x 10 backups = max ~220 MB log storage)
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=50 * 1024 * 1024, backupCount=30
+        log_file, maxBytes=20 * 1024 * 1024, backupCount=10, encoding="utf-8"
     )
     file_handler.setLevel(log_level)
     file_handler.setFormatter(fmt)
     file_handler.addFilter(sensitive_filter)
+    file_handler.addFilter(correlation_filter)
     root.addHandler(file_handler)
 
     # Configure structlog to route through stdlib (prevents double-logging)
@@ -97,6 +121,14 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+    # uvicorn installs its own plain-text handlers (or the JSON ones from
+    # logging.json for the lines before startup); route everything through
+    # the root handlers so the console and arkive.log get the same JSON.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
 
     # Suppress noisy loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

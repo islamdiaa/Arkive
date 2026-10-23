@@ -35,7 +35,7 @@ async def _create_channel(client, api_key, name="TestChannel"):
             "type": "discord",
             "name": name,
             "url": "https://discord.com/api/webhooks/1234567890/original-token",
-            "events": ["backup.completed"],
+            "events": ["backup.success"],
         },
         headers=auth_headers(api_key),
     )
@@ -141,7 +141,7 @@ async def test_update_channel_events(client):
     api_key = await setup_auth(client)
     channel_id = await _create_channel(client, api_key)
 
-    new_events = ["backup.failed", "restore.completed"]
+    new_events = ["backup.failed", "drill.failed"]
     resp = await client.put(
         f"/api/notifications/{channel_id}",
         json={"events": new_events},
