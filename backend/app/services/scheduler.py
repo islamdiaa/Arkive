@@ -446,8 +446,8 @@ class ArkiveScheduler:
                                 (target["id"],),
                             )
                             await db.commit()
-                    except Exception:
-                        pass
+                    except Exception as db_err:
+                        logger.debug("Could not record error status for target %s: %s", target["id"], db_err)
 
                 self._target_status[target["id"]] = new_status
                 was_healthy = previous_status in _HEALTHY_STATES

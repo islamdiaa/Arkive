@@ -287,3 +287,33 @@ class TestJobScopedThrottle:
             mock_aiosqlite.Row = MagicMock()
             r = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "t", "b", severity="error")
         assert r[0]["status"] == "sent"
+
+
+class TestThrottleStatePruning:
+    def test_expired_entries_are_dropped_and_recovery_state_is_capped(self, mock_config, mock_event_bus, monkeypatch):
+        import app.services.notifier as notifier_mod
+
+        notifier = Notifier(mock_config, mock_event_bus)
+        notifier._last_sent[("ch1", "backup.failed", "deleted-job")] = 0.0
+        notifier._suppressed_counts[("ch1", "backup.failed", "deleted-job")] = 3
+        notifier._send_counts["old-channel"] = [0.0]
+        monkeypatch.setattr(notifier_mod, "MAX_TRACKED_EVENT_STATES", 2)
+        for i in range(4):
+            notifier._last_event_status[("backup.failed", f"job{i}")] = "failed"
+
+        now = 10 * 3600.0
+        notifier._last_sent[("ch1", "backup.failed", "live-job")] = now - 60
+        notifier._prune_state(now)
+
+        assert ("ch1", "backup.failed", "deleted-job") not in notifier._last_sent
+        assert ("ch1", "backup.failed", "deleted-job") not in notifier._suppressed_counts
+        assert ("ch1", "backup.failed", "live-job") in notifier._last_sent  # still in cooldown
+        assert "old-channel" not in notifier._send_counts
+        assert list(notifier._last_event_status) == [("backup.failed", "job2"), ("backup.failed", "job3")]
+
+    def test_pruning_is_rate_limited(self, mock_config, mock_event_bus):
+        notifier = Notifier(mock_config, mock_event_bus)
+        notifier._prune_state(1000.0)
+        notifier._last_sent[("ch1", "e", "")] = 0.0
+        notifier._prune_state(1000.0 + 60)  # within PRUNE_INTERVAL: untouched
+        assert ("ch1", "e", "") in notifier._last_sent

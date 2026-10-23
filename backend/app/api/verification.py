@@ -122,8 +122,8 @@ async def trigger_verification(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass  # If rate-limit check fails, allow the run
+    except Exception as e:
+        logger.debug("Verification rate-limit check failed, allowing the run: %s", e)
 
     try:
         cursor = await db.execute(

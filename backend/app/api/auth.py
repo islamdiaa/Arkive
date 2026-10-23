@@ -1,5 +1,6 @@
 """Authentication and setup API routes."""
 
+import logging
 import json
 import os
 import sqlite3
@@ -40,6 +41,8 @@ from app.core.security import (
 )
 from app.core.platform import Platform
 from app.models.settings import SetupCompleteRequest
+
+logger = logging.getLogger("arkive.api.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -315,8 +318,9 @@ async def complete_setup(request: Request, response: Response, body: SetupComple
             if full_job and hasattr(scheduler, "trigger_job"):
                 await scheduler.trigger_job(full_job["id"])
                 first_backup_triggered = True
-        except Exception:
-            pass  # Non-fatal: first backup will run on next schedule
+        except Exception as e:
+            # Non-fatal: the first backup runs on the next schedule instead.
+            logger.warning("Could not start the first backup after setup: %s", e)
 
     _set_browser_session(response, request, api_key_hash)
 

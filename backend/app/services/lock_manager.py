@@ -199,8 +199,10 @@ class BackupLockManager:
         """Release backup lock."""
         try:
             self.lock_file.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            # A lock that can't be removed blocks every later backup until
+            # stale-lock cleanup notices the holder is gone.
+            logger.warning("Could not release backup lock %s: %s", self.lock_file, e)
 
     def is_backup_running(self) -> bool:
         """Check if a backup is currently running."""

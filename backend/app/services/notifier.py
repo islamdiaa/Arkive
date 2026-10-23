@@ -31,6 +31,8 @@ logger = logging.getLogger("arkive.notifier")
 THROTTLE_COOLDOWN = 3600  # 1 hour dedupe window for repeated alerts
 DEDUPE_WINDOW = THROTTLE_COOLDOWN
 MAX_PER_HOUR = 10
+PRUNE_INTERVAL = 600  # seconds between throttle-state cleanups
+MAX_TRACKED_EVENT_STATES = 5000
 
 # Success events and the failure events they recover from.
 RECOVERY_PAIRS = {
@@ -71,6 +73,7 @@ class Notifier:
         self._suppressed_counts: dict[tuple[str, str, str], int] = {}
         # (failure_event_type, scope) -> last status ("success" / "failed")
         self._last_event_status: dict[tuple[str, str], str] = {}
+        self._last_pruned = 0.0
 
     def _is_rate_limited(self, channel_id: str) -> bool:
         """Check if a channel has exceeded its per-hour rate limit."""
@@ -114,6 +117,24 @@ class Notifier:
 
         # Clear suppressed count since we just sent
         self._suppressed_counts.pop(key, None)
+        self._prune_state(now)
+
+    def _prune_state(self, now: float) -> None:
+        """Drop throttle state that can no longer matter, so scopes of deleted
+        jobs and one-off dedupe keys don't accumulate for the process lifetime."""
+        if now - self._last_pruned < PRUNE_INTERVAL:
+            return
+        self._last_pruned = now
+        expired = [k for k, ts in self._last_sent.items() if now - ts >= THROTTLE_COOLDOWN]
+        for key in expired:
+            self._last_sent.pop(key, None)
+            self._suppressed_counts.pop(key, None)
+        for channel_id in [c for c, stamps in self._send_counts.items() if all(now - t >= 3600 for t in stamps)]:
+            del self._send_counts[channel_id]
+        # Recovery tracking must outlive the cooldown; only cap it.
+        overflow = len(self._last_event_status) - MAX_TRACKED_EVENT_STATES
+        for key in list(self._last_event_status)[:max(overflow, 0)]:
+            del self._last_event_status[key]
 
     def _clear_failure_cooldown(self, failure_event: str, scope: str) -> None:
         """A success resets the failure cooldown for that scope on every channel."""

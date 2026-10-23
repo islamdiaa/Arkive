@@ -149,8 +149,8 @@ class BackupEngine:
                         )
                         return ""
                     return val
-        except Exception:
-            pass  # Table missing or DB error — no throttle
+        except Exception as e:
+            logger.debug("Could not read bandwidth_limit, uploading unthrottled: %s", e)
         return ""
 
     async def _get_server_name(self) -> str:

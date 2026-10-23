@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install ruff
-        run: pip install ruff==0.8.6
+        run: pip install ruff==0.17.2
 
       # Blocking: real defects (undefined names, unused imports/variables, syntax errors)
       - name: Run ruff check (errors)

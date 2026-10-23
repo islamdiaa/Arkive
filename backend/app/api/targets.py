@@ -608,8 +608,8 @@ async def test_connection_inline(
         if cloud_manager is not None:
             try:
                 await cloud_manager.remove_target_config(temp_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not remove temporary rclone config %s: %s", temp_id, e)
 
 
 @router.post("/{target_id}/test")

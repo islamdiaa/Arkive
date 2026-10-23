@@ -211,8 +211,8 @@ def _release_restore_lock() -> None:
     restore_lock_file = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "restore.lock"
     try:
         restore_lock_file.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Could not release restore lock %s: %s", restore_lock_file, e)
 
 
 def cleanup_stale_restore_lock(config_dir: Path | None = None) -> bool:
