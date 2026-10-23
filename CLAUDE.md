@@ -437,7 +437,7 @@ Important product observations that remain worth remembering:
 ## CI and Test Notes
 
 CI (`.github/workflows/build.yml`) runs on every PR:
-- `lint`: blocking `ruff check --select F,E9`; full ruff lint/format is advisory
+- `lint`: ruff check and ruff format --check (rules in `backend/pyproject.toml`)
 - `test-backend-core`: `pytest -m "not slow and not live" -n auto`
 - `test-backend-heavy`: `pytest -m "slow and not live" -n auto` (Docker fakes, providers)
 - `test-critical`, `test-frontend` (svelte-check + build), `test-components` (Vitest)
@@ -568,8 +568,7 @@ At the time this handoff was updated (v0.4.0):
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
-- open follow-ups: Tailwind CSS 4 migration (#53); making the full ruff
-  lint/format check blocking needs a repo-wide reformat first
+- open follow-up: Tailwind CSS 4 migration (#53)
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still
