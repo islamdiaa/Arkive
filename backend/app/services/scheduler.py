@@ -688,6 +688,37 @@ class ArkiveScheduler:
             await self.restore_drill.run_drill(trigger="scheduled")
         except Exception as e:
             logger.error("System job: restore drill failed: %s", e)
+        await self._alert_on_untested_drills()
+
+    # Consecutive drills that tested nothing before it's reported as a failure.
+    drill_skip_alert_threshold = 3
+
+    async def _alert_on_untested_drills(self) -> None:
+        """A drill that can't start a test server is "skipped", not failed — but
+        drills that never test anything mean restores are unproven. Alert once
+        the last N drills all tested nothing."""
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                cursor = await db.execute(
+                    "SELECT status, error_message FROM restore_drills "
+                    "WHERE status != 'running' ORDER BY started_at DESC LIMIT ?",
+                    (self.drill_skip_alert_threshold,),
+                )
+                recent = await cursor.fetchall()
+        except Exception as e:
+            logger.debug("Could not read restore drill history: %s", e)
+            return
+        if len(recent) < self.drill_skip_alert_threshold or any(r[0] != "skipped" for r in recent):
+            return
+        message = (f"The last {len(recent)} restore drills could not test any database: "
+                   f"{(recent[0][1] or 'no reason recorded')[:300]}")
+        logger.warning(message)
+        if self.notifier:
+            try:
+                await self.notifier.send("drill.failed", "Restore Drills Not Testing Anything", message,
+                                         severity="warning", dedupe_key="drill-untested")
+            except Exception as e:
+                logger.warning("Failed to send untested-drill notification: %s", e)
 
     # ---- Backup lock coordination for system jobs ----
 

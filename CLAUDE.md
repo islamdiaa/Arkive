@@ -399,7 +399,10 @@ cases; the fixes are now invariants:
   re-labelling only touches snapshot IDs this instance recorded in
   `job_run_targets`; a host-name pattern or a shared path is not proof.
 - **Never write marker files into user-configured directories.** Arkive's own
-  storage is excluded with exact `--exclude` paths (`_internal_excludes`).
+  storage (restore dir, each `arkive-repo`) is excluded by exact `--exclude`
+  paths, their Docker host-path aliases (the same folder is often visible as
+  `/config/...` and `/mnt/user/appdata/arkive/...`), and a marker inside those
+  Arkive-owned directories only (`_internal_excludes`).
 - **Startup sweeps delete only what carries Arkive's ownership marker**
   (drill dirs: `.arkive-drill` with the drill id), never by name prefix.
 - **Dump files:** names carry an identity hash (no two databases share a

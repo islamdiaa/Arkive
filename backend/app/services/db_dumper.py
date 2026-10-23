@@ -123,6 +123,13 @@ def dump_prefix(container_name: str, db_type: str, db_name: str, host_path: str 
     return f"{safe_name(container_name)}_{safe_name(label)}-{digest}"
 
 
+def legacy_dump_prefix(container_name: str, db_name: str) -> str:
+    """Grouping prefix a database's dumps had before names carried the identity
+    hash (``<safe container>_<safe db name>``; databases only — older releases
+    had no roles dump). Several identities can share one legacy prefix."""
+    return f"{safe_name(container_name)}_{safe_name(db_name)}"
+
+
 def _prefix_base(prefix: str) -> str | None:
     """``<safe container>_<safe label>`` of a hashed prefix; None for an old-style prefix."""
     match = _HASHED_PREFIX.match(prefix)
@@ -468,7 +475,8 @@ def _remove_stale(path: Path, max_age_seconds: float) -> bool:
 
 
 def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7,
-                     protect_prefixes: set[str] | None = None) -> int:
+                     protect_prefixes: set[str] | None = None,
+                     legacy_prefixes: dict[str, str] | None = None) -> int:
     """Prune the database dump directory.
 
     Dumps are grouped by their ``dump_prefix`` (regardless of format, so
@@ -481,9 +489,12 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
     disables age-based removal.
 
     Older dumps named without the identity hash (``<container>_<label>_<ts>``)
-    still group by that legacy prefix; such a group is removed once a newer
-    hashed dump with the same ``<container>_<label>`` exists, and is protected
-    like the hashed prefix it corresponds to until then.
+    group by that legacy prefix. ``legacy_prefixes`` maps the hashed prefix of
+    each known database to its legacy prefix: a legacy group is retired once
+    every database mapping to it has a newer hashed dump, and is protected like
+    those databases until then. Legacy groups no known database maps to follow
+    the plain age rule. A shared sanitised name alone never retires a file —
+    a database named ``globals`` must not retire an old roles dump.
 
     In-progress ``.partial`` files are never treated as dumps; ones older than
     6 hours (left by a crash) are deleted. Orphaned SQLite
@@ -498,7 +509,10 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
     keep_last = max(keep_last, 1)
     cutoff = time.time() - max_age_days * 86400 if max_age_days else None
     protected = set(protect_prefixes or ())
-    protected_bases = {base for base in map(_prefix_base, protected) if base}
+    # legacy prefix -> hashed prefixes of the known databases that used it
+    legacy_owners: dict[str, list[str]] = {}
+    for hashed, legacy in (legacy_prefixes or {}).items():
+        legacy_owners.setdefault(legacy, []).append(hashed)
 
     groups: dict[str, list[Path]] = {}
     sidecars: list[Path] = []
@@ -530,21 +544,21 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
         # Newest first by the timestamp in the name (extension-independent).
         files.sort(key=_dump_sort_key, reverse=True)
 
-    # Newest timestamp of the hashed groups per legacy-style base, to retire
-    # dumps written before file names carried the identity hash.
-    newest_hashed: dict[str, str] = {}
-    for prefix, files in groups.items():
-        base = _prefix_base(prefix)
-        if base is not None and _DUMP_TS_PATTERN.match(files[0].name):
-            newest_hashed[base] = max(newest_hashed.get(base, ""), _dump_sort_key(files[0]))
+    def _newest(prefix: str) -> str:
+        files = groups.get(prefix)
+        return _dump_sort_key(files[0]) if files else ""
 
     to_remove: list[Path] = []
     for prefix, files in groups.items():
-        legacy = _prefix_base(prefix) is None and _DUMP_TS_PATTERN.match(files[0].name) is not None
-        if legacy and newest_hashed.get(prefix, "") > _dump_sort_key(files[0]):
-            to_remove.extend(files)
-            continue
-        is_protected = prefix in protected or (legacy and prefix in protected_bases)
+        owners = legacy_owners.get(prefix, [])
+        is_protected = prefix in protected
+        if owners and _prefix_base(prefix) is None:
+            superseded = [_newest(owner) > _dump_sort_key(files[0]) for owner in owners]
+            if all(superseded):
+                to_remove.extend(files)  # every database here has a newer hashed dump
+                continue
+            is_protected = is_protected or any(
+                owner in protected and not done for owner, done in zip(owners, superseded))
         for index, path in enumerate(files):
             if index >= keep_last:
                 to_remove.append(path)
@@ -1434,10 +1448,11 @@ class DBDumper:
             self._discard(partial)
 
     def cleanup_old_dumps(self, keep_last: int = 1, max_age_days: int | None = 7,
-                          protect_prefixes: set[str] | None = None) -> int:
+                          protect_prefixes: set[str] | None = None,
+                          legacy_prefixes: dict[str, str] | None = None) -> int:
         """Prune the dump directory. See ``cleanup_dump_dir``."""
         return cleanup_dump_dir(self.dump_dir, keep_last=keep_last, max_age_days=max_age_days,
-                                protect_prefixes=protect_prefixes)
+                                protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
 
     async def dump_single(self, container_name: str, db_name: str, db_type: str,
                           host_path: str | None = None, verify_integrity: bool = True) -> DumpResult:

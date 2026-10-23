@@ -288,6 +288,21 @@ MIGRATIONS: dict[int, list[str]] = {
             for event in ("backup.stale", "drill.failed", "verification.failed", "target.error")
         ],
     ],
+    6: [
+        # Partial runs used to be sent as backup.failed; they now have their
+        # own event. Keep channels that wanted failures hearing about them.
+        """UPDATE notification_channels
+            SET events = json_insert(events, '$[#]', 'backup.partial')
+            WHERE json_valid(events)
+              AND EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                          WHERE value = 'backup.failed')
+              AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                              WHERE value = 'backup.partial')""",
+        # Whether a run's container discovery worked (NULL: not attempted or
+        # recorded before this column). A failed discovery records zero
+        # databases, which must not read as "this system has no databases".
+        "ALTER TABLE job_runs ADD COLUMN discovery_ok INTEGER",
+    ],
 }
 
 async def run_migrations(db_path: str | Path) -> int:

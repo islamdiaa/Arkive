@@ -515,14 +515,20 @@ class BackupEngine:
             "error": result.stderr[:500] if result.returncode != 0 and result.stderr else None,
         }
 
-    async def ls(self, target: dict, snapshot_id: str, path: str = "/") -> list[dict]:
-        """List files in a snapshot."""
+    async def ls(self, target: dict, snapshot_id: str, path: str = "/", strict: bool = False) -> list[dict]:
+        """List files in a snapshot.
+
+        Returns [] when listing fails, unless ``strict``: then ResticError is
+        raised so an unreadable repository isn't mistaken for an empty folder.
+        """
         # Validate inputs to prevent injection
         snapshot_id = _validate_snapshot_id(snapshot_id)
         _validate_path(path)
 
         password = await self._get_password()
         if not password:
+            if strict:
+                raise ResticError("No encryption password configured")
             return []
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
@@ -535,6 +541,8 @@ class BackupEngine:
             env=env, timeout=120,
         )
         if result.returncode != 0:
+            if strict:
+                raise ResticError(result.stderr.strip()[:500] or f"restic ls exited with {result.returncode}")
             return []
 
         entries = []

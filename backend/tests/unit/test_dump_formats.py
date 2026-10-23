@@ -28,6 +28,7 @@ from app.services.db_dumper import (
     dump_prefix,
     read_dump_manifest,
     write_dump_manifest,
+    legacy_dump_prefix,
 )
 from app.services.verify_engine import VerifyEngine
 from app.utils.subprocess_runner import CommandResult
@@ -1186,13 +1187,36 @@ class TestProtectedCleanup:
 
     def test_legacy_dump_is_protected_until_a_hashed_dump_exists(self, tmp_path):
         live = dump_prefix("pg", "postgres", "app")
+        legacy = {live: legacy_dump_prefix("pg", "app")}
         _touch(tmp_path / "pg_app_20260901_000000.sql.gz", age_days=50)
-        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live})
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live}, legacy_prefixes=legacy)
         assert _files(tmp_path) == ["pg_app_20260901_000000.sql.gz"]
 
         _touch(tmp_path / f"{live}_20261022_220000.sql")
-        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live})
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={live}, legacy_prefixes=legacy)
         assert _files(tmp_path) == [f"{live}_20261022_220000.sql"]
+
+    def test_shared_sanitised_name_alone_never_retires_a_legacy_file(self, tmp_path):
+        """A new database whose hashed prefix shares the base of an unrelated
+        legacy file (e.g. an old roles dump) must not retire it."""
+        db_named_globals = dump_prefix("pg", "postgres", "globals")
+        _touch(tmp_path / "pg_globals_20260901_000000.sql", age_days=50)  # old roles dump
+        _touch(tmp_path / f"{db_named_globals}_20261022_220000.sql")
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None, protect_prefixes={db_named_globals})
+        assert "pg_globals_20260901_000000.sql" in _files(tmp_path)
+
+    def test_legacy_file_shared_by_two_databases_retires_only_when_both_moved_on(self, tmp_path):
+        a = dump_prefix("c", "postgres", "sales data")
+        b = dump_prefix("c", "postgres", "sales_data")
+        legacy = {a: legacy_dump_prefix("c", "sales data"), b: legacy_dump_prefix("c", "sales_data")}
+        assert legacy[a] == legacy[b] == "c_sales_data"
+        _touch(tmp_path / "c_sales_data_20260901_000000.sql", age_days=50)
+        _touch(tmp_path / f"{a}_20261022_220000.sql")
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={a, b}, legacy_prefixes=legacy)
+        assert "c_sales_data_20260901_000000.sql" in _files(tmp_path)  # b has no new dump yet
+        _touch(tmp_path / f"{b}_20261022_220000.sql")
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=7, protect_prefixes={a, b}, legacy_prefixes=legacy)
+        assert "c_sales_data_20260901_000000.sql" not in _files(tmp_path)
 
     def test_legacy_dumps_still_group_and_age_out(self, tmp_path):
         _touch(tmp_path / "pg_app_20260101_000000.sql.gz", age_days=30)
@@ -1205,7 +1229,8 @@ class TestProtectedCleanup:
         live = dump_prefix("pg", "postgres", "app")
         _touch(tmp_path / f"{live}_20261020_000000.sql")
         _touch(tmp_path / "pg_app_20261022_000000.sql.gz")
-        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None, protect_prefixes={live})
+        cleanup_dump_dir(tmp_path, keep_last=1, max_age_days=None, protect_prefixes={live},
+                         legacy_prefixes={live: legacy_dump_prefix("pg", "app")})
         assert _files(tmp_path) == sorted(["pg_app_20261022_000000.sql.gz", f"{live}_20261020_000000.sql"])
 
 

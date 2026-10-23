@@ -146,9 +146,11 @@ class FakeBackupEngine:
         except ResticError:
             return []
 
-    async def ls(self, target, snapshot_id, path):
+    async def ls(self, target, snapshot_id, path, strict=False):
         assert path == self.dump_dir
         if self.ls_fails:
+            if strict:
+                raise ResticError("restic ls failed: unable to read pack")
             return []  # what BackupEngine.ls returns when restic fails
         entries = [{"name": "dumps", "type": "directory", "size": None}]
         for name, data in self.files.items():
@@ -666,12 +668,13 @@ async def test_container_removed_when_exec_raises(tmp_path):
 
     docker.behavior = boom
     summary = await engine.run_drill()
-    # An infrastructure error is not evidence of a broken dump: not tested -> skipped.
-    assert summary["status"] == "passed"  # the SQLite dump still passed
+    # The server was up and the load had started: an error now means the restore
+    # did not complete, which must not be hidden behind the SQLite dump passing.
+    assert summary["status"] == "failed"
     assert docker.created and all(c.removed == {"force": True, "v": True} for c in docker.created)
     result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
-    assert result["status"] == "skipped"
-    assert "docker exec exploded" in result["detail"] and "not tested" in result["detail"]
+    assert result["status"] == "failed"
+    assert "docker exec exploded" in result["detail"] and "loading or verifying" in result["detail"]
     assert list(cfg.restore_dir.iterdir()) == []
 
 
@@ -1007,6 +1010,29 @@ async def test_ls_failure_fails_drill(tmp_path):
     drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
     assert "restic ls failed" in drill["error_message"]
     assert (drill["target_id"], drill["snapshot_id"]) == ("t1", "aaaaaaaa")
+
+
+@pytest.mark.asyncio
+async def test_ls_failure_fails_drill_when_snapshot_covers_a_parent(tmp_path):
+    """The snapshot covers /config (a parent of the dump dir); a failed listing
+    must still fail the drill rather than read as 'no dumps'."""
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    backup.ls_fails = True
+    original = backup.list_snapshots
+
+    async def parent_snapshots(target):
+        snaps = await original(target)
+        for snap in snaps:
+            snap["paths"] = [str(cfg.config_dir)]
+        return snaps
+
+    backup.list_snapshots = parent_snapshots
+    engine = _engine(cfg, backup, _docker_with_source())
+    summary = await engine.run_drill()
+    assert summary["status"] == "failed"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert "restic ls failed" in drill["error_message"]
 
 
 @pytest.mark.asyncio

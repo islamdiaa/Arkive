@@ -17,9 +17,11 @@ from app.core.config import ArkiveConfig
 from app.core.context import current_run_id
 from app.core.event_bus import EventBus
 from app.core.security import decrypt_config
-from app.services.backup_engine import BackupEngine
+from app.services.backup_engine import EXCLUDE_MARKER, BackupEngine
 from app.services.cloud_manager import CloudManager
-from app.services.db_dumper import PARTIAL_SUFFIX, DBDumper, DumpResult, cleanup_dump_dir, dump_prefix
+from app.services.db_dumper import (
+    PARTIAL_SUFFIX, DBDumper, DumpResult, cleanup_dump_dir, dump_prefix, legacy_dump_prefix,
+)
 from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
@@ -28,6 +30,7 @@ from app.services.lock_manager import _get_proc_start_time  # noqa: F401 — re-
 from app.services.notifier import Notifier
 from app.services.repo_paths import build_repo_path
 from app.services.retention import read_retention_settings
+from app.utils.mounts import host_path_for
 
 logger = logging.getLogger("arkive.orchestrator")
 
@@ -36,6 +39,7 @@ DATABASE_JOB_TYPES = {"full", "db_dump", "custom"}
 FLASH_JOB_TYPES = {"full", "flash", "custom"}
 # Dump methods that exec into the database container (need it running).
 EXEC_DUMP_TYPES = {"postgres", "mariadb", "mysql", "mongodb", "redis"}
+_EXCLUDE_MARKER_TEXT = "Arkive storage directory — excluded from Arkive backups.\n"
 
 LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "backup.lock"
 RESTORE_LOCK_FILE = Path(os.environ.get("ARKIVE_CONFIG_DIR", "/config")) / "restore.lock"
@@ -364,6 +368,7 @@ class BackupOrchestrator:
         # discovery saw the whole picture (see _dump_cleanup_policy).
         cleanup_max_age: int | None = None
         protect_prefixes: set[str] = set()
+        legacy_prefixes: dict[str, str] = {}
 
         try:
             # Load job config
@@ -414,6 +419,7 @@ class BackupOrchestrator:
                     except Exception as e:
                         logger.error("Container discovery failed: %s", e)
                         warnings.append(f"container discovery failed, databases were not dumped ({e})")
+                        await self._record_discovery_outcome(run_id, False)
                     else:
                         discovery_ok = True
                         for c in containers:
@@ -434,12 +440,13 @@ class BackupOrchestrator:
                         (len(all_databases), run_id),
                     )
                     await db.commit()
+                await self._record_discovery_outcome(run_id, True)
                 if not all_databases:
                     previous = await self._previous_database_count(job_id, run_id)
                     if previous:
                         warnings.append(f"no databases discovered (a recent run found {previous})")
 
-            cleanup_max_age, protect_prefixes = self._dump_cleanup_policy(
+            cleanup_max_age, protect_prefixes, legacy_prefixes = self._dump_cleanup_policy(
                 discovery_ok, containers, all_databases)
 
             if self._is_cancelled(run_id):
@@ -510,13 +517,23 @@ class BackupOrchestrator:
                 if skipped_dbs:
                     logger.info("Skipped %d database(s) in stopped containers: %s",
                                 len(skipped_dbs), ", ".join(skipped_dbs))
+                # A stopped database is only covered by a dump made while it
+                # ran; one that never had a dump isn't backed up at all.
+                undumped = [
+                    f"{d.container_name}/{d.db_name}" for d in all_databases
+                    if f"{d.container_name}/{d.db_name}" in skipped_dbs
+                    and not self._has_dump(d)
+                ]
+                if undumped:
+                    warnings.append("database(s) in stopped containers have never been dumped: "
+                                    + ", ".join(undumped))
 
             # Keep only the newest dump per database (older generations live
             # in earlier snapshots) and drop dumps of containers that are gone,
             # so each snapshot reflects the current state.
             try:
                 cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
-                                 protect_prefixes=protect_prefixes)
+                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
             except Exception as e:
                 logger.warning("Pre-upload dump cleanup failed: %s", e)
 
@@ -856,7 +873,7 @@ class BackupOrchestrator:
             # to prevent cascading disk-full issues.
             try:
                 cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
-                                 protect_prefixes=protect_prefixes)
+                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
             except Exception as e:
                 logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
@@ -885,34 +902,72 @@ class BackupOrchestrator:
         await self.event_bus.publish("backup:cancelled", {"run_id": run_id})
         return {"status": "cancelled", "run_id": run_id}
 
-    def _dump_cleanup_policy(self, discovery_ok: bool, containers: list,
-                             all_databases: list) -> tuple[int | None, set[str]]:
-        """(max_age_days, protect_prefixes) for dump directory cleanup.
+    def _dump_cleanup_policy(self, discovery_ok: bool, containers: list, all_databases: list
+                             ) -> tuple[int | None, set[str], dict[str, str]]:
+        """(max_age_days, protect_prefixes, legacy_prefixes) for dump cleanup.
 
         Dumps are aged out only for databases that are gone, which this run can
-        only know when discovery ran and was complete. Otherwise (Docker down,
-        an enumeration warning, a job that doesn't dump databases) cleanup just
-        keeps the newest dump per database, so a stopped container or a weekly
-        database job never loses its last dump to age.
+        only know when discovery saw everything: it ran, found databases,
+        reported no warnings, and every container with exec-dumped databases
+        was running (a stopped Postgres can't list its databases). Otherwise
+        cleanup only keeps the newest dump per database, so a stopped
+        container, a weekly database job or an outage never costs the last
+        dump of anything.
         """
         protect: set[str] = set()
+        legacy: dict[str, str] = {}
         for d in all_databases:
-            protect.add(dump_prefix(d.container_name, d.db_type, d.db_name, d.host_path))
+            prefix = dump_prefix(d.container_name, d.db_type, d.db_name, d.host_path)
+            protect.add(prefix)
+            legacy[prefix] = legacy_dump_prefix(d.container_name, d.db_name)
             if d.db_type == "postgres":
                 protect.add(dump_prefix(d.container_name, "postgres", "globals", kind="globals"))
-        complete = discovery_ok and not any(getattr(c, "warnings", None) for c in containers)
-        return (self.dump_max_age_days if complete else None), protect
+        stopped_exec = any(
+            getattr(c, "status", "running") != "running"
+            and any(db.db_type in EXEC_DUMP_TYPES for db in getattr(c, "databases", []) or [])
+            for c in containers
+        )
+        complete = (discovery_ok and bool(all_databases) and not stopped_exec
+                    and not any(getattr(c, "warnings", None) for c in containers))
+        return (self.dump_max_age_days if complete else None), protect, legacy
+
+    def _has_dump(self, db) -> bool:
+        """Whether the dump directory holds a finished dump of ``db``."""
+        prefixes = (
+            dump_prefix(db.container_name, db.db_type, db.db_name, db.host_path) + "_",
+            legacy_dump_prefix(db.container_name, db.db_name) + "_",
+        )
+        try:
+            return any(
+                p.name.startswith(prefixes) and not p.name.endswith(PARTIAL_SUFFIX)
+                for p in self.config.dump_dir.iterdir()
+            )
+        except OSError:
+            return False
+
+    async def _record_discovery_outcome(self, run_id: str, ok: bool) -> None:
+        """Best effort: freshness bookkeeping must never fail a backup."""
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                await db.execute("UPDATE job_runs SET discovery_ok = ? WHERE id = ?", (1 if ok else 0, run_id))
+                await db.commit()
+        except Exception as e:
+            logger.debug("Could not record discovery outcome: %s", e)
 
     async def _internal_excludes(self, db) -> list[str]:
-        """Absolute paths of Arkive's own storage, passed as restic --exclude.
+        """Exclusions that keep Arkive's own storage out of its snapshots.
 
         A watched parent directory (e.g. /mnt/user/appdata holding Arkive's
-        config and a local repository) must not re-ingest the repository or
-        restore scratch space. Excluding the exact paths — rather than writing
-        a marker file into a local target's configured directory, which may be
-        a general-purpose parent of real data — can never hide anything else.
+        config and a local repository) must not re-ingest a repository or the
+        restore scratch space. Three layers, because the same folder is often
+        visible under two paths (/config/restores is also
+        /mnt/user/appdata/arkive/restores through the /mnt/user mount):
+        exact --exclude paths, their Docker host-path aliases, and an
+        exclusion marker inside each Arkive-owned directory (the repository
+        folder itself, never the target's configured parent, which may hold
+        real data).
         """
-        paths = [str(self.config.restore_dir)]
+        storage = [str(self.config.restore_dir)]
         try:
             cursor = await db.execute("SELECT id, type, config FROM storage_targets WHERE type = 'local'")
             rows = await cursor.fetchall()
@@ -924,10 +979,47 @@ class BackupOrchestrator:
                 config = decrypt_config(row[2] or "{}", str(self.config.config_dir))
             except Exception:
                 continue
-            paths.append(build_repo_path({"id": row[0], "type": row[1], "config": config}))
-        # Dumps still being written (e.g. a manual dump) are never uploaded.
-        paths.append(f"*{PARTIAL_SUFFIX}")
-        return list(dict.fromkeys(paths))
+            storage.append(build_repo_path({"id": row[0], "type": row[1], "config": config}))
+        # Dumps still being written (crash leftovers) are never uploaded.
+        partials = f"{self.config.dump_dir}/*{PARTIAL_SUFFIX}"
+        aliases = await asyncio.to_thread(self._prepare_storage_exclusions, storage, partials)
+        return list(dict.fromkeys(storage + [partials] + aliases))
+
+    def _prepare_storage_exclusions(self, storage: list[str], partials: str) -> list[str]:
+        """Write exclusion markers into Arkive-owned dirs; return host-path
+        aliases of the excluded paths that are visible inside the container.
+        Blocking (filesystem + Docker API)."""
+        for path in storage:
+            directory = Path(path)
+            try:
+                if directory.is_dir() and not (directory / EXCLUDE_MARKER).exists():
+                    (directory / EXCLUDE_MARKER).write_text(_EXCLUDE_MARKER_TEXT)
+            except OSError as e:
+                logger.debug("Could not write exclusion marker in %s: %s", path, e)
+        # Pre-release builds wrote the marker into a local target's configured
+        # directory, which may be a parent of real data; remove it when it is
+        # provably ours (exact text), so it can't hide that data.
+        for path in storage[1:]:
+            marker = Path(path).parent / EXCLUDE_MARKER
+            try:
+                if marker.is_file() and marker.read_text() == _EXCLUDE_MARKER_TEXT:
+                    marker.unlink()
+                    logger.info("Removed Arkive exclusion marker from %s", marker.parent)
+            except OSError as e:
+                logger.debug("Could not inspect %s: %s", marker, e)
+
+        docker_client = getattr(self.backup_engine, "docker_client", None)
+        aliases: list[str] = []
+        for path in storage + [partials]:
+            base, pattern = (path[: -len(f"/*{PARTIAL_SUFFIX}")], f"/*{PARTIAL_SUFFIX}") \
+                if path.endswith(f"/*{PARTIAL_SUFFIX}") else (path, "")
+            try:
+                host_path = host_path_for(base, docker_client)
+            except Exception:
+                host_path = None
+            if host_path and host_path != base and os.path.exists(host_path):
+                aliases.append(host_path + pattern)
+        return aliases
 
     async def _update_progress(self, run_id: str, phase: str) -> None:
         """Publish progress update via SSE."""

@@ -21,11 +21,12 @@ from app.services.docker_client import DockerUnavailableError
 @pytest_asyncio.fixture
 async def config(tmp_path):
     from app.core.config import ArkiveConfig
-    from app.core.database import init_db
+    from app.core.database import init_db, run_migrations
 
     cfg = ArkiveConfig(config_dir=tmp_path)
     cfg.ensure_dirs()
     await init_db(cfg.db_path)
+    await run_migrations(cfg.db_path)
     async with aiosqlite.connect(cfg.db_path) as db:
         await db.execute(
             "INSERT INTO storage_targets (id, name, type, enabled, config) VALUES ('t1', 'Local', 'local', 1, '{}')"
@@ -219,7 +220,11 @@ async def test_drop_to_zero_databases_stops_warning_after_the_window(config):
 
 @pytest.mark.asyncio
 async def test_databases_in_stopped_containers_are_skipped_not_failed(config):
+    from app.services.db_dumper import dump_prefix
+
     running_db, stopped_db = _db("pg-live"), _db("pg-old")
+    # Dumped while it was running; that dump keeps covering it.
+    (config.dump_dir / f"{dump_prefix('pg-old', 'postgres', 'app')}_20261001_000000.sql").write_bytes(b"x")
     discovery = MagicMock(scan=AsyncMock(return_value=[
         _container("pg-live", [running_db]),
         _container("pg-old", [stopped_db], status="exited"),
@@ -351,6 +356,7 @@ async def test_arkive_storage_is_excluded_by_exact_path(config, tmp_path):
 
     repo_parent = tmp_path / "appdata"
     (repo_parent / "some-app").mkdir(parents=True)
+    (repo_parent / "arkive-repo").mkdir()
     async with aiosqlite.connect(config.db_path) as db:
         await db.execute(
             "UPDATE storage_targets SET config = ? WHERE id = 't1'",
@@ -365,7 +371,35 @@ async def test_arkive_storage_is_excluded_by_exact_path(config, tmp_path):
     assert str(repo_parent / "arkive-repo") in excludes
     assert str(config.restore_dir) in excludes
     assert str(repo_parent) not in excludes
+    # Markers only inside Arkive-owned directories, never the configured parent.
     assert not (repo_parent / EXCLUDE_MARKER).exists()
+    assert (repo_parent / "arkive-repo" / EXCLUDE_MARKER).exists()
+    assert (config.restore_dir / EXCLUDE_MARKER).exists()
+
+
+@pytest.mark.asyncio
+async def test_storage_exclusions_cover_host_path_aliases(config, tmp_path, monkeypatch):
+    """/config/restores is also visible as <host appdata>/arkive/restores through
+    the /mnt/user mount; both spellings must be excluded."""
+    import app.services.orchestrator as orch_mod
+
+    alias_root = tmp_path / "host-view"
+    (alias_root / "restores").mkdir(parents=True)
+    (alias_root / "dumps").mkdir()
+
+    def fake_host_path(path, docker_client):
+        if path == str(config.restore_dir):
+            return str(alias_root / "restores")
+        if path == str(config.dump_dir):
+            return str(alias_root / "dumps")
+        return None
+
+    monkeypatch.setattr(orch_mod, "host_path_for", fake_host_path)
+    orch = make_orchestrator(config)
+    await orch.run_backup("job-flash", run_id="r-alias")
+    excludes = orch.backup_engine.backup.await_args.args[2]
+    assert str(alias_root / "restores") in excludes
+    assert f"{alias_root / 'dumps'}/*.partial" in excludes
 
 
 @pytest.mark.asyncio
@@ -420,27 +454,120 @@ async def test_dumps_are_not_aged_out_when_discovery_is_incomplete(config):
 
 
 @pytest.mark.asyncio
-async def test_dumps_of_vanished_databases_age_out_but_stopped_ones_are_kept(config):
+async def test_dumps_of_vanished_databases_age_out(config):
     import os
     import time
 
     from app.services.db_dumper import dump_prefix
 
     stale = time.time() - 30 * 86400
+    db = _db("pg-live")
     gone = config.dump_dir / f"{dump_prefix('gone', 'postgres', 'app')}_20200101_000000.sql"
+    live = config.dump_dir / f"{dump_prefix('pg-live', 'postgres', 'app')}_20200101_000000.sql"
+    for f in (gone, live):
+        f.write_bytes(b"-- PostgreSQL database dump complete\n")
+        os.utime(f, (stale, stale))
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg-live", [db])]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock(dump_all=AsyncMock(return_value=[])))
+
+    await orch.run_backup("job-db", run_id="r-age")
+
+    assert not gone.exists()
+    assert live.exists()  # still discovered: its newest dump is never aged out
+
+
+@pytest.mark.asyncio
+async def test_stopped_database_container_blocks_age_out(config):
+    """A stopped Postgres can't list its databases, so dumps of its other
+    databases look 'vanished'; nothing is aged out while it is stopped."""
+    import os
+    import time
+
+    from app.services.db_dumper import dump_prefix
+
+    stale = time.time() - 30 * 86400
     stopped_db = _db("pg-old")
+    other = config.dump_dir / f"{dump_prefix('pg-old', 'postgres', 'second_db')}_20200101_000000.sql"
     kept = config.dump_dir / f"{dump_prefix('pg-old', 'postgres', 'app')}_20200101_000000.sql"
-    for f in (gone, kept):
+    for f in (other, kept):
         f.write_bytes(b"-- PostgreSQL database dump complete\n")
         os.utime(f, (stale, stale))
     discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg-old", [stopped_db], status="exited")]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock(dump_all=AsyncMock(return_value=[])))
 
-    result = await orch.run_backup("job-db", run_id="r-age")
+    result = await orch.run_backup("job-db", run_id="r-stopped-age")
 
     assert result["status"] == "success"
-    assert not gone.exists()
-    assert kept.exists()
+    assert other.exists() and kept.exists()
+
+
+@pytest.mark.asyncio
+async def test_stopped_database_without_any_dump_is_a_warning(config):
+    stopped_db = _db("pg-new")
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg-new", [stopped_db], status="exited")]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock(dump_all=AsyncMock(return_value=[])))
+
+    result = await orch.run_backup("job-db", run_id="r-never")
+
+    assert result["status"] == "partial"
+    assert "never been dumped: pg-new/app" in (await _run_row(config, "r-never"))["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_outcome_is_recorded(config):
+    from app.services.docker_client import DockerUnavailableError as _Down
+
+    discovery = MagicMock(scan=AsyncMock(side_effect=_Down("down")))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock())
+    await orch.run_backup("job-db", run_id="r-disc-fail")
+    assert (await _run_row(config, "r-disc-fail"))["discovery_ok"] == 0
+
+    discovery = MagicMock(scan=AsyncMock(return_value=[]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock())
+    await orch.run_backup("job-db", run_id="r-disc-ok")
+    assert (await _run_row(config, "r-disc-ok"))["discovery_ok"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prerelease_marker_in_target_parent_is_removed(config, tmp_path):
+    from app.core.security import encrypt_config
+    from app.services.backup_engine import EXCLUDE_MARKER
+    from app.services.orchestrator import _EXCLUDE_MARKER_TEXT
+
+    parent = tmp_path / "appdata"
+    (parent / "arkive-repo").mkdir(parents=True)
+    (parent / EXCLUDE_MARKER).write_text(_EXCLUDE_MARKER_TEXT)
+    user_marked = tmp_path / "user-dir"
+    async with aiosqlite.connect(config.db_path) as db:
+        await db.execute("UPDATE storage_targets SET config = ? WHERE id = 't1'",
+                         (encrypt_config({"path": str(parent)}, str(config.config_dir)),))
+        await db.commit()
+    orch = make_orchestrator(config)
+
+    await orch.run_backup("job-flash", run_id="r-unmark")
+
+    assert not (parent / EXCLUDE_MARKER).exists()
+    assert (parent / "arkive-repo" / EXCLUDE_MARKER).exists()
+    assert not user_marked.exists()
+
+
+@pytest.mark.asyncio
+async def test_user_created_marker_in_target_parent_is_left_alone(config, tmp_path):
+    from app.core.security import encrypt_config
+    from app.services.backup_engine import EXCLUDE_MARKER
+
+    parent = tmp_path / "appdata"
+    (parent / "arkive-repo").mkdir(parents=True)
+    (parent / EXCLUDE_MARKER).write_text("my own exclusion\n")
+    async with aiosqlite.connect(config.db_path) as db:
+        await db.execute("UPDATE storage_targets SET config = ? WHERE id = 't1'",
+                         (encrypt_config({"path": str(parent)}, str(config.config_dir)),))
+        await db.commit()
+    orch = make_orchestrator(config)
+
+    await orch.run_backup("job-flash", run_id="r-keep-marker")
+
+    assert (parent / EXCLUDE_MARKER).read_text() == "my own exclusion\n"
 
 
 @pytest.mark.asyncio
@@ -470,4 +597,6 @@ async def test_enumeration_warning_makes_run_partial_and_blocks_age_out(config):
 async def test_partial_dump_files_are_excluded_from_snapshots(config):
     orch = make_orchestrator(config)
     await orch.run_backup("job-flash", run_id="r-partial-ex")
-    assert "*.partial" in orch.backup_engine.backup.await_args.args[2]
+    excludes = orch.backup_engine.backup.await_args.args[2]
+    assert f"{config.dump_dir}/*.partial" in excludes
+    assert "*.partial" not in excludes  # user files named *.partial elsewhere are kept

@@ -42,6 +42,7 @@ import aiosqlite
 from app.core.activity import log_activity
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.backup_engine import ResticError
 from app.services.lock_manager import BackupLockManager
 from app.services.settings_store import get_int_setting
 from app.utils.mounts import host_path_for, running_in_container
@@ -399,8 +400,10 @@ def infer_candidates(files: dict[str, dict], known: list[dict],
                     size_bytes=size, image=images.get(container),
                 )
                 break
-        if cand is None and prefix.endswith("_globals") and prefix[: -len("_globals")] in containers:
-            container = containers[prefix[: -len("_globals")]]
+        # New-style names end in an identity hash: "<container>_globals-<hash8>".
+        roles_prefix = re.sub(r"-[0-9a-f]{8}$", "", prefix)
+        if cand is None and roles_prefix.endswith("_globals") and roles_prefix[: -len("_globals")] in containers:
+            container = containers[roles_prefix[: -len("_globals")]]
             cand = DumpCandidate(file=name, container_name=container, db_type="postgres",
                                  db_name="globals", size_bytes=size, image=images.get(container),
                                  kind="globals")
@@ -1001,8 +1004,16 @@ class RestoreDrillEngine:
                         continue
                     raise DrillSkip(f"database server from {image} did not start ({why}); "
                                     "the dump was not tested")
-                # Server is up: from here on a problem is a real restore failure.
-                status, detail = self._load_and_check(container, spec, prepared, cand)
+                # Server is up: from here on a problem is a real restore failure,
+                # including unexpected errors (e.g. the server dying mid-load).
+                try:
+                    status, detail = self._load_and_check(container, spec, prepared, cand)
+                except (DrillFailure, DrillSkip):
+                    raise
+                except Exception as exc:
+                    if type(exc).__name__ == "DockerUnavailableError":
+                        raise
+                    raise DrillFailure(f"error while loading or verifying the dump: {exc}") from exc
                 if notes:
                     detail += f" (retried with the {label}; {notes[0][:200]})"
                 return status, detail
@@ -1377,15 +1388,15 @@ class RestoreDrillEngine:
             if not snapshot_id:
                 continue
             short_id = str(snap.get("short_id") or snapshot_id[:8])
-            entries = await self.backup_engine.ls(target, snapshot_id, dump_dir)
-            # restic ls of a directory always lists the directory itself, so an
-            # empty listing of a snapshot taken of that exact path means ls failed.
-            exact = any(os.path.normpath(str(p)) == dump_dir for p in snap.get("paths") or [])
-            if not entries and exact:
+            try:
+                # strict: a failed listing raises instead of looking like an
+                # empty dump directory (whatever path the snapshot covers).
+                entries = await self.backup_engine.ls(target, snapshot_id, dump_dir, strict=True)
+            except ResticError as exc:
                 error = DrillRepositoryError(
-                    f"could not list {dump_dir} in snapshot {short_id} on {name} (restic ls failed)")
+                    f"could not list {dump_dir} in snapshot {short_id} on {name}: {exc}")
                 error.target, error.snapshot_id = target, short_id
-                raise error
+                raise error from exc
             return target, snapshot_id, short_id, entries or []
         if errors:
             raise DrillRepositoryError("could not list snapshots: " + "; ".join(errors))

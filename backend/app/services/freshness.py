@@ -111,6 +111,7 @@ _GOOD_RUN_SQL = """
             :needs_databases = 0
             OR jr.databases_dumped > 0
             OR (jr.databases_discovered = 0
+                AND jr.discovery_ok IS NOT 0
                 AND NOT EXISTS (SELECT 1 FROM job_runs p
                                 WHERE p.job_id = jr.job_id AND p.databases_dumped > 0))
           )

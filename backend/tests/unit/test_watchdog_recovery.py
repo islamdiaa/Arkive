@@ -267,6 +267,16 @@ class TestEvaluateFreshness:
         result = await freshness.evaluate_freshness(fresh_db, NOW)
         assert result["stale"] is True and result["healthy"] is False
 
+    async def test_failed_discovery_does_not_read_as_a_system_without_databases(self, fresh_db):
+        await _add_job(fresh_db, created=NOW - timedelta(days=3))
+        await fresh_db.execute(
+            "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped, "
+            "discovery_ok) VALUES ('r1', 'j1', 'partial', ?, 0, 0, 0)", (_ts(NOW - timedelta(hours=5)),))
+        await fresh_db.execute("INSERT INTO job_run_targets (run_id, target_id, status) VALUES ('r1', 't1', 'success')")
+        await fresh_db.commit()
+        result = await freshness.evaluate_freshness(fresh_db, NOW)
+        assert result["stale"] is True and result["healthy"] is False
+
     async def test_system_without_databases_is_fine(self, fresh_db):
         await _add_job(fresh_db)
         await _add_run(fresh_db, "r1", NOW - timedelta(hours=10), status="partial", dumped=0)
@@ -567,7 +577,7 @@ async def test_migration_backfills_new_events(tmp_path):
     async with aiosqlite.connect(path) as db:
         rows = dict(await (await db.execute("SELECT id, events FROM notification_channels")).fetchall())
     assert json.loads(rows["a"]) == ["backup.failed", "backup.stale", "drill.failed",
-                                     "verification.failed", "target.error"]
+                                     "verification.failed", "target.error", "backup.partial"]
     assert json.loads(rows["b"]) == ["backup.success"]
 
 
@@ -726,3 +736,31 @@ def test_setup_logging_routes_uvicorn_through_root(tmp_path):
         assert logging.getLogger("uvicorn.access").propagate is True
     finally:
         logging.getLogger().handlers.clear()
+
+
+async def test_consecutive_skipped_drills_alert(tmp_path):
+    config = SimpleNamespace(db_path=tmp_path / "arkive.db", config_dir=tmp_path, dump_dir=tmp_path / "dumps")
+    await init_db(config.db_path)
+    await run_migrations(config.db_path)
+    notifier = MagicMock()
+    notifier.send = AsyncMock()
+    sched = scheduler_mod.ArkiveScheduler(orchestrator=MagicMock(), config=config, notifier=notifier)
+
+    async def add(drill_id, status, started):
+        async with aiosqlite.connect(config.db_path) as db:
+            await db.execute(
+                "INSERT INTO restore_drills (id, status, started_at, error_message) VALUES (?, ?, ?, ?)",
+                (drill_id, status, started, "no database could be tested: image would not start"))
+            await db.commit()
+
+    await add("d1", "passed", "2026-10-01T07:00:00Z")
+    await add("d2", "skipped", "2026-10-08T07:00:00Z")
+    await add("d3", "skipped", "2026-10-15T07:00:00Z")
+    await sched._alert_on_untested_drills()
+    notifier.send.assert_not_awaited()  # only two skipped in a row
+
+    await add("d4", "skipped", "2026-10-22T07:00:00Z")
+    await sched._alert_on_untested_drills()
+    args, kwargs = notifier.send.await_args
+    assert args[0] == "drill.failed" and "could not test any database" in args[2]
+    assert "image would not start" in args[2]
