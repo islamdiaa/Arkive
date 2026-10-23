@@ -3,8 +3,8 @@ API authentication security tests — rate limiting, token auth, setup bypass.
 """
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 

@@ -8,27 +8,25 @@ Tests verify:
 - System jobs don't crash on errors (graceful error handling)
 """
 
-import json
 import sqlite3
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # This file's tests accumulate aiosqlite daemon threads that block the event
 # loop when run after other async test files.  Forking isolates each test.
 pytestmark = pytest.mark.forked
 
 import aiosqlite
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.database import SCHEMA_SQL
-from app.models.discovery import DiscoveredContainer, DiscoveredDatabase
+from app.models.discovery import DiscoveredContainer
 from app.services.scheduler import (
-    ArkiveScheduler,
     SYSTEM_JOB_DISCOVERY,
     SYSTEM_JOB_HEALTH,
     SYSTEM_JOB_RETENTION,
+    ArkiveScheduler,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -57,6 +55,7 @@ def mock_config(tmp_path):
 
     # Set up encryption keyfile so decrypt_config works
     from app.core.security import _load_fernet_from_dir, _reset_fernet
+
     _reset_fernet()
     _load_fernet_from_dir(str(tmp_path))
 
@@ -109,8 +108,7 @@ def scheduler(mock_orchestrator, mock_config, mock_discovery, mock_backup_engine
 # ---------------------------------------------------------------------------
 
 
-async def _insert_target(db_path, target_id="t1", name="Local", type_="local",
-                         enabled=1, config_str="{}"):
+async def _insert_target(db_path, target_id="t1", name="Local", type_="local", enabled=1, config_str="{}"):
     """Insert a storage target into the DB."""
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
@@ -238,9 +236,7 @@ class TestDiscoveryScan:
 
         async with aiosqlite.connect(mock_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM activity_log WHERE type = 'system' AND action = 'discovery_scan'"
-            )
+            cursor = await db.execute("SELECT * FROM activity_log WHERE type = 'system' AND action = 'discovery_scan'")
             row = await cursor.fetchone()
 
         assert row is not None
@@ -316,9 +312,7 @@ class TestRetentionCleanup:
         assert "Retention cleanup completed" in row["message"]
 
     @pytest.mark.asyncio
-    async def test_retention_continues_on_single_target_failure(
-        self, scheduler, mock_backup_engine, mock_config
-    ):
+    async def test_retention_continues_on_single_target_failure(self, scheduler, mock_backup_engine, mock_config):
         """If forget fails for one target, others still get processed."""
         await _insert_target(mock_config.db_path, "t1", "Failing", "local", 1, "{}")
         await _insert_target(mock_config.db_path, "t2", "OK", "local", 1, "{}")
@@ -448,14 +442,19 @@ class TestHealthCheck:
 
     @pytest.mark.asyncio
     async def test_health_check_logs_and_notifies_status_change(
-        self, mock_orchestrator, mock_config, mock_cloud_manager,
+        self,
+        mock_orchestrator,
+        mock_config,
+        mock_cloud_manager,
     ):
         """A target going unreachable (and coming back) is logged; failure notifies."""
         notifier = MagicMock()
         notifier.send = AsyncMock()
         sched = ArkiveScheduler(
-            orchestrator=mock_orchestrator, config=mock_config,
-            cloud_manager=mock_cloud_manager, notifier=notifier,
+            orchestrator=mock_orchestrator,
+            config=mock_config,
+            cloud_manager=mock_cloud_manager,
+            notifier=notifier,
         )
         await _insert_target(mock_config.db_path, "t1", "Offsite", "local", 1, "{}")
         await sched._run_health_check()  # unknown -> online: first check, quiet
@@ -545,9 +544,7 @@ class TestSystemJobErrorHandling:
 
         async with aiosqlite.connect(mock_config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM activity_log WHERE type = 'system' AND action = 'discovery_scan'"
-            )
+            cursor = await db.execute("SELECT * FROM activity_log WHERE type = 'system' AND action = 'discovery_scan'")
             row = await cursor.fetchone()
         assert row is not None
         assert "0 containers found" in row["message"]

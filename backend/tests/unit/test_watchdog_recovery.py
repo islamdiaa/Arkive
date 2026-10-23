@@ -6,7 +6,7 @@ import json
 import logging
 import logging.config
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -24,7 +24,7 @@ from app.utils import mounts
 from app.utils.subprocess_runner import CommandResult
 from tests.conftest import auth_headers, do_setup
 
-NOW = datetime(2026, 10, 22, 20, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 22, 20, 0, tzinfo=UTC)
 
 
 def _ts(dt: datetime) -> str:
@@ -102,8 +102,7 @@ class TestKeyfileGuard:
         conn = sqlite3.connect(tmp_path / "arkive.db")
         conn.execute("CREATE TABLE notification_channels (id TEXT, config TEXT)")
         token = Fernet(key).encrypt(b"https://hooks.example.com/x").decode()
-        conn.execute("INSERT INTO notification_channels VALUES ('c1', ?)",
-                     (json.dumps({"url": f"enc:v1:{token}"}),))
+        conn.execute("INSERT INTO notification_channels VALUES ('c1', ?)", (json.dumps({"url": f"enc:v1:{token}"}),))
         conn.commit()
         conn.close()
         (tmp_path / ".keyfile").write_bytes(Fernet.generate_key())
@@ -117,13 +116,16 @@ class TestKeyfileGuard:
 
 
 class TestScheduleGap:
-    @pytest.mark.parametrize("schedule,expected", [
-        ("0 7 * * *", 24),
-        ("0 6,18 * * *", 12),
-        ("0 3 * * 1-5", 72),       # Friday -> Monday
-        ("0 7 * * 0", 168),
-        ("*/30 * * * *", 0.5),
-    ])
+    @pytest.mark.parametrize(
+        "schedule,expected",
+        [
+            ("0 7 * * *", 24),
+            ("0 6,18 * * *", 12),
+            ("0 3 * * 1-5", 72),  # Friday -> Monday
+            ("0 7 * * 0", 168),
+            ("*/30 * * * *", 0.5),
+        ],
+    )
     def test_longest_gap(self, schedule, expected):
         assert freshness.schedule_gap_hours(schedule, NOW) == pytest.approx(expected, abs=1.01)
 
@@ -152,11 +154,17 @@ async def fresh_db(tmp_path):
         yield db
 
 
-async def _add_job(db, job_id="j1", name="DB Dumps", job_type="db_dump", schedule="0 7 * * *",
-                   created=NOW - timedelta(days=30), include_databases=1):
+async def _add_job(
+    db,
+    job_id="j1",
+    name="DB Dumps",
+    job_type="db_dump",
+    schedule="0 7 * * *",
+    created=NOW - timedelta(days=30),
+    include_databases=1,
+):
     await db.execute(
-        "INSERT INTO backup_jobs (id, name, type, schedule, include_databases, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO backup_jobs (id, name, type, schedule, include_databases, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (job_id, name, job_type, schedule, include_databases, _ts(created)),
     )
     await db.commit()
@@ -261,7 +269,9 @@ class TestEvaluateFreshness:
         await _add_job(fresh_db, created=NOW - timedelta(days=3))
         await fresh_db.execute(
             "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped) "
-            "VALUES ('r1', 'j1', 'partial', ?, 4, 0)", (_ts(NOW - timedelta(hours=5)),))
+            "VALUES ('r1', 'j1', 'partial', ?, 4, 0)",
+            (_ts(NOW - timedelta(hours=5)),),
+        )
         await fresh_db.execute("INSERT INTO job_run_targets (run_id, target_id, status) VALUES ('r1', 't1', 'success')")
         await fresh_db.commit()
         result = await freshness.evaluate_freshness(fresh_db, NOW)
@@ -271,7 +281,9 @@ class TestEvaluateFreshness:
         await _add_job(fresh_db, created=NOW - timedelta(days=3))
         await fresh_db.execute(
             "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped, "
-            "discovery_ok) VALUES ('r1', 'j1', 'partial', ?, 0, 0, 0)", (_ts(NOW - timedelta(hours=5)),))
+            "discovery_ok) VALUES ('r1', 'j1', 'partial', ?, 0, 0, 0)",
+            (_ts(NOW - timedelta(hours=5)),),
+        )
         await fresh_db.execute("INSERT INTO job_run_targets (run_id, target_id, status) VALUES ('r1', 't1', 'success')")
         await fresh_db.commit()
         result = await freshness.evaluate_freshness(fresh_db, NOW)
@@ -293,8 +305,7 @@ class TestEvaluateFreshness:
         assert result["stale_jobs"][0]["threshold_hours"] == 12
 
     def test_describe_stale_job(self):
-        text = freshness.describe_stale_job(
-            {"job_name": "DB Dumps", "last_good_at": None, "threshold_hours": 15.0})
+        text = freshness.describe_stale_job({"job_name": "DB Dumps", "last_good_at": None, "threshold_hours": 15.0})
         assert text == "DB Dumps has never produced a good backup (expected within 15 h)."
 
 
@@ -308,7 +319,7 @@ class TestFreshnessJob:
         await init_db(path)
         await run_migrations(path)
         async with aiosqlite.connect(path) as db:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             await _add_job(db, created=now - timedelta(days=30))
             await _add_run(db, "r1", now - timedelta(hours=40 if stale else 2))
             await db.execute("INSERT INTO settings (key, value) VALUES ('heartbeat_url', ?)", (heartbeat_url,))
@@ -407,7 +418,7 @@ async def test_status_reports_stale_jobs_as_error(client):
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
         await db.execute("DELETE FROM backup_jobs")
-        await _add_job(db, created=datetime.now(timezone.utc) - timedelta(days=5))
+        await _add_job(db, created=datetime.now(UTC) - timedelta(days=5))
     resp = await client.get("/api/status", headers=auth_headers(data["api_key"]))
     body = resp.json()
     assert body["status"] == "error"
@@ -426,6 +437,7 @@ async def test_recovery_kit_flow(client):
     headers = auth_headers(data["api_key"])
     db_path = _app(client).state.config.db_path
     from app.core.security import encrypt_config
+
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             "INSERT INTO storage_targets (id, name, type, config) VALUES ('b2t', 'Offsite', 'b2', ?)",
@@ -469,6 +481,7 @@ async def test_recovery_kit_requires_auth(client):
 
 async def test_heartbeat_test_endpoint(client, monkeypatch):
     import app.api.settings as settings_api
+
     data = await do_setup(client)
     headers = auth_headers(data["api_key"])
     resp = await client.post("/api/settings/heartbeat/test", headers=headers)
@@ -476,8 +489,9 @@ async def test_heartbeat_test_endpoint(client, monkeypatch):
 
     ping = AsyncMock(return_value={"ok": True, "status_code": 200, "error": None})
     monkeypatch.setattr(settings_api, "ping_heartbeat", ping)
-    resp = await client.post("/api/settings/heartbeat/test", headers=headers,
-                             json={"url": "https://hc-ping.example.com/abc"})
+    resp = await client.post(
+        "/api/settings/heartbeat/test", headers=headers, json={"url": "https://hc-ping.example.com/abc"}
+    )
     assert resp.json()["ok"] is True
     ping.assert_awaited_once_with("https://hc-ping.example.com/abc")
 
@@ -485,23 +499,25 @@ async def test_heartbeat_test_endpoint(client, monkeypatch):
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("key,value,ok", [
-    ("heartbeat_url", "https://kuma.example.com/api/push/abc?status=up", True),
-    ("heartbeat_url", "javascript:alert(1)", False),
-    ("stale_backup_hours", "26", True),
-    ("stale_backup_hours", "-1", False),
-    ("dump_compression", "gzip", True),
-    ("dump_compression", "zip", False),
-    ("restore_drill_enabled", "false", True),
-    ("restore_drill_enabled", "maybe", False),
-    ("restore_drill_schedule", "0 7 * * 0", True),
-    ("restore_drill_schedule", "every sunday", False),
-    ("restore_drill_max_databases", "0", False),
-])
+@pytest.mark.parametrize(
+    "key,value,ok",
+    [
+        ("heartbeat_url", "https://kuma.example.com/api/push/abc?status=up", True),
+        ("heartbeat_url", "javascript:alert(1)", False),
+        ("stale_backup_hours", "26", True),
+        ("stale_backup_hours", "-1", False),
+        ("dump_compression", "gzip", True),
+        ("dump_compression", "zip", False),
+        ("restore_drill_enabled", "false", True),
+        ("restore_drill_enabled", "maybe", False),
+        ("restore_drill_schedule", "0 7 * * 0", True),
+        ("restore_drill_schedule", "every sunday", False),
+        ("restore_drill_max_databases", "0", False),
+    ],
+)
 async def test_new_settings_validation(client, key, value, ok):
     data = await do_setup(client)
-    resp = await client.put("/api/settings", json={"settings": {key: value}},
-                            headers=auth_headers(data["api_key"]))
+    resp = await client.put("/api/settings", json={"settings": {key: value}}, headers=auth_headers(data["api_key"]))
     assert (resp.status_code == 200) is ok, resp.text
 
 
@@ -510,8 +526,11 @@ async def test_drill_settings_change_reloads_job(client):
     scheduler = MagicMock()
     scheduler.reload_restore_drill_job = AsyncMock()
     _app(client).state.scheduler = scheduler
-    await client.put("/api/settings", json={"settings": {"restore_drill_schedule": "0 8 * * 6"}},
-                     headers=auth_headers(data["api_key"]))
+    await client.put(
+        "/api/settings",
+        json={"settings": {"restore_drill_schedule": "0 8 * * 6"}},
+        headers=auth_headers(data["api_key"]),
+    )
     scheduler.reload_restore_drill_job.assert_awaited_once()
     settings = (await client.get("/api/settings", headers=auth_headers(data["api_key"]))).json()
     assert settings["restore_drill_schedule"] == "0 8 * * 6"
@@ -521,6 +540,7 @@ async def test_drill_settings_change_reloads_job(client):
 
 async def test_restore_into_read_only_mount_is_rejected(client, monkeypatch):
     import app.api.restore as restore_api
+
     data = await do_setup(client)
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
@@ -528,10 +548,10 @@ async def test_restore_into_read_only_mount_is_rejected(client, monkeypatch):
         await db.commit()
     _app(client).state.backup_engine = MagicMock()
     config_dir = str(_app(client).state.config.config_dir)
-    monkeypatch.setattr(restore_api, "read_only_mount_for",
-                        lambda p: config_dir if p.startswith(config_dir) else None)
+    monkeypatch.setattr(restore_api, "read_only_mount_for", lambda p: config_dir if p.startswith(config_dir) else None)
     resp = await client.post(
-        "/api/restore", headers=auth_headers(data["api_key"]),
+        "/api/restore",
+        headers=auth_headers(data["api_key"]),
         json={"target": "t1", "snapshot_id": "abc123", "paths": ["/mnt/user/appdata/app"]},
     )
     assert resp.status_code == 400
@@ -554,12 +574,16 @@ async def test_notification_event_catalog(client):
     assert {"backup.stale", "drill.failed", "verification.failed", "target.error"} <= values
     assert set(body["defaults"]) <= values
 
-    resp = await client.post("/api/notifications", headers=headers, json={
-        "name": "n", "type": "ntfy", "url": "ntfy://topic", "events": ["discovery.completed"]})
+    resp = await client.post(
+        "/api/notifications",
+        headers=headers,
+        json={"name": "n", "type": "ntfy", "url": "ntfy://topic", "events": ["discovery.completed"]},
+    )
     assert resp.status_code == 422
 
-    resp = await client.post("/api/notifications", headers=headers, json={
-        "name": "n", "type": "ntfy", "url": "ntfy://topic"})
+    resp = await client.post(
+        "/api/notifications", headers=headers, json={"name": "n", "type": "ntfy", "url": "ntfy://topic"}
+    )
     assert resp.status_code == 201, resp.text
     channels = (await client.get("/api/notifications", headers=headers)).json()["items"]
     assert "backup.stale" in channels[0]["events"]
@@ -571,13 +595,20 @@ async def test_migration_backfills_new_events(tmp_path):
     async with aiosqlite.connect(path) as db:
         await db.execute(
             "INSERT INTO notification_channels (id, type, name, events) VALUES "
-            "('a', 'ntfy', 'A', '[\"backup.failed\"]'), ('b', 'ntfy', 'B', '[\"backup.success\"]')")
+            "('a', 'ntfy', 'A', '[\"backup.failed\"]'), ('b', 'ntfy', 'B', '[\"backup.success\"]')"
+        )
         await db.commit()
     await run_migrations(path)
     async with aiosqlite.connect(path) as db:
         rows = dict(await (await db.execute("SELECT id, events FROM notification_channels")).fetchall())
-    assert json.loads(rows["a"]) == ["backup.failed", "backup.stale", "drill.failed",
-                                     "verification.failed", "target.error", "backup.partial"]
+    assert json.loads(rows["a"]) == [
+        "backup.failed",
+        "backup.stale",
+        "drill.failed",
+        "verification.failed",
+        "target.error",
+        "backup.partial",
+    ]
     assert json.loads(rows["b"]) == ["backup.success"]
 
 
@@ -612,12 +643,16 @@ class TestMountHelpers:
 
     def test_host_path_for(self, mountinfo):
         docker = MagicMock()
-        docker.containers.get.return_value.attrs = {"Mounts": [
-            {"Type": "bind", "Source": "/mnt/user/appdata/arkive", "Destination": "/config"},
-            {"Type": "bind", "Source": "/mnt/user/appdata/arkive/local-backup", "Destination": "/data"},
-        ]}
-        assert mounts.host_path_for("/data/arkive-repo", docker, mountinfo) == \
-            "/mnt/user/appdata/arkive/local-backup/arkive-repo"
+        docker.containers.get.return_value.attrs = {
+            "Mounts": [
+                {"Type": "bind", "Source": "/mnt/user/appdata/arkive", "Destination": "/config"},
+                {"Type": "bind", "Source": "/mnt/user/appdata/arkive/local-backup", "Destination": "/data"},
+            ]
+        }
+        assert (
+            mounts.host_path_for("/data/arkive-repo", docker, mountinfo)
+            == "/mnt/user/appdata/arkive/local-backup/arkive-repo"
+        )
         assert mounts.host_path_for("/config", docker, mountinfo) == "/mnt/user/appdata/arkive"
         assert mounts.host_path_for("/elsewhere", docker, mountinfo) is None
         docker.containers.get.assert_called_with(CID)
@@ -643,8 +678,16 @@ def _engine(tmp_path):
 class TestLegacyHostnames:
     async def test_list_snapshots_raises_on_failure(self, tmp_path, monkeypatch):
         import app.services.backup_engine as be
-        monkeypatch.setattr(be, "run_command", AsyncMock(return_value=CommandResult(
-            returncode=1, stdout="", stderr="unable to open repository", duration_seconds=0.0, command="restic")))
+
+        monkeypatch.setattr(
+            be,
+            "run_command",
+            AsyncMock(
+                return_value=CommandResult(
+                    returncode=1, stdout="", stderr="unable to open repository", duration_seconds=0.0, command="restic"
+                )
+            ),
+        )
         engine = _engine(tmp_path)
         with pytest.raises(ResticError, match="unable to open"):
             await engine.list_snapshots({"type": "local", "config": {"path": "/data"}})
@@ -652,6 +695,7 @@ class TestLegacyHostnames:
 
     async def test_relabels_only_arkive_container_id_snapshots(self, tmp_path, monkeypatch):
         import app.services.backup_engine as be
+
         listing = [
             {"id": "a" * 64, "hostname": "0123456789ab", "paths": ["/config/dumps", "/mnt/user/appdata"]},
             {"id": "b" * 64, "hostname": "tower", "paths": ["/config/dumps"]},
@@ -665,7 +709,9 @@ class TestLegacyHostnames:
         async def fake_run(cmd, **kwargs):
             calls.append(cmd)
             if cmd[1] == "snapshots":
-                return CommandResult(returncode=0, stdout=json.dumps(listing), stderr="", duration_seconds=0.0, command="restic")
+                return CommandResult(
+                    returncode=0, stdout=json.dumps(listing), stderr="", duration_seconds=0.0, command="restic"
+                )
             return CommandResult(returncode=0, stdout="", stderr="", duration_seconds=0.0, command="restic")
 
         monkeypatch.setattr(be, "run_command", fake_run)
@@ -673,7 +719,8 @@ class TestLegacyHostnames:
         engine.current_hostname = AsyncMock(return_value="tower")
         owned = {"a" * 64, "b" * 64, "c" * 8}
         result = await engine.normalize_legacy_hostnames(
-            {"type": "local", "config": {"path": "/data"}}, "/config/dumps", owned)
+            {"type": "local", "config": {"path": "/data"}}, "/config/dumps", owned
+        )
         assert result == {"status": "success", "rewritten": 1, "host": "tower"}
         assert "e" * 64 not in calls[-1]
         rewrite = calls[-1]
@@ -695,12 +742,16 @@ class TestLegacyHostnames:
             await db.execute("INSERT INTO storage_targets (id, name, type, config) VALUES ('t1', 'L', 'local', '{}')")
             await db.execute("INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'J', '0 1 * * *')")
             await db.execute("INSERT INTO job_runs (id, job_id, status) VALUES ('r1', 'j1', 'success')")
-            await db.execute("INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id) "
-                             "VALUES ('r1', 't1', 'success', 'deadbeef')")
+            await db.execute(
+                "INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id) "
+                "VALUES ('r1', 't1', 'success', 'deadbeef')"
+            )
             await db.commit()
         order = []
         engine = MagicMock()
-        engine.normalize_legacy_hostnames = AsyncMock(side_effect=lambda *a: order.append("relabel") or {"status": "success"})
+        engine.normalize_legacy_hostnames = AsyncMock(
+            side_effect=lambda *a: order.append("relabel") or {"status": "success"}
+        )
         engine.forget = AsyncMock(side_effect=lambda *a, **k: order.append("forget") or {"status": "success"})
         sched = scheduler_mod.ArkiveScheduler(orchestrator=MagicMock(), config=config, backup_engine=engine)
         await sched._run_retention_cleanup()
@@ -727,6 +778,7 @@ def test_uvicorn_log_config_is_json(tmp_path, capsys):
 
 def test_setup_logging_routes_uvicorn_through_root(tmp_path):
     from app.utils.log_config import setup_logging
+
     uvicorn_logger = logging.getLogger("uvicorn")
     uvicorn_logger.addHandler(logging.StreamHandler())
     uvicorn_logger.propagate = False
@@ -750,7 +802,8 @@ async def test_consecutive_skipped_drills_alert(tmp_path):
         async with aiosqlite.connect(config.db_path) as db:
             await db.execute(
                 "INSERT INTO restore_drills (id, status, started_at, error_message) VALUES (?, ?, ?, ?)",
-                (drill_id, status, started, "no database could be tested: image would not start"))
+                (drill_id, status, started, "no database could be tested: image would not start"),
+            )
             await db.commit()
 
     await add("d1", "passed", "2026-10-01T07:00:00Z")

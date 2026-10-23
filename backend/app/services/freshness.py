@@ -12,7 +12,7 @@ had databases before, dumped at least one.
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
 import aiosqlite
@@ -39,11 +39,11 @@ def _parse_ts(value: str | None) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _fmt(value: datetime) -> str:
-    return value.astimezone(timezone.utc).strftime(_TS_FORMAT)
+    return value.astimezone(UTC).strftime(_TS_FORMAT)
 
 
 def schedule_gap_hours(schedule: str, now: datetime | None = None) -> float | None:
@@ -55,7 +55,7 @@ def schedule_gap_hours(schedule: str, now: datetime | None = None) -> float | No
     Returns None for an invalid schedule. Cached per hour: /api/status calls
     this on every dashboard poll.
     """
-    now = (now or datetime.now(timezone.utc)).astimezone()
+    now = (now or datetime.now(UTC)).astimezone()
     return _schedule_gap(schedule, now.replace(minute=0, second=0, microsecond=0))
 
 
@@ -138,7 +138,7 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
     no job's latest finished run was bad — the condition for sending the
     heartbeat.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     result = {"stale": False, "healthy": True, "checked_at": _fmt(now), "stale_jobs": [], "jobs": []}
     try:
         cursor = await db.execute(
@@ -165,9 +165,7 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
         last_status = last_run[1] if last_run else None
         # The latest finished run is bad when it failed, or was partial without
         # meeting the good-run bar (its start is newer than the last good one).
-        last_run_bad = bool(last_run) and (
-            last_status == "failed" or (last_run[2] or "") > (last_good_at or "")
-        )
+        last_run_bad = bool(last_run) and (last_status == "failed" or (last_run[2] or "") > (last_good_at or ""))
 
         reference = _parse_ts(last_good_at) or _parse_ts(created_at)
         age_hours = (now - reference).total_seconds() / 3600 if reference else None
@@ -186,13 +184,15 @@ async def evaluate_freshness(db: aiosqlite.Connection, now: datetime | None = No
         }
         result["jobs"].append(entry)
         if stale:
-            result["stale_jobs"].append({
-                "job_id": job_id,
-                "job_name": name,
-                "last_good_at": last_good_at,
-                "threshold_hours": threshold,
-                "overdue_hours": round(age_hours - threshold, 2),
-            })
+            result["stale_jobs"].append(
+                {
+                    "job_id": job_id,
+                    "job_name": name,
+                    "last_good_at": last_good_at,
+                    "threshold_hours": threshold,
+                    "overdue_hours": round(age_hours - threshold, 2),
+                }
+            )
         if stale or last_run_bad:
             result["healthy"] = False
 
@@ -208,8 +208,9 @@ def describe_stale_job(job: dict) -> str:
     threshold = job.get("threshold_hours")
     window = f"{threshold:g} h" if isinstance(threshold, (int, float)) else "its schedule"
     if job.get("last_good_at"):
-        return (f"{job['job_name']} has not produced a good backup since "
-                f"{job['last_good_at']} (expected within {window}).")
+        return (
+            f"{job['job_name']} has not produced a good backup since {job['last_good_at']} (expected within {window})."
+        )
     return f"{job['job_name']} has never produced a good backup (expected within {window})."
 
 
@@ -227,7 +228,6 @@ async def ping_heartbeat(url: str, timeout: float = HEARTBEAT_TIMEOUT_SECONDS) -
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(url, headers={"User-Agent": "Arkive heartbeat"})
         ok = 200 <= response.status_code < 300
-        return {"ok": ok, "status_code": response.status_code,
-                "error": None if ok else f"HTTP {response.status_code}"}
+        return {"ok": ok, "status_code": response.status_code, "error": None if ok else f"HTTP {response.status_code}"}
     except httpx.HTTPError as exc:
         return {"ok": False, "status_code": None, "error": f"{type(exc).__name__}: {exc}"[:300]}

@@ -5,8 +5,8 @@ Verifies that all user inputs are properly sanitized/parameterized.
 """
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,11 +22,15 @@ async def test_sql_injection_in_job_name(client):
     api_key = data["api_key"]
 
     payload = "'; DROP TABLE backup_jobs; --"
-    resp = await client.post("/api/jobs", json={
-        "name": payload,
-        "type": "full",
-        "schedule": "0 2 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": payload,
+            "type": "full",
+            "schedule": "0 2 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
 
     # Verify the name was stored literally, not executed
@@ -52,11 +56,15 @@ async def test_sql_injection_in_target_name(client, tmp_path):
     os.makedirs(target_path, exist_ok=True)
 
     payload = "test' UNION SELECT * FROM settings --"
-    resp = await client.post("/api/targets", json={
-        "name": payload,
-        "type": "local",
-        "config": {"path": target_path},
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": payload,
+            "type": "local",
+            "config": {"path": target_path},
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     assert resp.json()["name"] == payload
 
@@ -127,15 +135,18 @@ async def test_path_traversal_in_snapshot_browse(client):
 
 async def test_path_traversal_in_directory(client, tmp_path):
     """Directory creation with traversal should be rejected."""
-    import os
 
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/directories", json={
-        "path": "../../../etc/shadow",
-        "label": "Evil",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": "../../../etc/shadow",
+            "label": "Evil",
+        },
+        headers=auth_headers(api_key),
+    )
     # Should fail — path doesn't exist as a directory
     assert resp.status_code == 400
 
@@ -151,11 +162,15 @@ async def test_extremely_long_job_name(client):
     api_key = data["api_key"]
 
     long_name = "A" * 10000
-    resp = await client.post("/api/jobs", json={
-        "name": long_name,
-        "type": "full",
-        "schedule": "0 2 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": long_name,
+            "type": "full",
+            "schedule": "0 2 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     # Should either accept or reject gracefully (not crash)
     assert resp.status_code in (201, 422)
 
@@ -165,11 +180,15 @@ async def test_unicode_in_job_name(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/jobs", json={
-        "name": "Backup Job 🚀",
-        "type": "full",
-        "schedule": "0 2 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Backup Job 🚀",
+            "type": "full",
+            "schedule": "0 2 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     job_id = resp.json()["id"]
 
@@ -194,11 +213,15 @@ async def test_null_in_required_fields(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.post("/api/jobs", json={
-        "name": None,
-        "type": "full",
-        "schedule": "0 2 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": None,
+            "type": "full",
+            "schedule": "0 2 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 422
 
 

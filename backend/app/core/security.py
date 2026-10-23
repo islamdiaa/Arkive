@@ -87,9 +87,7 @@ def _encrypted_values(db_path: str | Path) -> list[str]:
             except sqlite3.Error:
                 continue
         try:
-            rows = conn.execute(
-                "SELECT config FROM notification_channels WHERE config LIKE '%enc:v1:%'"
-            ).fetchall()
+            rows = conn.execute("SELECT config FROM notification_channels WHERE config LIKE '%enc:v1:%'").fetchall()
         except sqlite3.Error:
             rows = []
         for (raw,) in rows:
@@ -116,15 +114,19 @@ def verify_keyfile(config_dir: str | Path, db_path: str | Path) -> None:
     allow_new = os.environ.get(ALLOW_NEW_KEYFILE_ENV, "").strip() == "1"
     values = _encrypted_values(db_path)
     count = len(values)
-    override_hint = (f"or set {ALLOW_NEW_KEYFILE_ENV}=1 to start with a new key and re-enter "
-                     "your storage credentials and encryption password")
+    override_hint = (
+        f"or set {ALLOW_NEW_KEYFILE_ENV}=1 to start with a new key and re-enter "
+        "your storage credentials and encryption password"
+    )
 
     if not keyfile.exists():
         if count == 0:
             return
-        message = (f"{keyfile} is missing, but the database holds {count} values encrypted with it "
-                   "(storage credentials, the backup encryption password). Restore the original "
-                   f".keyfile (it is in your recovery kit), {override_hint}.")
+        message = (
+            f"{keyfile} is missing, but the database holds {count} values encrypted with it "
+            "(storage credentials, the backup encryption password). Restore the original "
+            f".keyfile (it is in your recovery kit), {override_hint}."
+        )
         if allow_new:
             logger.warning("%s Continuing because %s=1.", message, ALLOW_NEW_KEYFILE_ENV)
             return
@@ -140,22 +142,25 @@ def verify_keyfile(config_dir: str | Path, db_path: str | Path) -> None:
     undecryptable = 0
     for value in values:
         try:
-            fernet.decrypt(value[len("enc:v1:"):].encode())
+            fernet.decrypt(value[len("enc:v1:") :].encode())
             break
         except InvalidToken:
             undecryptable += 1
     else:
         if count == 0:
             return
-        message = (f"{keyfile} does not match this database: none of its {count} stored secrets can be "
-                   f"decrypted with it. Restore the .keyfile that belongs to this database, {override_hint}.")
+        message = (
+            f"{keyfile} does not match this database: none of its {count} stored secrets can be "
+            f"decrypted with it. Restore the .keyfile that belongs to this database, {override_hint}."
+        )
         if allow_new:
             logger.warning("%s Continuing because %s=1.", message, ALLOW_NEW_KEYFILE_ENV)
             return
         raise KeyfileError(message)
     if undecryptable:
-        logger.warning("%d stored secret(s) can't be decrypted with %s; re-enter them in settings",
-                       undecryptable, keyfile)
+        logger.warning(
+            "%d stored secret(s) can't be decrypted with %s; re-enter them in settings", undecryptable, keyfile
+        )
 
 
 def _reset_fernet() -> None:
@@ -216,7 +221,7 @@ def decrypt_value(ciphertext: str) -> str:
     if not is_encrypted(ciphertext):
         return ciphertext
     f = _get_fernet()
-    token = ciphertext[len("enc:v1:"):]
+    token = ciphertext[len("enc:v1:") :]
     return f.decrypt(token.encode()).decode()
 
 
@@ -232,6 +237,7 @@ def generate_password(length: int = 24) -> str:
 
 
 # --- Config dict encryption (from v2) ---
+
 
 def encrypt_config(config_dict: dict, config_dir: str | None = None) -> str:
     """
@@ -268,7 +274,7 @@ def decrypt_config(encrypted_str: str, config_dir: str | None = None) -> dict:
             fernet = _load_fernet_from_dir(config_dir)
         else:
             fernet = _get_fernet()
-        token = encrypted_str[len("enc:v1:"):].encode("utf-8")
+        token = encrypted_str[len("enc:v1:") :].encode("utf-8")
         decrypted = fernet.decrypt(token)
         return json.loads(decrypted.decode("utf-8"))
     else:

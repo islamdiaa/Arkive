@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 import aiosqlite
 import pytest
 
+import app.services.restore_drill as rd
 from app.core.database import init_db, run_migrations
 from app.services.backup_engine import ResticError
-import app.services.restore_drill as rd
 from app.services.restore_drill import (
     DRILL_MARKER,
     DUMP_MANIFEST_NAME,
@@ -120,8 +120,13 @@ class Cfg:
 
 
 class FakeBackupEngine:
-    def __init__(self, dump_dir: Path, files: dict[str, bytes], sizes: dict[str, int] | None = None,
-                 snapshots: list | None = None):
+    def __init__(
+        self,
+        dump_dir: Path,
+        files: dict[str, bytes],
+        sizes: dict[str, int] | None = None,
+        snapshots: list | None = None,
+    ):
         self.dump_dir = str(dump_dir)
         self.files = files
         self.sizes = sizes or {}
@@ -130,10 +135,14 @@ class FakeBackupEngine:
         self.restore_fail_for: set[str] = set()  # basenames whose restore fails
         self.list_error: dict[str, str] = {}  # target id -> restic error
         self.ls_fails = False
-        self._snapshots = snapshots if snapshots is not None else [
-            {"id": "b" * 64, "short_id": "bbbbbbbb", "paths": ["/mnt/user/appdata"]},
-            {"id": "a" * 64, "short_id": "aaaaaaaa", "paths": [self.dump_dir, "/mnt/user/appdata"]},
-        ]
+        self._snapshots = (
+            snapshots
+            if snapshots is not None
+            else [
+                {"id": "b" * 64, "short_id": "bbbbbbbb", "paths": ["/mnt/user/appdata"]},
+                {"id": "a" * 64, "short_id": "aaaaaaaa", "paths": [self.dump_dir, "/mnt/user/appdata"]},
+            ]
+        )
 
     async def list_snapshots(self, target):
         if target["id"] in self.list_error:
@@ -159,8 +168,7 @@ class FakeBackupEngine:
 
     async def restore(self, target, snapshot_id, paths=None, restore_to=None):
         self.restore_calls.append((list(paths or []), restore_to))
-        if self.restore_status != "success" or any(os.path.basename(p) in self.restore_fail_for
-                                                   for p in paths or []):
+        if self.restore_status != "success" or any(os.path.basename(p) in self.restore_fail_for for p in paths or []):
             return {"status": "failed", "error": "repository unreachable"}
         for p in paths or []:
             dest = Path(restore_to) / p.lstrip("/")
@@ -211,7 +219,7 @@ class FakeContainer:
         self.docker.removed.append(self)
 
     def logs(self, tail=None):
-        return b"initdb: done\nFATAL:  could not load library \"vectors.so\"\n"
+        return b'initdb: done\nFATAL:  could not load library "vectors.so"\n'
 
 
 class FakeDocker:
@@ -220,11 +228,18 @@ class FakeDocker:
         self.removed: list[FakeContainer] = []
         self.sources: dict[str, dict] = {}
         self.image_configs: dict[str, dict] = {
-            "postgres:16": {"Env": ["PGDATA=/var/lib/postgresql/data"], "Cmd": ["postgres"],
-                            "Entrypoint": ["docker-entrypoint.sh"],
-                            "Volumes": {"/var/lib/postgresql/data": {}}},
-            "mariadb:11": {"Env": [], "Cmd": ["mariadbd"], "Entrypoint": ["docker-entrypoint.sh"],
-                           "Volumes": {"/var/lib/mysql": {}}},
+            "postgres:16": {
+                "Env": ["PGDATA=/var/lib/postgresql/data"],
+                "Cmd": ["postgres"],
+                "Entrypoint": ["docker-entrypoint.sh"],
+                "Volumes": {"/var/lib/postgresql/data": {}},
+            },
+            "mariadb:11": {
+                "Env": [],
+                "Cmd": ["mariadbd"],
+                "Entrypoint": ["docker-entrypoint.sh"],
+                "Volumes": {"/var/lib/mysql": {}},
+            },
         }
         self.leftovers: list[FakeContainer] = []
         self.load_code = 0
@@ -310,23 +325,34 @@ async def _make_cfg(tmp_path: Path, targets=(("t1", "Local NAS", "local"),)) -> 
 
 
 def _manifest(entries: list[dict]) -> bytes:
-    return json.dumps({"version": 1, "generated_at": "2026-10-22T03:00:00Z",
-                       "arkive_version": "0.4.0", "dumps": entries}).encode()
+    return json.dumps(
+        {"version": 1, "generated_at": "2026-10-22T03:00:00Z", "arkive_version": "0.4.0", "dumps": entries}
+    ).encode()
 
 
 def _entry(file, container, db_type, db_name, image=None, kind="database", size=1000):
-    return {"file": file, "container_name": container, "image": image, "db_type": db_type,
-            "db_name": db_name, "host_path": None, "kind": kind,
-            "compression": "gzip" if file.endswith(".gz") else "none",
-            "size_bytes": size, "created_at": "2026-10-22T03:00:00Z", "integrity": "ok"}
+    return {
+        "file": file,
+        "container_name": container,
+        "image": image,
+        "db_type": db_type,
+        "db_name": db_name,
+        "host_path": None,
+        "kind": kind,
+        "compression": "gzip" if file.endswith(".gz") else "none",
+        "size_bytes": size,
+        "created_at": "2026-10-22T03:00:00Z",
+        "integrity": "ok",
+    }
 
 
 def _engine(cfg, backup, docker=None, notifier=None, event_bus=None) -> RestoreDrillEngine:
     lock = MagicMock()
     lock.is_backup_running.return_value = False
     lock.is_restore_running.return_value = False
-    engine = RestoreDrillEngine(cfg, backup_engine=backup, docker_client=docker,
-                                notifier=notifier, event_bus=event_bus, lock_manager=lock)
+    engine = RestoreDrillEngine(
+        cfg, backup_engine=backup, docker_client=docker, notifier=notifier, event_bus=event_bus, lock_manager=lock
+    )
     engine.poll_seconds = 0
     engine.idle_poll_seconds = 0
     engine.ready_timeout_seconds = 1
@@ -347,14 +373,24 @@ async def _rows(cfg, sql, args=()):
 
 
 def _cand(container, db_type, db_name, size=100, **kw):
-    return DumpCandidate(file=f"{container}_{db_name}_20261022_030000.sql", container_name=container,
-                         db_type=db_type, db_name=db_name, size_bytes=size, **kw)
+    return DumpCandidate(
+        file=f"{container}_{db_name}_20261022_030000.sql",
+        container_name=container,
+        db_type=db_type,
+        db_name=db_name,
+        size_bytes=size,
+        **kw,
+    )
 
 
 class TestSelection:
     def test_rotation_prefers_failed_then_never_then_oldest(self):
-        cands = [_cand("a", "sqlite", "a.db"), _cand("b", "sqlite", "b.db"),
-                 _cand("c", "sqlite", "c.db"), _cand("d", "postgres", "d")]
+        cands = [
+            _cand("a", "sqlite", "a.db"),
+            _cand("b", "sqlite", "b.db"),
+            _cand("c", "sqlite", "c.db"),
+            _cand("d", "postgres", "d"),
+        ]
         history = {
             ("a", "a.db"): ("2026-10-01T07:00:00Z", "passed"),
             ("b", "b.db"): ("2026-10-15T07:00:00Z", "failed"),
@@ -369,8 +405,13 @@ class TestSelection:
             _cand("big", "postgres", "big", size=3000 * MIB),
             _cand("cache", "redis", "redis"),
             _cand("docs", "mongodb", "docs"),
-            DumpCandidate(file="pg_globals_20261022_030000.sql", container_name="pg", db_type="postgres",
-                          db_name="globals", kind="globals"),
+            DumpCandidate(
+                file="pg_globals_20261022_030000.sql",
+                container_name="pg",
+                db_type="postgres",
+                db_name="globals",
+                kind="globals",
+            ),
             _cand("ok", "postgres", "ok"),
         ]
         chosen, excluded = select_candidates(cands, {}, 3, 2048 * MIB)
@@ -399,15 +440,17 @@ class TestSelection:
         cand = _cand("a", "postgres", "a", in_snapshot=False)
         chosen, excluded = select_candidates([cand], {}, 3, 2048 * MIB)
         assert chosen == []
-        assert excluded == [(cand, "failed",
-                             "listed in the snapshot's dump manifest but missing from the snapshot")]
+        assert excluded == [(cand, "failed", "listed in the snapshot's dump manifest but missing from the snapshot")]
 
 
 class TestCandidates:
     def test_from_manifest_uses_listing_size(self):
-        manifest = {"dumps": [_entry("pg_appdb_20261022_030000.sql", "pg", "postgres", "appdb",
-                                     image="postgres:16", size=5),
-                              _entry("../evil.sql", "x", "postgres", "x")]}
+        manifest = {
+            "dumps": [
+                _entry("pg_appdb_20261022_030000.sql", "pg", "postgres", "appdb", image="postgres:16", size=5),
+                _entry("../evil.sql", "x", "postgres", "x"),
+            ]
+        }
         files = {"pg_appdb_20261022_030000.sql": {"name": "pg_appdb_20261022_030000.sql", "size": 4242}}
         cands = candidates_from_manifest(manifest, files)
         assert len(cands) == 2
@@ -416,17 +459,20 @@ class TestCandidates:
         assert cands[1].file == "evil.sql" and not cands[1].in_snapshot
 
     def test_infer_without_manifest(self):
-        files = {name: {"name": name, "size": 10} for name in [
-            "immich_postgres_immich_20261021_030000.sql.gz",
-            "immich_postgres_immich_20261022_030000.sql.gz",  # newer — wins
-            "immich_postgres_globals_20261022_030000.sql",
-            "vaultwarden_db.sqlite3-1a2b3c4d_20261022_030000.sqlite3",
-            "paperless-redis-1_redis_20261022_030000.rdb",
-            "mystery_thing_20261022_030000.sql",
-            "flash_20261022_030000.tar.gz",
-            "arkive_self.db",
-            DUMP_MANIFEST_NAME,
-        ]}
+        files = {
+            name: {"name": name, "size": 10}
+            for name in [
+                "immich_postgres_immich_20261021_030000.sql.gz",
+                "immich_postgres_immich_20261022_030000.sql.gz",  # newer — wins
+                "immich_postgres_globals_20261022_030000.sql",
+                "vaultwarden_db.sqlite3-1a2b3c4d_20261022_030000.sqlite3",
+                "paperless-redis-1_redis_20261022_030000.rdb",
+                "mystery_thing_20261022_030000.sql",
+                "flash_20261022_030000.tar.gz",
+                "arkive_self.db",
+                DUMP_MANIFEST_NAME,
+            ]
+        }
         known = [
             {"container_name": "immich_postgres", "db_type": "postgres", "db_name": "immich"},
             {"container_name": "vaultwarden", "db_type": "sqlite", "db_name": "db.sqlite3"},
@@ -435,7 +481,11 @@ class TestCandidates:
         by_file = {c.file: c for c in cands}
         pg = by_file["immich_postgres_immich_20261022_030000.sql.gz"]
         assert (pg.container_name, pg.db_type, pg.db_name, pg.image) == (
-            "immich_postgres", "postgres", "immich", "ghcr.io/example/postgres:14")
+            "immich_postgres",
+            "postgres",
+            "immich",
+            "ghcr.io/example/postgres:14",
+        )
         assert "immich_postgres_immich_20261021_030000.sql.gz" not in by_file
         assert by_file["immich_postgres_globals_20261022_030000.sql"].kind == "globals"
         vw = by_file["vaultwarden_db.sqlite3-1a2b3c4d_20261022_030000.sqlite3"]
@@ -534,23 +584,33 @@ def _standard_files(tmp_path, pg_bytes=PG_DUMP):
         PG_FILE: pg_bytes,
         SQLITE_FILE: _sqlite_bytes(tmp_path),
         "immich_postgres_globals_20261022_030000.sql": b"-- roles\nCREATE ROLE alice;\n",
-        DUMP_MANIFEST_NAME: _manifest([
-            _entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16"),
-            _entry(SQLITE_FILE, "vaultwarden", "sqlite", "db.sqlite3"),
-            _entry("immich_postgres_globals_20261022_030000.sql", "immich_postgres", "postgres",
-                   "globals", image="postgres:16", kind="globals"),
-        ]),
+        DUMP_MANIFEST_NAME: _manifest(
+            [
+                _entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16"),
+                _entry(SQLITE_FILE, "vaultwarden", "sqlite", "db.sqlite3"),
+                _entry(
+                    "immich_postgres_globals_20261022_030000.sql",
+                    "immich_postgres",
+                    "postgres",
+                    "globals",
+                    image="postgres:16",
+                    kind="globals",
+                ),
+            ]
+        ),
     }
 
 
 def _docker_with_source():
     docker = FakeDocker()
-    docker.sources["immich_postgres"] = {"Config": {
-        "Image": "postgres:16",
-        "Env": ["POSTGRES_USER=alice", "POSTGRES_DB=appdb", "POSTGRES_PASSWORD=hunter2", "TZ=UTC"],
-        "Entrypoint": ["docker-entrypoint.sh"],
-        "Cmd": ["postgres", "-c", "shared_preload_libraries=vectors.so"],
-    }}
+    docker.sources["immich_postgres"] = {
+        "Config": {
+            "Image": "postgres:16",
+            "Env": ["POSTGRES_USER=alice", "POSTGRES_DB=appdb", "POSTGRES_PASSWORD=hunter2", "TZ=UTC"],
+            "Entrypoint": ["docker-entrypoint.sh"],
+            "Cmd": ["postgres", "-c", "shared_preload_libraries=vectors.so"],
+        }
+    }
     return docker
 
 
@@ -762,9 +822,10 @@ async def test_large_dump_without_host_path_is_skipped(tmp_path, monkeypatch):
 async def test_mariadb_drill(tmp_path):
     cfg = await _make_cfg(tmp_path)
     name = "nextcloud-db_nextcloud_20261022_030000.sql.gz"
-    files = {name: gzip.compress(MYSQL_DUMP),
-             DUMP_MANIFEST_NAME: _manifest([_entry(name, "nextcloud-db", "mariadb", "nextcloud",
-                                                   image="mariadb:11")])}
+    files = {
+        name: gzip.compress(MYSQL_DUMP),
+        DUMP_MANIFEST_NAME: _manifest([_entry(name, "nextcloud-db", "mariadb", "nextcloud", image="mariadb:11")]),
+    }
     backup = FakeBackupEngine(cfg.dump_dir, files)
     docker = FakeDocker()
     docker.table_count = 1
@@ -784,11 +845,17 @@ async def test_mariadb_drill(tmp_path):
 async def test_manifestless_snapshot_uses_history(tmp_path):
     cfg = await _make_cfg(tmp_path)
     async with aiosqlite.connect(cfg.db_path) as db:
-        await db.execute("INSERT INTO backup_jobs (id, name, type, schedule) VALUES ('j1', 'DB', 'db_dump', '0 3 * * *')")
-        await db.execute("INSERT INTO job_runs (id, job_id, status, trigger, started_at) "
-                         "VALUES ('r1', 'j1', 'success', 'scheduled', '2026-10-22T03:00:00Z')")
-        await db.execute("INSERT INTO job_run_databases (run_id, container_name, db_type, db_name, status) "
-                         "VALUES ('r1', 'immich_postgres', 'postgres', 'appdb', 'success')")
+        await db.execute(
+            "INSERT INTO backup_jobs (id, name, type, schedule) VALUES ('j1', 'DB', 'db_dump', '0 3 * * *')"
+        )
+        await db.execute(
+            "INSERT INTO job_runs (id, job_id, status, trigger, started_at) "
+            "VALUES ('r1', 'j1', 'success', 'scheduled', '2026-10-22T03:00:00Z')"
+        )
+        await db.execute(
+            "INSERT INTO job_run_databases (run_id, container_name, db_type, db_name, status) "
+            "VALUES ('r1', 'immich_postgres', 'postgres', 'appdb', 'success')"
+        )
         await db.execute("INSERT INTO discovered_containers (name, image) VALUES ('immich_postgres', 'postgres:16')")
         await db.commit()
     files = {PG_FILE: PG_DUMP}
@@ -866,8 +933,11 @@ async def test_rotation_across_drills(tmp_path):
     engine = _engine(cfg, backup, FakeDocker())
     await engine.run_drill()
     await engine.run_drill()
-    rows = await _rows(cfg, "SELECT r.container_name FROM restore_drill_results r "
-                            "JOIN restore_drills d ON d.id = r.drill_id ORDER BY d.started_at, r.id")
+    rows = await _rows(
+        cfg,
+        "SELECT r.container_name FROM restore_drill_results r "
+        "JOIN restore_drills d ON d.id = r.drill_id ORDER BY d.started_at, r.id",
+    )
     assert [r["container_name"] for r in rows] == ["a", "b"]
 
 
@@ -892,17 +962,20 @@ async def test_start_drill_runs_in_background_and_rejects_second(tmp_path):
 
 
 class TestPostgresNames:
-    @pytest.mark.parametrize("arg, expected", [
-        ("appdb", "appdb"),
-        ('"MixedCase"', "MixedCase"),
-        ('"we""ird"', 'we"ird'),
-        ('-reuse-previous=on "dbname=\'my db\'"', "my db"),
-        ('-reuse-previous=on "dbname=\'café-db\'"', "café-db"),
-        ('-reuse-previous=on "dbname=\'a\\\'b\'"', "a'b"),
-        ('-reuse-previous=on "dbname=\'say ""hi""\'"', 'say "hi"'),
-        ('-reuse-previous=on "dbname=\'it\'\'s\'"', "it's"),
-        ('-reuse-previous=on "dbname=\'unterminated', None),
-    ])
+    @pytest.mark.parametrize(
+        "arg, expected",
+        [
+            ("appdb", "appdb"),
+            ('"MixedCase"', "MixedCase"),
+            ('"we""ird"', 'we"ird'),
+            ("-reuse-previous=on \"dbname='my db'\"", "my db"),
+            ("-reuse-previous=on \"dbname='café-db'\"", "café-db"),
+            ("-reuse-previous=on \"dbname='a\\'b'\"", "a'b"),
+            ('-reuse-previous=on "dbname=\'say ""hi""\'"', 'say "hi"'),
+            ("-reuse-previous=on \"dbname='it''s'\"", "it's"),
+            ("-reuse-previous=on \"dbname='unterminated", None),
+        ],
+    )
     def test_parse_connect(self, arg, expected):
         assert parse_pg_connect(arg) == expected
 
@@ -913,8 +986,9 @@ class TestPostgresNames:
             assert not valid_pg_dbname(bad), bad
 
     def test_prepare_reads_quoted_connect(self, tmp_path):
-        dump = PG_DUMP.replace(b"\\connect appdb",
-                               b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\"")
+        dump = PG_DUMP.replace(
+            b"\\connect appdb", b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\""
+        )
         src = tmp_path / "in.sql"
         src.write_bytes(dump)
         assert prepare_sql_dump(src, tmp_path / "out.sql", "postgres").database == "my db"
@@ -923,11 +997,12 @@ class TestPostgresNames:
 @pytest.mark.asyncio
 async def test_database_name_with_spaces_is_counted_in_that_database(tmp_path):
     cfg = await _make_cfg(tmp_path)
-    dump = PG_DUMP.replace(b"\\connect appdb",
-                           b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\"")
+    dump = PG_DUMP.replace(b"\\connect appdb", b"\\encoding SQL_ASCII\n\\connect -reuse-previous=on \"dbname='my db'\"")
     name = "pg_my_db_20261022_030000.sql"
-    files = {name: dump, DUMP_MANIFEST_NAME: _manifest([_entry(name, "immich_postgres", "postgres", "my db",
-                                                               image="postgres:16")])}
+    files = {
+        name: dump,
+        DUMP_MANIFEST_NAME: _manifest([_entry(name, "immich_postgres", "postgres", "my db", image="postgres:16")]),
+    }
     docker = _docker_with_source()
     engine = _engine(cfg, FakeBackupEngine(cfg.dump_dir, files), docker)
     summary = await engine.run_drill()
@@ -1068,9 +1143,10 @@ async def test_corrupt_manifest_fails_drill(tmp_path):
 
 
 def _pg_only_files():
-    return {PG_FILE: PG_DUMP,
-            DUMP_MANIFEST_NAME: _manifest([_entry(PG_FILE, "immich_postgres", "postgres", "appdb",
-                                                  image="postgres:16")])}
+    return {
+        PG_FILE: PG_DUMP,
+        DUMP_MANIFEST_NAME: _manifest([_entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16")]),
+    }
 
 
 async def _assert_not_tested(cfg, summary, notifier, needle):
@@ -1180,8 +1256,12 @@ async def test_recover_after_restart_and_container_sweep(tmp_path):
     (cfg.restore_dir / f"drill-{old_id}" / DRILL_MARKER).write_text(old_id)
     # Not ours: user restores, wrong name format, no marker, mismatching marker.
     kept = []
-    for name, marker in (("restore-123", None), ("drill-recovery", "drill-recovery"),
-                         ("drill-" + "a" * 32, None), ("drill-" + "b" * 32, "c" * 32)):
+    for name, marker in (
+        ("restore-123", None),
+        ("drill-recovery", "drill-recovery"),
+        ("drill-" + "a" * 32, None),
+        ("drill-" + "b" * 32, "c" * 32),
+    ):
         d = cfg.restore_dir / name
         (d / "data").mkdir(parents=True)
         (d / "data" / "important.txt").write_text("user data")

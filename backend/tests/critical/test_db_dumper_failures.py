@@ -8,13 +8,12 @@ Validates that the DB dumper correctly detects and reports:
 """
 
 import logging
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.models.discovery import DiscoveredDatabase
-from app.services.db_dumper import DBDumper, DumpResult
+from app.services.db_dumper import DBDumper
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +28,7 @@ def dumper(tmp_path):
     return DBDumper(docker_client, config)
 
 
-def _make_db(container_name="test-pg", db_type="postgres", db_name="testdb",
-             host_path=None):
+def _make_db(container_name="test-pg", db_type="postgres", db_name="testdb", host_path=None):
     """Create a test DiscoveredDatabase."""
     return DiscoveredDatabase(
         container_name=container_name,
@@ -98,9 +96,7 @@ class TestNonZeroExitCode:
         container.attrs = {"Config": {"Env": ["POSTGRES_USER=postgres"]}}
         # Return exit code 1 with an error on stderr
         stderr_msg = b"pg_dump: error: connection refused"
-        container.exec_run = MagicMock(return_value=(
-            1, iter([(None, stderr_msg)])
-        ))
+        container.exec_run = MagicMock(return_value=(1, iter([(None, stderr_msg)])))
         dumper.docker.containers.get = MagicMock(return_value=container)
 
         result = dumper._dump_postgres_blocking(db)
@@ -116,9 +112,7 @@ class TestNonZeroExitCode:
         container.attrs = {"Config": {"Env": ["MYSQL_ROOT_PASSWORD=secret"]}}
         container.image.tags = ["mariadb:11"]
         stderr_msg = b"mysqldump: Access denied for user 'root'"
-        container.exec_run = MagicMock(return_value=(
-            2, iter([(None, stderr_msg)])
-        ))
+        container.exec_run = MagicMock(return_value=(2, iter([(None, stderr_msg)])))
         dumper.docker.containers.get = MagicMock(return_value=container)
 
         result = dumper._dump_mariadb_blocking(db)
@@ -133,9 +127,7 @@ class TestContainerErrors:
     def test_container_not_found_returns_failed(self, dumper):
         """Attempting to dump a missing container should report failed."""
         db = _make_db()
-        dumper.docker.containers.get = MagicMock(
-            side_effect=Exception("No such container: test-pg")
-        )
+        dumper.docker.containers.get = MagicMock(side_effect=Exception("No such container: test-pg"))
 
         result = dumper._dump_postgres_blocking(db)
 
@@ -181,9 +173,7 @@ class TestCredentialRedactionInDumper:
     def test_postgres_internal_catch_includes_error(self, dumper):
         """_dump_postgres_blocking internal catch preserves the error message."""
         db = _make_db()
-        dumper.docker.containers.get = MagicMock(
-            side_effect=Exception("No such container: test-pg")
-        )
+        dumper.docker.containers.get = MagicMock(side_effect=Exception("No such container: test-pg"))
 
         result = dumper._dump_postgres_blocking(db)
 

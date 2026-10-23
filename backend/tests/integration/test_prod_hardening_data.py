@@ -77,10 +77,13 @@ async def test_create_cloud_target_writes_rclone_section_and_delete_removes_it(c
 
 async def test_setup_with_cloud_storage_writes_rclone_section(client):
     cm = _attach_cloud_manager(client)
-    resp = await client.post("/api/auth/setup", json={
-        "encryption_password": "test-password",
-        "storage": {"type": "b2", "key_id": "KID", "app_key": "AKEY", "bucket": "bkt"},
-    })
+    resp = await client.post(
+        "/api/auth/setup",
+        json={
+            "encryption_password": "test-password",
+            "storage": {"type": "b2", "key_id": "KID", "app_key": "AKEY", "bucket": "bkt"},
+        },
+    )
     assert resp.status_code == 201, resp.text
     assert resp.json()["target_created"] is True
     assert "account = KID" in cm.rclone_config.read_text()
@@ -92,8 +95,11 @@ async def test_oauth_complete_writes_rclone_section(client):
     _oauth_pending.clear()
     data = await do_setup(client)
     cm = _attach_cloud_manager(client)
-    start = await client.post("/api/targets/oauth/start", json={"provider": "dropbox", "client_id": "cid"},
-                              headers=auth_headers(data["api_key"]))
+    start = await client.post(
+        "/api/targets/oauth/start",
+        json={"provider": "dropbox", "client_id": "cid"},
+        headers=auth_headers(data["api_key"]),
+    )
     state = start.json()["state"]
 
     token_resp = MagicMock(status_code=200)
@@ -103,9 +109,11 @@ async def test_oauth_complete_writes_rclone_section(client):
     http_client.__aenter__ = AsyncMock(return_value=http_client)
     http_client.__aexit__ = AsyncMock(return_value=False)
     with patch("httpx.AsyncClient", return_value=http_client):
-        resp = await client.post("/api/targets/oauth/complete",
-                                 json={"provider": "dropbox", "code": "c", "state": state},
-                                 headers=auth_headers(data["api_key"]))
+        resp = await client.post(
+            "/api/targets/oauth/complete",
+            json={"provider": "dropbox", "code": "c", "state": state},
+            headers=auth_headers(data["api_key"]),
+        )
     assert resp.status_code == 200, resp.text
     target_id = resp.json()["id"]
     content = cm.rclone_config.read_text()
@@ -120,14 +128,24 @@ async def test_concurrent_rclone_writes_do_not_lose_sections(tmp_path):
         return MagicMock(returncode=0, stdout="OBS", stderr="")
 
     with patch("app.services.cloud_manager.run_command", side_effect=slow_obscure):
-        await asyncio.gather(*[
-            cm.write_target_config({
-                "id": f"t{i}",
-                "type": "sftp" if i % 2 else "b2",
-                "config": {"host": "nas.local", "username": "u", "password": "p", "key_id": "k", "app_key": "a"},
-            })
-            for i in range(12)
-        ])
+        await asyncio.gather(
+            *[
+                cm.write_target_config(
+                    {
+                        "id": f"t{i}",
+                        "type": "sftp" if i % 2 else "b2",
+                        "config": {
+                            "host": "nas.local",
+                            "username": "u",
+                            "password": "p",
+                            "key_id": "k",
+                            "app_key": "a",
+                        },
+                    }
+                )
+                for i in range(12)
+            ]
+        )
     content = cm.rclone_config.read_text()
     for i in range(12):
         assert f"[t{i}]" in content
@@ -156,9 +174,16 @@ async def test_export_import_round_trip_keeps_target_secrets(client):
     api_key = data["api_key"]
     created = await client.post(
         "/api/targets",
-        json={"name": "S3", "type": "s3",
-              "config": {"endpoint": "https://s3.example.com", "access_key": "AKIA", "secret_key": "TOPSECRET",
-                         "bucket": "bkt"}},
+        json={
+            "name": "S3",
+            "type": "s3",
+            "config": {
+                "endpoint": "https://s3.example.com",
+                "access_key": "AKIA",
+                "secret_key": "TOPSECRET",
+                "bucket": "bkt",
+            },
+        },
         headers=auth_headers(api_key),
     )
     target_id = created.json()["id"]
@@ -174,8 +199,9 @@ async def test_export_import_round_trip_keeps_target_secrets(client):
 
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
-        row = await (await db.execute("SELECT config, status FROM storage_targets WHERE id = ?",
-                                      (target_id,))).fetchone()
+        row = await (
+            await db.execute("SELECT config, status FROM storage_targets WHERE id = ?", (target_id,))
+        ).fetchone()
     assert row[0].startswith("enc:v1:")  # encrypted at rest
     cfg = decrypt_config(row[0], str(_app(client).state.config.config_dir))
     assert cfg["secret_key"] == "TOPSECRET"
@@ -185,12 +211,24 @@ async def test_export_import_round_trip_keeps_target_secrets(client):
 
 async def test_import_new_target_with_redacted_secret_flags_it(client):
     data = await do_setup(client)
-    resp = await _post_yaml(client, data["api_key"], {"arkive_config": {"storage_targets": [
-        {"id": "newb2", "name": "B2", "type": "b2",
-         "config": {"key_id": "********", "app_key": "********", "bucket": "bkt"}},
-        {"id": "bad-type", "name": "X", "type": "ftp", "config": {}},
-        {"id": "inj", "name": "Inj", "type": "sftp", "config": {"host": "h\nssh = id", "username": "u"}},
-    ]}})
+    resp = await _post_yaml(
+        client,
+        data["api_key"],
+        {
+            "arkive_config": {
+                "storage_targets": [
+                    {
+                        "id": "newb2",
+                        "name": "B2",
+                        "type": "b2",
+                        "config": {"key_id": "********", "app_key": "********", "bucket": "bkt"},
+                    },
+                    {"id": "bad-type", "name": "X", "type": "ftp", "config": {}},
+                    {"id": "inj", "name": "Inj", "type": "sftp", "config": {"host": "h\nssh = id", "username": "u"}},
+                ]
+            }
+        },
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["restored"]["storage_targets"] == 1
@@ -215,11 +253,19 @@ async def test_import_reloads_scheduler_and_validates_jobs(client):
     _app(client).state.scheduler = scheduler
     jobs_before = (await client.get("/api/jobs", headers=auth_headers(data["api_key"]))).json()["items"]
 
-    resp = await _post_yaml(client, data["api_key"], {"arkive_config": {"backup_jobs": [
-        {"id": "imp1", "name": "Nightly", "type": "full", "schedule": "0 3 * * *", "enabled": True},
-        {"id": "imp2", "name": "Bad cron", "type": "full", "schedule": "every night"},
-        {"id": "imp3", "name": "Bad type", "type": "rm -rf", "schedule": "0 3 * * *"},
-    ]}})
+    resp = await _post_yaml(
+        client,
+        data["api_key"],
+        {
+            "arkive_config": {
+                "backup_jobs": [
+                    {"id": "imp1", "name": "Nightly", "type": "full", "schedule": "0 3 * * *", "enabled": True},
+                    {"id": "imp2", "name": "Bad cron", "type": "full", "schedule": "every night"},
+                    {"id": "imp3", "name": "Bad type", "type": "rm -rf", "schedule": "0 3 * * *"},
+                ]
+            }
+        },
+    )
     assert resp.status_code == 200, resp.text
     assert resp.json()["restored"]["backup_jobs"] == 1
 
@@ -231,10 +277,18 @@ async def test_import_reloads_scheduler_and_validates_jobs(client):
 
 async def test_import_rejects_invalid_settings_values(client):
     data = await do_setup(client)
-    resp = await _post_yaml(client, data["api_key"], {"arkive_config": {"settings": [
-        {"key": "keep_daily", "value": "7d"},
-        {"key": "theme", "value": "light"},
-    ]}})
+    resp = await _post_yaml(
+        client,
+        data["api_key"],
+        {
+            "arkive_config": {
+                "settings": [
+                    {"key": "keep_daily", "value": "7d"},
+                    {"key": "theme", "value": "light"},
+                ]
+            }
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["restored"]["settings"] == 1
     settings = await client.get("/api/settings", headers=auth_headers(data["api_key"]))
@@ -329,8 +383,12 @@ async def test_restore_conflict_leaves_no_running_row(client, tmp_path):
     try:
         resp = await client.post(
             "/api/restore",
-            json={"target": target_id, "snapshot_id": "abc123", "paths": ["/data"],
-                  "restore_to": str(config_dir / "restores" / "x")},
+            json={
+                "target": target_id,
+                "snapshot_id": "abc123",
+                "paths": ["/data"],
+                "restore_to": str(config_dir / "restores" / "x"),
+            },
             headers=auth_headers(api_key),
         )
     finally:
@@ -361,15 +419,18 @@ async def test_restore_test_skips_oversized_files_and_uses_restore_dir(client, t
         return {"status": "success"}
 
     engine = MagicMock()
-    engine.ls = AsyncMock(return_value=[
-        {"name": "huge.img", "type": "file", "size": MAX_RESTORE_TEST_BYTES + 1},
-        {"name": "small.txt", "type": "file", "size": 5},
-    ])
+    engine.ls = AsyncMock(
+        return_value=[
+            {"name": "huge.img", "type": "file", "size": MAX_RESTORE_TEST_BYTES + 1},
+            {"name": "small.txt", "type": "file", "size": 5},
+        ]
+    )
     engine.restore = AsyncMock(side_effect=fake_restore)
     _app(client).state.backup_engine = engine
 
-    resp = await client.post("/api/restore/test", json={"snapshot_id": "abc123", "target_id": target_id},
-                             headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/restore/test", json={"snapshot_id": "abc123", "target_id": target_id}, headers=auth_headers(api_key)
+    )
     body = resp.json()
     assert body["status"] == "success", body
     assert body["file"] == "/small.txt" and body["size_bytes"] == 5
@@ -386,9 +447,11 @@ async def test_restore_test_refuses_explicit_oversized_file(client, tmp_path):
     engine.ls = AsyncMock(return_value=[{"name": "vm.img", "type": "file", "size": MAX_RESTORE_TEST_BYTES * 4}])
     engine.restore = AsyncMock()
     _app(client).state.backup_engine = engine
-    resp = await client.post("/api/restore/test",
-                             json={"snapshot_id": "abc123", "target_id": target_id, "path": "/mnt/vm.img"},
-                             headers=auth_headers(data["api_key"]))
+    resp = await client.post(
+        "/api/restore/test",
+        json={"snapshot_id": "abc123", "target_id": target_id, "path": "/mnt/vm.img"},
+        headers=auth_headers(data["api_key"]),
+    )
     assert resp.json()["status"] == "failed"
     assert "too large" in resp.json()["error"]
     engine.restore.assert_not_awaited()
@@ -412,10 +475,12 @@ async def test_verify_engine_restore_test_uses_restore_dir_and_size_cap(tmp_path
     config = ArkiveConfig(config_dir=tmp_path)
     backup_engine = MagicMock()
     backup_engine.snapshots = AsyncMock(return_value=[{"short_id": "abcd1234"}])
-    backup_engine.ls = AsyncMock(return_value=[
-        {"name": "big.bin", "type": "file", "size": MAX_RESTORE_TEST_BYTES + 1},
-        {"name": "a.txt", "type": "file", "size": 3},
-    ])
+    backup_engine.ls = AsyncMock(
+        return_value=[
+            {"name": "big.bin", "type": "file", "size": MAX_RESTORE_TEST_BYTES + 1},
+            {"name": "a.txt", "type": "file", "size": 3},
+        ]
+    )
     seen = {}
 
     async def fake_restore(target, snapshot_id, paths, restore_to):
@@ -459,10 +524,12 @@ async def test_deleted_target_no_longer_counts_toward_trust_score(client, tmp_pa
     drop = await _create_local_target(client, api_key, tmp_path, name="Drop")
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
-        await db.execute("INSERT INTO verification_runs (id, target_id, status, trust_score) "
-                         "VALUES ('v1', ?, 'passed', 90)", (keep,))
-        await db.execute("INSERT INTO verification_runs (id, target_id, status, trust_score) "
-                         "VALUES ('v2', ?, 'failed', 10)", (drop,))
+        await db.execute(
+            "INSERT INTO verification_runs (id, target_id, status, trust_score) VALUES ('v1', ?, 'passed', 90)", (keep,)
+        )
+        await db.execute(
+            "INSERT INTO verification_runs (id, target_id, status, trust_score) VALUES ('v2', ?, 'failed', 10)", (drop,)
+        )
         await db.commit()
     assert (await client.get("/api/verification", headers=auth_headers(api_key))).json()["trust_score"] == 50
 
@@ -477,10 +544,16 @@ async def test_running_verification_does_not_hide_last_score(client, tmp_path):
     api_key = data["api_key"]
     target = await _create_local_target(client, api_key, tmp_path)
     async with aiosqlite.connect(_app(client).state.config.db_path) as db:
-        await db.execute("INSERT INTO verification_runs (id, target_id, status, trust_score, started_at) "
-                         "VALUES ('v1', ?, 'passed', 80, '2026-01-01T00:00:00Z')", (target,))
-        await db.execute("INSERT INTO verification_runs (id, target_id, status, trust_score, started_at) "
-                         "VALUES ('v2', ?, 'running', 0, '2026-01-02T00:00:00Z')", (target,))
+        await db.execute(
+            "INSERT INTO verification_runs (id, target_id, status, trust_score, started_at) "
+            "VALUES ('v1', ?, 'passed', 80, '2026-01-01T00:00:00Z')",
+            (target,),
+        )
+        await db.execute(
+            "INSERT INTO verification_runs (id, target_id, status, trust_score, started_at) "
+            "VALUES ('v2', ?, 'running', 0, '2026-01-02T00:00:00Z')",
+            (target,),
+        )
         await db.commit()
     status = (await client.get("/api/status", headers=auth_headers(api_key))).json()
     assert status["trust_score"] == 80
@@ -498,10 +571,10 @@ async def test_refresh_snapshots_keeps_cache_when_listing_returns_nothing(client
     target = await _create_local_target(client, api_key, tmp_path)
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
-        await db.execute("INSERT INTO snapshots (id, target_id, full_id, time) VALUES ('s1', ?, 'f1', 't')",
-                         (target,))
-        await db.execute("UPDATE storage_targets SET snapshot_count = 1, total_size_bytes = 500 WHERE id = ?",
-                         (target,))
+        await db.execute("INSERT INTO snapshots (id, target_id, full_id, time) VALUES ('s1', ?, 'f1', 't')", (target,))
+        await db.execute(
+            "UPDATE storage_targets SET snapshot_count = 1, total_size_bytes = 500 WHERE id = ?", (target,)
+        )
         await db.commit()
     engine = MagicMock()
     engine.snapshots = AsyncMock(return_value=[])  # what a restic error looks like
@@ -510,8 +583,9 @@ async def test_refresh_snapshots_keeps_cache_when_listing_returns_nothing(client
     assert resp.status_code == 200
     assert resp.json()["skipped"][0]["target_id"] == target
     async with aiosqlite.connect(db_path) as db:
-        row = await (await db.execute("SELECT snapshot_count, total_size_bytes FROM storage_targets WHERE id = ?",
-                                      (target,))).fetchone()
+        row = await (
+            await db.execute("SELECT snapshot_count, total_size_bytes FROM storage_targets WHERE id = ?", (target,))
+        ).fetchone()
         snaps = (await (await db.execute("SELECT COUNT(*) FROM snapshots")).fetchone())[0]
     assert tuple(row) == (1, 500) and snaps == 1
 
@@ -522,8 +596,7 @@ async def test_refresh_snapshots_prunes_forgotten_snapshots(client, tmp_path):
     target = await _create_local_target(client, api_key, tmp_path)
     db_path = _app(client).state.config.db_path
     async with aiosqlite.connect(db_path) as db:
-        await db.execute("INSERT INTO snapshots (id, target_id, full_id, time) VALUES ('old1', ?, 'f', 't')",
-                         (target,))
+        await db.execute("INSERT INTO snapshots (id, target_id, full_id, time) VALUES ('old1', ?, 'f', 't')", (target,))
         await db.commit()
     engine = MagicMock()
     engine.snapshots = AsyncMock(return_value=[{"id": "new1full", "short_id": "new1", "time": "t", "size": 7}])
@@ -546,8 +619,9 @@ async def test_run_logs_found_for_old_runs(client):
             "VALUES ('backup', 'run_started', 'old run', ?, '2020-01-01T00:00:00Z')",
             (json.dumps({"run_id": "oldrun"}),),
         )
-        await db.execute("INSERT INTO activity_log (type, action, message, details) "
-                         "VALUES ('system', 'x', 'broken', 'not json')")
+        await db.execute(
+            "INSERT INTO activity_log (type, action, message, details) VALUES ('system', 'x', 'broken', 'not json')"
+        )
         await db.executemany(
             "INSERT INTO activity_log (type, action, message, details) VALUES ('system', 'noise', 'n', '{}')",
             [() for _ in range(2500)],
@@ -556,8 +630,9 @@ async def test_run_logs_found_for_old_runs(client):
     resp = await client.get("/api/jobs/runs/oldrun/logs?limit=10", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert [e["message"] for e in resp.json()["items"]] == ["old run"]
-    assert (await client.get("/api/jobs/runs/oldrun/logs?limit=100000",
-                             headers=auth_headers(api_key))).status_code == 422
+    assert (
+        await client.get("/api/jobs/runs/oldrun/logs?limit=100000", headers=auth_headers(api_key))
+    ).status_code == 422
 
 
 async def test_activity_rejects_negative_limit(client):
@@ -574,8 +649,9 @@ async def test_update_directory_to_duplicate_path_is_409(client, tmp_path):
     b.mkdir()
     await client.post("/api/directories", json={"path": str(a), "label": "A"}, headers=auth_headers(api_key))
     rb = await client.post("/api/directories", json={"path": str(b), "label": "B"}, headers=auth_headers(api_key))
-    resp = await client.put(f"/api/directories/{rb.json()['id']}", json={"path": str(a), "label": "B"},
-                            headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/directories/{rb.json()['id']}", json={"path": str(a), "label": "B"}, headers=auth_headers(api_key)
+    )
     assert resp.status_code == 409
 
 
@@ -603,8 +679,10 @@ async def test_logs_reads_only_the_tail(client, monkeypatch):
     data = await do_setup(client)
     log_dir = _app(client).state.config.log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps({"timestamp": f"t{i:05d}", "level": "INFO", "component": "c", "message": f"m{i}"})
-             for i in range(2000)]
+    lines = [
+        json.dumps({"timestamp": f"t{i:05d}", "level": "INFO", "component": "c", "message": f"m{i}"})
+        for i in range(2000)
+    ]
     (log_dir / "arkive.log").write_text("\n".join(lines) + "\n")
     monkeypatch.setattr(logs_mod, "MAX_SCAN_BYTES", 10_000)
     monkeypatch.setattr(logs_mod._read_log_tail, "__defaults__", (10_000,))
@@ -651,11 +729,14 @@ def test_cli_restic_env_uses_engine_repo_and_encryption_password(tmp_path):
     db_path = tmp_path / "arkive.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA_SQL)
-    conn.execute("INSERT INTO settings (key, value, encrypted) VALUES ('encryption_password', ?, 1)",
-                 (encrypt_value("restic-pass"),))
-    conn.execute("INSERT INTO storage_targets (id, name, type, config) VALUES ('sf1', 'S', 'sftp', ?)",
-                 (encrypt_config({"host": "h", "username": "u", "password": "sftp-login", "remote_path": "bk"},
-                                 str(tmp_path)),))
+    conn.execute(
+        "INSERT INTO settings (key, value, encrypted) VALUES ('encryption_password', ?, 1)",
+        (encrypt_value("restic-pass"),),
+    )
+    conn.execute(
+        "INSERT INTO storage_targets (id, name, type, config) VALUES ('sf1', 'S', 'sftp', ?)",
+        (encrypt_config({"host": "h", "username": "u", "password": "sftp-login", "remote_path": "bk"}, str(tmp_path)),),
+    )
     conn.commit()
     conn.close()
     try:

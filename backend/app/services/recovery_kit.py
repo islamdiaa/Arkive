@@ -8,7 +8,7 @@ repository lives, and how to restore with or without Arkive.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -27,16 +27,14 @@ _SECRET_MARKERS = ("key", "secret", "password", "token", "credential", "pass")
 
 def _public_details(config: dict) -> dict:
     return {
-        k: v for k, v in config.items()
-        if isinstance(v, (str, int, float, bool))
-        and not any(marker in k.lower() for marker in _SECRET_MARKERS)
+        k: v
+        for k, v in config.items()
+        if isinstance(v, (str, int, float, bool)) and not any(marker in k.lower() for marker in _SECRET_MARKERS)
     }
 
 
 async def _encryption_password(db: aiosqlite.Connection) -> str:
-    cursor = await db.execute(
-        "SELECT key, value FROM settings WHERE key IN ('encryption_password', 'restic_password')"
-    )
+    cursor = await db.execute("SELECT key, value FROM settings WHERE key IN ('encryption_password', 'restic_password')")
     values = {row[0]: row[1] for row in await cursor.fetchall()}
     raw = values.get("encryption_password") or values.get("restic_password") or ""
     return decrypt_value(raw) if raw else ""
@@ -66,28 +64,30 @@ async def build_recovery_kit(db: aiosqlite.Connection, config: ArkiveConfig, doc
         host_path = None
         if target_type == "local":
             host_path = await asyncio.to_thread(host_path_for, repository, docker_client)
-        targets.append({
-            "id": target_id,
-            "name": name,
-            "type": target_type,
-            "enabled": bool(enabled),
-            "repository": repository,
-            "host_path": host_path,
-            "details": _public_details(target_config),
-        })
+        targets.append(
+            {
+                "id": target_id,
+                "name": name,
+                "type": target_type,
+                "enabled": bool(enabled),
+                "repository": repository,
+                "host_path": host_path,
+                "details": _public_details(target_config),
+            }
+        )
 
     cursor = await db.execute("SELECT value FROM settings WHERE key = 'server_name'")
     row = await cursor.fetchone()
     configured_name = str(row[0]).strip() if row and row[0] else ""
     try:
         server_name = await asyncio.wait_for(
-            asyncio.to_thread(resolve_hostname, docker_client=docker_client,
-                              settings={"server_name": configured_name}),
-            timeout=10)
+            asyncio.to_thread(resolve_hostname, docker_client=docker_client, settings={"server_name": configured_name}),
+            timeout=10,
+        )
     except Exception:
         server_name = configured_name
 
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     instructions = _instructions(targets, str(config.dump_dir))
     kit = {
         "generated_at": generated_at,

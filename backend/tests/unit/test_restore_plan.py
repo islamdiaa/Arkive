@@ -1,8 +1,8 @@
 """Unit tests for app.services.restore_plan — RestorePlanGenerator."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
-from pathlib import Path
 
 from app.services.restore_plan import RestorePlanGenerator
 

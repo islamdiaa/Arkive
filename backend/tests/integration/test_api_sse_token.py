@@ -15,6 +15,7 @@ Covers:
 11. prune_sse_tokens removes only expired tokens
 12. Garbage token is rejected
 """
+
 import pytest
 
 from tests.conftest import auth_headers, do_setup
@@ -26,6 +27,7 @@ pytestmark = pytest.mark.asyncio
 async def reset_sse_tokens():
     """Reset SSE token store before each test."""
     from app.core.security import _reset_sse_tokens
+
     _reset_sse_tokens()
     yield
     _reset_sse_tokens()
@@ -53,6 +55,7 @@ async def test_sse_token_endpoint_returns_token(client):
 async def test_sse_token_is_url_safe_string(client):
     """SSE token must be a non-empty URL-safe string."""
     import re
+
     data = await do_setup(client)
     api_key = data["api_key"]
     resp = await client.post("/api/auth/sse-token", headers=auth_headers(api_key))
@@ -61,7 +64,7 @@ async def test_sse_token_is_url_safe_string(client):
     assert isinstance(token, str)
     assert len(token) > 0
     # URL-safe base64 charset: alphanumeric, hyphen, underscore
-    assert re.match(r'^[A-Za-z0-9_\-]+$', token), f"Token not URL-safe: {token}"
+    assert re.match(r"^[A-Za-z0-9_\-]+$", token), f"Token not URL-safe: {token}"
 
 
 async def test_sse_stream_with_valid_token(client):
@@ -71,7 +74,6 @@ async def test_sse_stream_with_valid_token(client):
     so we verify auth succeeds by checking the token is consumed (single-use)
     rather than inspecting the HTTP status of the streaming response.
     """
-    from app.core.security import verify_sse_token
 
     data = await do_setup(client)
     api_key = data["api_key"]
@@ -82,6 +84,7 @@ async def test_sse_stream_with_valid_token(client):
 
     # Verify the token exists before the request
     from app.core.security import _sse_tokens
+
     assert token in _sse_tokens
 
     # Make the request — auth layer runs and consumes the token before streaming starts.
@@ -161,6 +164,7 @@ async def test_rest_endpoint_header_key_accepted(client):
 async def test_expired_sse_token_rejected(client):
     """Token with past expiry timestamp is rejected."""
     from app.core.security import _sse_tokens, _sse_tokens_lock
+
     await do_setup(client)
     # Insert a token that's already expired
     with _sse_tokens_lock:
@@ -171,8 +175,8 @@ async def test_expired_sse_token_rejected(client):
 
 async def test_prune_removes_only_expired_tokens(client):
     """prune_sse_tokens removes expired entries, keeps live ones."""
-    import time
-    from app.core.security import _sse_tokens, _sse_tokens_lock, prune_sse_tokens, generate_sse_token
+    from app.core.security import _sse_tokens, _sse_tokens_lock, generate_sse_token, prune_sse_tokens
+
     await do_setup(client)
     # Generate a live token
     live_token = generate_sse_token()

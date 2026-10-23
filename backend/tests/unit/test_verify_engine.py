@@ -9,32 +9,29 @@ Tests verify:
 - DB dump validation (SQLite and Postgres)
 """
 
-import json
-import os
 import sqlite3
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # Forked to avoid aiosqlite daemon thread leaks across test files.
 pytestmark = pytest.mark.forked
 
 import aiosqlite
 
-from app.core.database import SCHEMA_SQL, MIGRATIONS
+from app.core.database import MIGRATIONS, SCHEMA_SQL
+from app.services.scheduler import (
+    SYSTEM_JOB_INTEGRITY_VERIFY,
+    ArkiveScheduler,
+)
 from app.services.verify_engine import (
+    WEIGHT_DB_INTEGRITY,
+    WEIGHT_FILE_INTEGRITY,
+    WEIGHT_RECENCY,
     VerifyEngine,
     compute_recency_score,
     compute_trust_score,
-    WEIGHT_RECENCY,
-    WEIGHT_FILE_INTEGRITY,
-    WEIGHT_DB_INTEGRITY,
 )
-from app.services.scheduler import (
-    ArkiveScheduler,
-    SYSTEM_JOB_INTEGRITY_VERIFY,
-)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -53,6 +50,7 @@ def mock_config(tmp_path):
     config.restore_dir = tmp_path / "restores"
 
     from app.core.security import _load_fernet_from_dir, _reset_fernet
+
     _reset_fernet()
     _load_fernet_from_dir(str(tmp_path))
 
@@ -61,8 +59,7 @@ def mock_config(tmp_path):
     for version in sorted(MIGRATIONS):
         for sql in MIGRATIONS[version]:
             conn.execute(sql)
-    conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-                 (max(MIGRATIONS),))
+    conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (max(MIGRATIONS),))
     conn.commit()
     conn.close()
     return config
@@ -72,13 +69,24 @@ def mock_config(tmp_path):
 def mock_backup_engine():
     engine = MagicMock()
     engine.check = AsyncMock(return_value={"status": "success", "output": "no errors found"})
-    engine.snapshots = AsyncMock(return_value=[
-        {"id": "abcd1234abcd1234", "short_id": "abcd1234", "time": "2026-03-17T10:00:00Z",
-         "hostname": "test-server", "paths": ["/config/dumps"], "tags": [], "size": 1024},
-    ])
-    engine.ls = AsyncMock(return_value=[
-        {"name": "testfile.txt", "type": "file", "size": 100, "modified": "2026-03-17T10:00:00Z"},
-    ])
+    engine.snapshots = AsyncMock(
+        return_value=[
+            {
+                "id": "abcd1234abcd1234",
+                "short_id": "abcd1234",
+                "time": "2026-03-17T10:00:00Z",
+                "hostname": "test-server",
+                "paths": ["/config/dumps"],
+                "tags": [],
+                "size": 1024,
+            },
+        ]
+    )
+    engine.ls = AsyncMock(
+        return_value=[
+            {"name": "testfile.txt", "type": "file", "size": 100, "modified": "2026-03-17T10:00:00Z"},
+        ]
+    )
     engine.restore = AsyncMock(return_value={"status": "success", "output": "restored 1 file"})
     return engine
 
@@ -100,8 +108,7 @@ def mock_orchestrator():
 # ---------------------------------------------------------------------------
 
 
-async def _insert_target(db_path, target_id="t1", name="Local", type_="local",
-                         enabled=1, config_str="{}"):
+async def _insert_target(db_path, target_id="t1", name="Local", type_="local", enabled=1, config_str="{}"):
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """INSERT OR REPLACE INTO storage_targets (id, name, type, enabled, config, status)
@@ -114,9 +121,7 @@ async def _insert_target(db_path, target_id="t1", name="Local", type_="local",
 async def _insert_successful_run(db_path, target_id="t1", completed_at="2026-03-17T10:00:00Z"):
     """Insert a successful backup job run for recency testing."""
     async with aiosqlite.connect(db_path) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')"
-        )
+        await db.execute("INSERT OR IGNORE INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')")
         await db.execute(
             """INSERT INTO job_runs (id, job_id, status, trigger, completed_at)
                VALUES ('r1', 'j1', 'success', 'scheduled', ?)""",
@@ -306,11 +311,13 @@ class TestSchedulerIntegration:
     @pytest.fixture
     def mock_verify_engine(self):
         ve = MagicMock()
-        ve.verify_all_targets = AsyncMock(return_value={
-            "status": "completed",
-            "overall_trust_score": 85.0,
-            "targets": [],
-        })
+        ve.verify_all_targets = AsyncMock(
+            return_value={
+                "status": "completed",
+                "overall_trust_score": 85.0,
+                "targets": [],
+            }
+        )
         return ve
 
     @pytest.fixture
@@ -344,10 +351,7 @@ class TestSchedulerIntegration:
         """Calling _register_system_jobs twice does not duplicate the job."""
         scheduler._register_system_jobs()
         scheduler._register_system_jobs()
-        count = sum(
-            1 for j in scheduler.scheduler.get_jobs()
-            if j.id == SYSTEM_JOB_INTEGRITY_VERIFY
-        )
+        count = sum(1 for j in scheduler.scheduler.get_jobs() if j.id == SYSTEM_JOB_INTEGRITY_VERIFY)
         assert count == 1
 
     @pytest.mark.asyncio
@@ -419,7 +423,6 @@ class TestErrorHandling:
         await _insert_target(mock_config.db_path, "t2", "B2", "b2")
 
         call_count = 0
-        original_check = mock_backup_engine.check
 
         async def check_side_effect(target):
             nonlocal call_count
@@ -430,8 +433,10 @@ class TestErrorHandling:
 
         mock_backup_engine.check.side_effect = check_side_effect
 
-        with patch.object(verify_engine.lock_manager, "is_backup_running", return_value=False), \
-             patch.object(verify_engine.lock_manager, "is_restore_running", return_value=False):
+        with (
+            patch.object(verify_engine.lock_manager, "is_backup_running", return_value=False),
+            patch.object(verify_engine.lock_manager, "is_restore_running", return_value=False),
+        ):
             result = await verify_engine.verify_all_targets()
 
         assert result["status"] == "completed"
@@ -440,8 +445,10 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_no_targets(self, verify_engine, mock_config):
         """Returns skipped when no enabled targets exist."""
-        with patch.object(verify_engine.lock_manager, "is_backup_running", return_value=False), \
-             patch.object(verify_engine.lock_manager, "is_restore_running", return_value=False):
+        with (
+            patch.object(verify_engine.lock_manager, "is_backup_running", return_value=False),
+            patch.object(verify_engine.lock_manager, "is_restore_running", return_value=False),
+        ):
             result = await verify_engine.verify_all_targets()
 
         assert result["status"] == "skipped"
@@ -475,6 +482,7 @@ class TestDBDumpValidation:
     async def test_no_dump_dir(self, mock_config, mock_backup_engine):
         """Missing dump directory returns skipped with score 1.0."""
         import shutil
+
         shutil.rmtree(str(mock_config.dump_dir), ignore_errors=True)
 
         engine = VerifyEngine(config=mock_config, backup_engine=mock_backup_engine)
@@ -551,9 +559,7 @@ class TestRecencyComputation:
     @pytest.mark.asyncio
     async def test_recent_backup(self, verify_engine, mock_config):
         """Recent successful backup returns computed hours."""
-        await _insert_successful_run(
-            mock_config.db_path, "t1", "2026-03-18T10:00:00Z"
-        )
+        await _insert_successful_run(mock_config.db_path, "t1", "2026-03-18T10:00:00Z")
         result = await verify_engine._compute_recency("t1")
         assert result["hours_since_backup"] is not None
         assert result["last_backup"] == "2026-03-18T10:00:00Z"

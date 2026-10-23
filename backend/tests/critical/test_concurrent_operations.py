@@ -9,7 +9,6 @@ import json
 import logging
 
 import aiosqlite
-import pytest
 import pytest_asyncio
 
 from app.core.database import init_db
@@ -21,8 +20,7 @@ logger = logging.getLogger(__name__)
 class FakeContainer:
     """Minimal container object for discovery persistence tests."""
 
-    def __init__(self, name, image="test:latest", status="running",
-                 databases=None, compose_project=None):
+    def __init__(self, name, image="test:latest", status="running", databases=None, compose_project=None):
         self.name = name
         self.image = image
         self.status = status
@@ -66,9 +64,12 @@ class TestConcurrentDiscoveryPersistence:
     async def test_persist_discovery_results_writes_containers(self, test_db):
         """Discovery results are correctly persisted to database."""
         containers = [
-            FakeContainer("postgres-1", databases=[
-                FakeDatabase("postgres-1", "postgres", "mydb"),
-            ]),
+            FakeContainer(
+                "postgres-1",
+                databases=[
+                    FakeDatabase("postgres-1", "postgres", "mydb"),
+                ],
+            ),
             FakeContainer("redis-1"),
         ]
 
@@ -94,7 +95,9 @@ class TestConcurrentDiscoveryPersistence:
         """Re-persisting with fewer containers removes the stale ones."""
         # First scan: 3 containers
         containers_v1 = [
-            FakeContainer("c1"), FakeContainer("c2"), FakeContainer("c3"),
+            FakeContainer("c1"),
+            FakeContainer("c2"),
+            FakeContainer("c3"),
         ]
         async with aiosqlite.connect(test_db) as db:
             await persist_discovery_results(db, containers_v1)

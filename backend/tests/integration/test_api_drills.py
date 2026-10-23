@@ -38,10 +38,28 @@ async def _seed(client):
             """INSERT INTO restore_drill_results (drill_id, container_name, db_type, db_name, dump_file,
                    dump_size_bytes, status, detail, duration_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                ("d-new", "pg", "postgres", "appdb", "pg_appdb_20261018_030000.sql", 4096, "failed",
-                 "psql load exited with code 3: ERROR: extension missing", 12.5),
-                ("d-new", "vaultwarden", "sqlite", "db.sqlite3", "vaultwarden_db.sqlite3_20261018_030000.sqlite3",
-                 2048, "passed", "integrity_check ok; 9 tables", 0.4),
+                (
+                    "d-new",
+                    "pg",
+                    "postgres",
+                    "appdb",
+                    "pg_appdb_20261018_030000.sql",
+                    4096,
+                    "failed",
+                    "psql load exited with code 3: ERROR: extension missing",
+                    12.5,
+                ),
+                (
+                    "d-new",
+                    "vaultwarden",
+                    "sqlite",
+                    "db.sqlite3",
+                    "vaultwarden_db.sqlite3_20261018_030000.sqlite3",
+                    2048,
+                    "passed",
+                    "integrity_check ok; 9 tables",
+                    0.4,
+                ),
             ],
         )
         await db.commit()
@@ -73,9 +91,19 @@ async def test_list_and_detail(client):
     newest = body["items"][0]
     assert newest["target_name"] == "Local NAS"
     assert set(newest) == {
-        "id", "trigger", "status", "target_id", "target_name", "snapshot_id", "started_at",
-        "completed_at", "duration_seconds", "databases_tested", "databases_passed",
-        "databases_failed", "error_message",
+        "id",
+        "trigger",
+        "status",
+        "target_id",
+        "target_name",
+        "snapshot_id",
+        "started_at",
+        "completed_at",
+        "duration_seconds",
+        "databases_tested",
+        "databases_passed",
+        "databases_failed",
+        "error_message",
     }
     assert "results" not in newest
 
@@ -86,8 +114,14 @@ async def test_list_and_detail(client):
     assert detail["status"] == "failed" and detail["target_name"] == "Local NAS"
     assert [r["status"] for r in detail["results"]] == ["failed", "passed"]
     assert set(detail["results"][0]) == {
-        "container_name", "db_type", "db_name", "dump_file", "dump_size_bytes", "status",
-        "detail", "duration_seconds",
+        "container_name",
+        "db_type",
+        "db_name",
+        "dump_file",
+        "dump_size_bytes",
+        "status",
+        "detail",
+        "duration_seconds",
     }
 
     assert (await client.get("/api/drills/nope", headers=headers)).status_code == 404
@@ -155,15 +189,21 @@ async def test_status_reports_last_drill_and_degrades_on_failure(client, monkeyp
         # Target reachable so only the drill can degrade the status.
         await db.execute("UPDATE storage_targets SET status = 'online'")
         # A drill in progress doesn't hide the last finished one.
-        await db.execute("INSERT INTO restore_drills (id, status, started_at) "
-                         "VALUES ('d-running', 'running', '2026-10-25T07:00:00Z')")
+        await db.execute(
+            "INSERT INTO restore_drills (id, status, started_at) "
+            "VALUES ('d-running', 'running', '2026-10-25T07:00:00Z')"
+        )
         await db.commit()
 
     body = (await client.get("/api/status", headers=headers)).json()
     assert body["last_drill"] == {
-        "id": "d-new", "status": "failed", "started_at": "2026-10-18T07:00:00Z",
-        "completed_at": "2026-10-18T07:03:00Z", "databases_tested": 2,
-        "databases_passed": 1, "databases_failed": 1,
+        "id": "d-new",
+        "status": "failed",
+        "started_at": "2026-10-18T07:00:00Z",
+        "completed_at": "2026-10-18T07:03:00Z",
+        "databases_tested": 2,
+        "databases_passed": 1,
+        "databases_failed": 1,
     }
     assert body["status"] == ("degraded" if baseline == "ok" else baseline)
 

@@ -1,6 +1,6 @@
 """Tests for the orchestrator service — 6 test cases."""
-import pytest
-from unittest.mock import MagicMock, AsyncMock
+
+from unittest.mock import AsyncMock, MagicMock
 
 
 class TestOrchestrator:
@@ -37,7 +37,6 @@ class TestOrchestrator:
 
     def test_all_targets_fail(self):
         """All targets fail = status failed."""
-        db_results = [{"db": "postgres", "status": "success"}]
         target_results = [
             {"target": "b2", "status": "failed"},
             {"target": "dropbox", "status": "failed"},

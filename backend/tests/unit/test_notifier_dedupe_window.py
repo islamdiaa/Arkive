@@ -7,7 +7,6 @@ import pytest
 
 from app.services.notifier import MAX_PER_HOUR, THROTTLE_COOLDOWN, Notifier
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -118,9 +117,11 @@ class TestDedupeWindow:
         channels = [_make_channel("ch1", ["backup.failed"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
             r1 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "Error", "error")
@@ -137,9 +138,11 @@ class TestDedupeWindow:
         channels = [_make_channel("ch1", ["backup.failed"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 0.0
             await _send(notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "Error", "error")
@@ -162,26 +165,36 @@ class TestDedupeWindow:
 
 class TestJobScopedThrottle:
     @pytest.mark.asyncio
-    async def test_failures_of_different_jobs_are_not_cross_throttled(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_failures_of_different_jobs_are_not_cross_throttled(self, mock_config, mock_event_bus, mock_apprise):
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["backup.failed"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
-            r1 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "DB Dumps failed", "x",
-                             "error", job_id="job-db")
+            r1 = await _send(
+                notifier, mock_aiosqlite, channels, "backup.failed", "DB Dumps failed", "x", "error", job_id="job-db"
+            )
             mock_time.time.return_value = 1060.0
-            r2 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "Full Backup failed", "y",
-                             "error", job_id="job-full")
+            r2 = await _send(
+                notifier,
+                mock_aiosqlite,
+                channels,
+                "backup.failed",
+                "Full Backup failed",
+                "y",
+                "error",
+                job_id="job-full",
+            )
             mock_time.time.return_value = 1120.0
-            r3 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "DB Dumps failed", "x",
-                             "error", job_id="job-db")
+            r3 = await _send(
+                notifier, mock_aiosqlite, channels, "backup.failed", "DB Dumps failed", "x", "error", job_id="job-db"
+            )
 
         assert [r1[0]["status"], r2[0]["status"], r3[0]["status"]] == ["sent", "sent", "throttled"]
 
@@ -192,35 +205,40 @@ class TestJobScopedThrottle:
         channels = [_make_channel("ch1", ["backup.failed", "backup.success"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
-            r1 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "e",
-                             "error", job_id="j1")
+            r1 = await _send(
+                notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "e", "error", job_id="j1"
+            )
             mock_time.time.return_value = 1100.0
-            r2 = await _send(notifier, mock_aiosqlite, channels, "backup.success", "Backup ok", "ok",
-                             "success", job_id="j1")
+            r2 = await _send(
+                notifier, mock_aiosqlite, channels, "backup.success", "Backup ok", "ok", "success", job_id="j1"
+            )
             mock_time.time.return_value = 1200.0
-            r3 = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "e",
-                             "error", job_id="j1")
+            r3 = await _send(
+                notifier, mock_aiosqlite, channels, "backup.failed", "Backup failed", "e", "error", job_id="j1"
+            )
 
         assert [r1[0]["status"], r2[0]["status"], r3[0]["status"]] == ["sent", "sent", "sent"]
         assert _sent_titles(apprise_instance) == ["Backup failed", "RECOVERED: Backup ok", "Backup failed"]
 
     @pytest.mark.asyncio
-    async def test_recovery_bypasses_success_throttle_and_rate_limit(
-        self, mock_config, mock_event_bus, mock_apprise
-    ):
+    async def test_recovery_bypasses_success_throttle_and_rate_limit(self, mock_config, mock_event_bus, mock_apprise):
         """A recovery is delivered even if a success was sent recently and the hourly cap is hit."""
         apprise_mod, apprise_instance = mock_apprise
         channels = [_make_channel("ch1", ["*"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
             await _send(notifier, mock_aiosqlite, channels, "backup.success", "ok", "ok", "success", job_id="j1")
@@ -231,8 +249,7 @@ class TestJobScopedThrottle:
                 mock_time.time.return_value = 1020.0 + i
                 await _send(notifier, mock_aiosqlite, channels, f"other.event{i}", "t", "b", "info")
             mock_time.time.return_value = 1100.0
-            rec = await _send(notifier, mock_aiosqlite, channels, "backup.success", "ok", "ok", "success",
-                              job_id="j1")
+            rec = await _send(notifier, mock_aiosqlite, channels, "backup.success", "ok", "ok", "success", job_id="j1")
 
         assert rec[0]["status"] == "sent"
         assert apprise_instance.async_notify.call_args.kwargs["title"] == "RECOVERED: ok"
@@ -244,18 +261,18 @@ class TestJobScopedThrottle:
         channels = [_make_channel("ch1", ["backup.partial", "backup.success"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
-            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning",
-                        job_id="j1")
+            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning", job_id="j1")
             mock_time.time.return_value = 1100.0
             await _send(notifier, mock_aiosqlite, channels, "backup.success", "ok", "ok", "success", job_id="j1")
             mock_time.time.return_value = 1200.0
-            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning",
-                        job_id="j1")
+            await _send(notifier, mock_aiosqlite, channels, "backup.partial", "Incomplete", "e", "warning", job_id="j1")
 
         assert _sent_titles(apprise_instance) == ["Incomplete", "RECOVERED: ok", "Incomplete"]
 
@@ -265,9 +282,11 @@ class TestJobScopedThrottle:
         channels = [_make_channel("ch1", ["backup.failed", "backup.success"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
             await _send(notifier, mock_aiosqlite, channels, "backup.failed", "A failed", "e", "error", job_id="a")
@@ -282,8 +301,40 @@ class TestJobScopedThrottle:
         channels = [_make_channel("ch1", ["backup.failed"])]
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}):
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+        ):
             mock_aiosqlite.Row = MagicMock()
             r = await _send(notifier, mock_aiosqlite, channels, "backup.failed", "t", "b", severity="error")
         assert r[0]["status"] == "sent"
+
+
+class TestThrottleStatePruning:
+    def test_expired_entries_are_dropped_and_recovery_state_is_capped(self, mock_config, mock_event_bus, monkeypatch):
+        import app.services.notifier as notifier_mod
+
+        notifier = Notifier(mock_config, mock_event_bus)
+        notifier._last_sent[("ch1", "backup.failed", "deleted-job")] = 0.0
+        notifier._suppressed_counts[("ch1", "backup.failed", "deleted-job")] = 3
+        notifier._send_counts["old-channel"] = [0.0]
+        monkeypatch.setattr(notifier_mod, "MAX_TRACKED_EVENT_STATES", 2)
+        for i in range(4):
+            notifier._last_event_status[("backup.failed", f"job{i}")] = "failed"
+
+        now = 10 * 3600.0
+        notifier._last_sent[("ch1", "backup.failed", "live-job")] = now - 60
+        notifier._prune_state(now)
+
+        assert ("ch1", "backup.failed", "deleted-job") not in notifier._last_sent
+        assert ("ch1", "backup.failed", "deleted-job") not in notifier._suppressed_counts
+        assert ("ch1", "backup.failed", "live-job") in notifier._last_sent  # still in cooldown
+        assert "old-channel" not in notifier._send_counts
+        assert list(notifier._last_event_status) == [("backup.failed", "job2"), ("backup.failed", "job3")]
+
+    def test_pruning_is_rate_limited(self, mock_config, mock_event_bus):
+        notifier = Notifier(mock_config, mock_event_bus)
+        notifier._prune_state(1000.0)
+        notifier._last_sent[("ch1", "e", "")] = 0.0
+        notifier._prune_state(1000.0 + 60)  # within PRUNE_INTERVAL: untouched
+        assert ("ch1", "e", "") in notifier._last_sent

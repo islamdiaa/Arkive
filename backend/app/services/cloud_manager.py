@@ -123,12 +123,16 @@ class CloudManager:
 
         result = await run_command(
             ["rclone", "lsd", f"{target_id}:"],
-            env=env, timeout=30,
+            env=env,
+            timeout=30,
         )
 
         if result.returncode == 0:
-            return {"status": "ok", "message": "Connection successful",
-                    "latency_ms": int(result.duration_seconds * 1000)}
+            return {
+                "status": "ok",
+                "message": "Connection successful",
+                "latency_ms": int(result.duration_seconds * 1000),
+            }
         return {"status": "error", "message": redact_credentials(result.stderr[:200])}
 
     def _read_config(self) -> list[str]:

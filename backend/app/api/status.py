@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import shutil
-import time
 import sqlite3
+import time
 
 import aiosqlite
 from fastapi import APIRouter, Depends, Request
@@ -24,8 +24,8 @@ router = APIRouter(prefix="/status", tags=["status"])
 _start_time = time.time()
 
 # Disk space thresholds (bytes)
-_DISK_WARN_THRESHOLD = 500 * 1024 * 1024   # 500 MB
-_DISK_CRIT_THRESHOLD = 100 * 1024 * 1024   # 100 MB
+_DISK_WARN_THRESHOLD = 500 * 1024 * 1024  # 500 MB
+_DISK_CRIT_THRESHOLD = 100 * 1024 * 1024  # 100 MB
 
 
 def _health_alias(overall_status: str) -> str:
@@ -73,17 +73,16 @@ def _check_disk_space(config_dir: str = "/config") -> dict:
             "free_bytes": free_bytes,
             "total_bytes": total_bytes,
             "used_percent": used_pct,
-            "message": f"{used_pct}% used, {free_bytes // (1024*1024)} MB free",
+            "message": f"{used_pct}% used, {free_bytes // (1024 * 1024)} MB free",
         }
         if free_bytes < _DISK_CRIT_THRESHOLD:
             result["ok"] = False
-            result["message"] = f"CRITICAL: Only {free_bytes // (1024*1024)} MB free"
+            result["message"] = f"CRITICAL: Only {free_bytes // (1024 * 1024)} MB free"
         elif free_bytes < _DISK_WARN_THRESHOLD:
-            result["message"] = f"WARNING: Only {free_bytes // (1024*1024)} MB free"
+            result["message"] = f"WARNING: Only {free_bytes // (1024 * 1024)} MB free"
         return result
     except Exception as e:
-        return {"ok": False, "free_bytes": 0, "total_bytes": 0, "used_percent": 0,
-                "message": f"Cannot check disk: {e}"}
+        return {"ok": False, "free_bytes": 0, "total_bytes": 0, "used_percent": 0, "message": f"Cannot check disk: {e}"}
 
 
 def _check_binaries() -> dict:
@@ -141,8 +140,7 @@ async def latest_drill(db: aiosqlite.Connection) -> dict | None:
         return None
     if not row:
         return None
-    keys = ("id", "status", "started_at", "completed_at", "databases_tested",
-            "databases_passed", "databases_failed")
+    keys = ("id", "status", "started_at", "completed_at", "databases_tested", "databases_passed", "databases_failed")
     return {key: row[i] for i, key in enumerate(keys)}
 
 
@@ -249,16 +247,18 @@ async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
 
     successful_keys: set[tuple[str, str, str]] = set()
     for row in rows:
-        row_dict = dict(row) if isinstance(row, aiosqlite.Row) else {
-            "container_name": row[0],
-            "db_name": row[1],
-            "db_type": row[2],
-            "status": row[3],
-        }
+        row_dict = (
+            dict(row)
+            if isinstance(row, aiosqlite.Row)
+            else {
+                "container_name": row[0],
+                "db_name": row[1],
+                "db_type": row[2],
+                "status": row[3],
+            }
+        )
         if row_dict["status"] == "success":
-            successful_keys.add(
-                (row_dict["container_name"], row_dict["db_name"], row_dict["db_type"])
-            )
+            successful_keys.add((row_dict["container_name"], row_dict["db_name"], row_dict["db_type"]))
 
     healthy_databases = sum(1 for key in discovered_keys if key in successful_keys)
     return total_databases, healthy_databases, True
@@ -291,9 +291,7 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         issues.append(("warning", "scheduler"))
 
     # 3. Disk space
-    config_dir = str(getattr(
-        getattr(request.app.state, "config", None), "config_dir", "/config"
-    ))
+    config_dir = str(getattr(getattr(request.app.state, "config", None), "config_dir", "/config"))
     checks["disk"] = _check_disk_space(config_dir)
     if not checks["disk"]["ok"]:
         issues.append(("critical", "disk"))
@@ -340,9 +338,7 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
 
     # Last backup
     try:
-        cursor = await db.execute(
-            "SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 1"
-        )
+        cursor = await db.execute("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 1")
         last_run = await cursor.fetchone()
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         last_run = None
@@ -435,9 +431,7 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         pass
 
-    user_shares_path = str(getattr(
-        getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"
-    ))
+    user_shares_path = str(getattr(getattr(request.app.state, "config", None), "user_shares_path", "/mnt/user"))
     coverage = await evaluate_backup_coverage(
         db,
         platform=platform,

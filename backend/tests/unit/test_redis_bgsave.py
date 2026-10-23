@@ -1,11 +1,13 @@
 """Tests for Redis BGSAVE dump implementation."""
+
 import io
-import os
 import tarfile
-import pytest
 from unittest.mock import MagicMock, patch
-from app.services.db_dumper import DBDumper
+
+import pytest
+
 from app.models.discovery import DiscoveredDatabase
+from app.services.db_dumper import DBDumper
 
 
 @pytest.fixture

@@ -12,8 +12,6 @@ import asyncio
 import logging
 import sys
 
-import pytest
-
 from app.utils.subprocess_runner import run_command
 
 logger = logging.getLogger(__name__)
@@ -31,8 +29,7 @@ class TestNormalExecution:
         assert result.returncode == 0
         assert "hello" in result.stdout
         assert result.duration_seconds >= 0
-        logger.info("Command succeeded: rc=%d, stdout=%s",
-                    result.returncode, result.stdout.strip())
+        logger.info("Command succeeded: rc=%d, stdout=%s", result.returncode, result.stdout.strip())
 
     async def test_failing_command_returns_nonzero(self):
         """Failing command should return non-zero exit code."""
@@ -56,8 +53,7 @@ class TestNormalExecution:
     async def test_input_data_delivered_to_stdin(self):
         """input_data should be piped to subprocess stdin."""
         result = await run_command(
-            [sys.executable, "-c",
-             "import sys; data=sys.stdin.read(); print(data, end='')"],
+            [sys.executable, "-c", "import sys; data=sys.stdin.read(); print(data, end='')"],
             input_data="hello-stdin\n",
             timeout=10,
         )
@@ -88,11 +84,9 @@ class TestCancellation:
         finally:
             await cancel_task
 
-        assert result.returncode == -2, \
-            f"Cancelled command should have rc=-2, got rc={result.returncode}"
+        assert result.returncode == -2, f"Cancelled command should have rc=-2, got rc={result.returncode}"
         assert result.stderr == "Command cancelled"
-        logger.info("Cancellation detected: rc=%d, stderr=%s",
-                    result.returncode, result.stderr)
+        logger.info("Cancellation detected: rc=%d, stderr=%s", result.returncode, result.stderr)
 
     async def test_cancellation_not_swallowed(self):
         """Cancellation result must propagate to the caller, not be silently ignored."""
@@ -131,8 +125,7 @@ class TestTimeout:
         )
         assert result.returncode == -1
         assert "timed out" in result.stderr.lower()
-        logger.info("Timeout detected: rc=%d, stderr=%s",
-                    result.returncode, result.stderr)
+        logger.info("Timeout detected: rc=%d, stderr=%s", result.returncode, result.stderr)
 
     async def test_timeout_includes_duration(self):
         """Timed-out result should have duration close to the timeout."""
@@ -143,8 +136,7 @@ class TestTimeout:
         )
         assert result.returncode == -1
         assert result.duration_seconds >= timeout_seconds * 0.8
-        logger.info("Timeout duration: %.2fs (timeout was %ds)",
-                    result.duration_seconds, timeout_seconds)
+        logger.info("Timeout duration: %.2fs (timeout was %ds)", result.duration_seconds, timeout_seconds)
 
 
 class TestCommandResultFields:

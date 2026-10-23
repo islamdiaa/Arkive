@@ -3,7 +3,6 @@
 Tests that credentials are not logged when database dump operations fail.
 """
 
-import logging
 import pytest
 
 from app.utils.redact import redact_credentials

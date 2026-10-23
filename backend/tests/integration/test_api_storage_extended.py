@@ -3,9 +3,10 @@ API integration tests for the GET /api/storage endpoint.
 
 Tests: response structure, empty storage baseline, target and history fields.
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 

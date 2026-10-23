@@ -7,8 +7,9 @@ Tests:
 - Updating a channel re-encrypts the new URL
 - Test endpoint can decrypt and use the URL
 """
+
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
@@ -41,8 +42,8 @@ async def _setup_and_create_channel(client, url: str = _WEBHOOK_URL) -> tuple[st
 
 async def test_create_channel_encrypts_url_in_db(client, tmp_path):
     """Creating a channel stores the URL encrypted (enc:v1: prefix) in the DB."""
-    from app.core.security import is_encrypted
     import app.core.dependencies as deps_mod
+    from app.core.security import is_encrypted
 
     api_key, channel_id = await _setup_and_create_channel(client)
 
@@ -50,9 +51,7 @@ async def test_create_channel_encrypts_url_in_db(client, tmp_path):
     db_path = deps_mod._config.db_path
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT config FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT config FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
 
     assert row is not None, "Channel not found in DB"
@@ -75,8 +74,8 @@ async def test_list_channel_redacts_url(client):
 
 async def test_update_channel_encrypts_new_url(client):
     """Updating a channel with a new URL re-encrypts it in the DB."""
-    from app.core.security import decrypt_value, is_encrypted
     import app.core.dependencies as deps_mod
+    from app.core.security import decrypt_value, is_encrypted
 
     api_key, channel_id = await _setup_and_create_channel(client)
 
@@ -91,9 +90,7 @@ async def test_update_channel_encrypts_new_url(client):
     db_path = deps_mod._config.db_path
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT config FROM notification_channels WHERE id = ?", (channel_id,)
-        )
+        cursor = await db.execute("SELECT config FROM notification_channels WHERE id = ?", (channel_id,))
         row = await cursor.fetchone()
 
     config_data = json.loads(row["config"])
@@ -127,9 +124,7 @@ async def test_test_channel_decrypts_url(client):
         )
         assert resp.status_code == 200
         # The notifier must receive the plaintext URL, not the encrypted form
-        assert captured.get("url") == _WEBHOOK_URL, (
-            f"Expected plaintext URL, got: {captured.get('url')!r}"
-        )
+        assert captured.get("url") == _WEBHOOK_URL, f"Expected plaintext URL, got: {captured.get('url')!r}"
     finally:
         app.state.notifier = None
 

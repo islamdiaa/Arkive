@@ -1,14 +1,11 @@
 """Tests for notifier throttling, deduplication, and recovery alerts."""
 
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from app.services.notifier import MAX_PER_HOUR, THROTTLE_COOLDOWN, Notifier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -130,8 +127,10 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}):
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+        ):
             mock_aiosqlite.connect.return_value = FakeDB()
             mock_aiosqlite.Row = MagicMock()
 
@@ -160,9 +159,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.connect.return_value = FakeDB()
             mock_aiosqlite.Row = MagicMock()
 
@@ -207,9 +208,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
 
             base_time = 1000.0
@@ -219,9 +222,7 @@ class TestNotifierThrottle:
             for i in range(MAX_PER_HOUR):
                 mock_time.time.return_value = base_time + i
                 mock_aiosqlite.connect.return_value = FakeDB()
-                results = await notifier.send(
-                    f"event.type.{i}", f"Title {i}", f"Body {i}", "info"
-                )
+                results = await notifier.send(f"event.type.{i}", f"Title {i}", f"Body {i}", "info")
                 assert results[0]["status"] == "sent", f"Send {i} should succeed"
 
             # 11th notification should be rate limited
@@ -239,9 +240,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.connect.return_value = FakeDB()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
@@ -269,9 +272,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.connect.return_value = FakeDB()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
@@ -298,9 +303,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.connect.return_value = FakeDB()
             mock_aiosqlite.Row = MagicMock()
             mock_time.time.return_value = 1000.0
@@ -321,9 +328,11 @@ class TestNotifierThrottle:
 
         notifier = Notifier(mock_config, mock_event_bus)
 
-        with patch("app.services.notifier.aiosqlite") as mock_aiosqlite, \
-             patch.dict("sys.modules", {"apprise": apprise_mod}), \
-             patch("app.services.notifier.time") as mock_time:
+        with (
+            patch("app.services.notifier.aiosqlite") as mock_aiosqlite,
+            patch.dict("sys.modules", {"apprise": apprise_mod}),
+            patch("app.services.notifier.time") as mock_time,
+        ):
             mock_aiosqlite.Row = MagicMock()
 
             base_time = 1000.0

@@ -10,8 +10,8 @@ Covers:
 import threading
 
 import pytest
-from tests.conftest import auth_headers, do_setup
 
+from tests.conftest import auth_headers, do_setup
 
 # ---------------------------------------------------------------------------
 # 1. Credential Redaction
@@ -265,9 +265,7 @@ class TestRateLimitingThreadSafety:
     def test_concurrent_failed_attempts_all_tracked(self):
         from app.core.dependencies import (
             RATE_LIMIT_MAX,
-            _failed_attempts,
             _is_locked_out,
-            _lockouts,
             _track_failed_attempt,
             clear_rate_limit,
         )

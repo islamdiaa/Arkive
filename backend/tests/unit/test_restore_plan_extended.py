@@ -3,9 +3,9 @@ Extended unit tests for RestorePlanGenerator covering multiple DB types
 and the _get_restore_commands method in detail.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
-from pathlib import Path
 
 from app.services.restore_plan import RestorePlanGenerator
 
@@ -204,13 +204,13 @@ class TestFormatBytesExtended:
         assert generator._format_bytes(1024 * 1024) == "1.0 MB"
 
     def test_exactly_1gb(self, generator):
-        assert generator._format_bytes(1024 ** 3) == "1.0 GB"
+        assert generator._format_bytes(1024**3) == "1.0 GB"
 
     def test_exactly_1tb(self, generator):
-        assert generator._format_bytes(1024 ** 4) == "1.0 TB"
+        assert generator._format_bytes(1024**4) == "1.0 TB"
 
     def test_large_value_returns_pb(self, generator):
-        result = generator._format_bytes(1024 ** 5)
+        result = generator._format_bytes(1024**5)
         assert "PB" in result
 
     def test_fractional_mb(self, generator):
@@ -243,9 +243,11 @@ class TestGenerateMethod:
         mock_html_cls = MagicMock()
         mock_html_cls.return_value.write_pdf = MagicMock()
 
-        with patch("aiosqlite.connect", return_value=mock_db), \
-             patch("app.__version__", "3.0.0"), \
-             patch.dict("sys.modules", {"weasyprint": MagicMock(HTML=mock_html_cls)}):
+        with (
+            patch("aiosqlite.connect", return_value=mock_db),
+            patch("app.__version__", "3.0.0"),
+            patch.dict("sys.modules", {"weasyprint": MagicMock(HTML=mock_html_cls)}),
+        ):
             result = await generator.generate()
 
         assert isinstance(result, str)
@@ -257,13 +259,14 @@ class TestGenerateMethod:
         mock_db = self._make_mock_db()
 
         # Make weasyprint raise on import (simulate missing module)
-        import sys
         mock_weasyprint = MagicMock()
         mock_weasyprint.HTML.side_effect = Exception("weasyprint broken")
 
-        with patch("aiosqlite.connect", return_value=mock_db), \
-             patch("app.__version__", "3.0.0"), \
-             patch.dict("sys.modules", {"weasyprint": mock_weasyprint}):
+        with (
+            patch("aiosqlite.connect", return_value=mock_db),
+            patch("app.__version__", "3.0.0"),
+            patch.dict("sys.modules", {"weasyprint": mock_weasyprint}),
+        ):
             result = await generator.generate()
 
         # Should fall back to HTML path
@@ -275,13 +278,14 @@ class TestGenerateMethod:
         generator.config.config_dir = tmp_path
         mock_db = self._make_mock_db()
 
-        import sys
         mock_weasyprint = MagicMock()
         mock_weasyprint.HTML.side_effect = Exception("no weasyprint")
 
-        with patch("aiosqlite.connect", return_value=mock_db), \
-             patch("app.__version__", "3.0.0"), \
-             patch.dict("sys.modules", {"weasyprint": mock_weasyprint}):
+        with (
+            patch("aiosqlite.connect", return_value=mock_db),
+            patch("app.__version__", "3.0.0"),
+            patch.dict("sys.modules", {"weasyprint": mock_weasyprint}),
+        ):
             await generator.generate()
 
         html_file = tmp_path / "restore-plan.html"

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+
 from cli import cli
 
 
@@ -64,6 +65,7 @@ def tmp_db(tmp_config):
 
 # ---- 1. version command ----
 
+
 def test_version(runner):
     """version command exits 0 and includes the version string."""
     # The version command wraps restic/docker/platform calls in try/except,
@@ -79,6 +81,7 @@ def test_version(runner):
 
 # ---- 2. db init ----
 
+
 def test_db_init(runner, tmp_config):
     """db init creates the database and exits 0."""
     db_path = tmp_config / "arkive.db"
@@ -93,6 +96,7 @@ def test_db_init(runner, tmp_config):
 
 # ---- 3. db check ----
 
+
 def test_db_check(runner, tmp_db):
     """db check runs integrity check on existing DB and exits 0."""
     result = runner.invoke(cli, ["db", "check", "--db-path", str(tmp_db)])
@@ -103,6 +107,7 @@ def test_db_check(runner, tmp_db):
 
 
 # ---- 4. key generate ----
+
 
 def test_key_generate(runner, tmp_config, tmp_db):
     """key generate produces an ark_-prefixed key and exits 0."""
@@ -121,6 +126,7 @@ def test_key_generate(runner, tmp_config, tmp_db):
 
 # ---- 5. key show-hash ----
 
+
 def test_key_show_hash(runner, tmp_config, tmp_db):
     """key show-hash handles gracefully when no key exists."""
     # Ensure no api_key file exists
@@ -136,6 +142,7 @@ def test_key_show_hash(runner, tmp_config, tmp_db):
 
 
 # ---- 6. job list ----
+
 
 def test_job_list(runner, tmp_db):
     """job list on an empty database exits 0 with 'No backup jobs' message."""

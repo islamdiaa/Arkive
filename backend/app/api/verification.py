@@ -5,7 +5,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,7 +32,7 @@ async def _close_running_rows(run_ids: list[str], status: str, reason: str) -> N
     """Mark still-'running' verification rows as finished (idempotent)."""
     if not run_ids:
         return
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     placeholders = ", ".join("?" for _ in run_ids)  # nosec B608 - placeholders only
     try:
         async with connect_db(get_config().db_path) as db:
@@ -111,10 +111,8 @@ async def trigger_verification(
         )
         last_run = await cursor.fetchone()
         if last_run and last_run["started_at"]:
-            last_dt = datetime.fromisoformat(
-                last_run["started_at"].replace("Z", "+00:00")
-            )
-            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            last_dt = datetime.fromisoformat(last_run["started_at"].replace("Z", "+00:00"))
+            elapsed = (datetime.now(UTC) - last_dt).total_seconds()
             if elapsed < 600:
                 raise HTTPException(
                     429,
@@ -122,13 +120,11 @@ async def trigger_verification(
                 )
     except HTTPException:
         raise
-    except Exception:
-        pass  # If rate-limit check fails, allow the run
+    except Exception as e:
+        logger.debug("Verification rate-limit check failed, allowing the run: %s", e)
 
     try:
-        cursor = await db.execute(
-            "SELECT id, name FROM storage_targets WHERE enabled = 1"
-        )
+        cursor = await db.execute("SELECT id, name FROM storage_targets WHERE enabled = 1")
         targets = await cursor.fetchall()
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         raise HTTPException(500, "Cannot read storage targets")
@@ -143,7 +139,7 @@ async def trigger_verification(
     if callable(is_busy) and is_busy() is True:
         raise HTTPException(409, "A backup or restore is in progress; try verification again later")
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_ids = []
     run_id_map: dict[str, str] = {}
 
@@ -172,11 +168,14 @@ async def trigger_verification(
     await db.commit()
 
     if event_bus:
-        await event_bus.publish("verification:started", {
-            "run_ids": run_ids,
-            "target_count": len(targets),
-            "started_at": now,
-        })
+        await event_bus.publish(
+            "verification:started",
+            {
+                "run_ids": run_ids,
+                "target_count": len(targets),
+                "started_at": now,
+            },
+        )
 
     # Launch verification in the background so the API returns immediately
     _spawn(_run_verification(verify_engine, run_id_map, event_bus))
@@ -189,9 +188,7 @@ async def trigger_verification(
     }
 
 
-async def _run_verification(
-    verify_engine, run_id_map: dict[str, str], event_bus
-) -> None:
+async def _run_verification(verify_engine, run_id_map: dict[str, str], event_bus) -> None:
     """Background task that runs the verify engine and publishes completion events."""
     run_ids = list(run_id_map.values())
     try:
@@ -205,21 +202,28 @@ async def _run_verification(
             await _close_running_rows(run_ids, "skipped", f"Skipped: {reason}")
 
         if event_bus:
-            await event_bus.publish("verification:completed", {
-                "status": status,
-                "trust_score": trust_score,
-                "target_count": len(result.get("targets", [])),
-                "last_verified_at": result.get("verified_at"),
-            })
+            await event_bus.publish(
+                "verification:completed",
+                {
+                    "status": status,
+                    "trust_score": trust_score,
+                    "target_count": len(result.get("targets", [])),
+                    "last_verified_at": result.get("verified_at"),
+                },
+            )
 
         logger.info(
             "Manual verification complete: status=%s trust_score=%.1f",
-            status, trust_score,
+            status,
+            trust_score,
         )
     except Exception as e:
         logger.error("Manual verification failed: %s", e)
         await _close_running_rows(run_ids, "failed", f"Verification error: {redact_credentials(str(e))}")
         if event_bus:
-            await event_bus.publish("verification:failed", {
-                "error": str(e),
-            })
+            await event_bus.publish(
+                "verification:failed",
+                {
+                    "error": str(e),
+                },
+            )

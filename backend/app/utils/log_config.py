@@ -5,24 +5,23 @@ import logging
 import logging.handlers
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
 
 from app.core.context import CorrelationFilter
 
-
 # Patterns that indicate sensitive values in log messages.
 # Matches compound names like secret_key=..., RESTIC_PASSWORD=..., api-key: ...
 _SENSITIVE_PATTERNS = re.compile(
-    r'(\w*(?:password|secret|token|api[_-]?key|authorization|credential)\w*)'
-    r'\s*[=:]\s*(\S+)',
+    r"(\w*(?:password|secret|token|api[_-]?key|authorization|credential)\w*)"
+    r"\s*[=:]\s*(\S+)",
     re.IGNORECASE,
 )
 
 # Replacement for sensitive values
-_REDACTION = r'\1=***REDACTED***'
+_REDACTION = r"\1=***REDACTED***"
 
 
 class _SensitiveFilter(logging.Filter):
@@ -33,7 +32,7 @@ class _SensitiveFilter(logging.Filter):
             record.msg = _SENSITIVE_PATTERNS.sub(_REDACTION, record.msg)
         if record.args:
             new_args = []
-            for arg in (record.args if isinstance(record.args, tuple) else (record.args,)):
+            for arg in record.args if isinstance(record.args, tuple) else (record.args,):
                 if isinstance(arg, str):
                     new_args.append(_SENSITIVE_PATTERNS.sub(_REDACTION, arg))
                 else:
@@ -51,7 +50,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "level": record.levelname,
             "run_id": getattr(record, "run_id", "-"),
             "component": record.name,

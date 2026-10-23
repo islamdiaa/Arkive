@@ -112,9 +112,7 @@ async def update_channel(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Update an existing notification channel."""
-    cursor = await db.execute(
-        "SELECT * FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    cursor = await db.execute("SELECT * FROM notification_channels WHERE id = ?", (channel_id,))
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="Channel not found")
 
@@ -145,14 +143,10 @@ async def delete_channel(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Delete a notification channel."""
-    cursor = await db.execute(
-        "SELECT id FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    cursor = await db.execute("SELECT id FROM notification_channels WHERE id = ?", (channel_id,))
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="Channel not found")
-    await db.execute(
-        "DELETE FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    await db.execute("DELETE FROM notification_channels WHERE id = ?", (channel_id,))
     await db.commit()
     return {"status": "deleted"}
 
@@ -164,9 +158,7 @@ async def test_channel(
     notifier=Depends(get_notifier),
 ):
     """Send a test notification to a channel."""
-    cursor = await db.execute(
-        "SELECT * FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    cursor = await db.execute("SELECT * FROM notification_channels WHERE id = ?", (channel_id,))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Channel not found")

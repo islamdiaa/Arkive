@@ -1,5 +1,5 @@
 # Web framework
-fastapi==0.115.6
+fastapi==0.161.1
 uvicorn[standard]==0.34.0
 python-multipart==0.0.22
 sse-starlette==2.2.1
@@ -11,8 +11,8 @@ aiosqlite==0.22.1
 docker==7.1.0
 
 # Scheduler
-apscheduler==3.10.4
-croniter==3.0.3
+apscheduler==3.11.3
+croniter==6.2.4
 
 # Notifications (90+ services)
 apprise==1.9.8

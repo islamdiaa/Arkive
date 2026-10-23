@@ -1,4 +1,5 @@
 """Tests for FastAPI /docs exposure."""
+
 import pytest
 
 

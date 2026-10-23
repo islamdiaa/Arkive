@@ -1,13 +1,11 @@
 """Unit tests for app.services.flash_backup — FlashBackup."""
 
-import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
-from pathlib import Path
 
-from app.services.flash_backup import FlashBackup, FlashBackupResult
 from app.core.platform import Platform
+from app.services.flash_backup import FlashBackup
 
 
 @pytest.fixture
@@ -116,12 +114,17 @@ class TestFlashBackupCleanup:
         """Retention counts uncompressed and legacy .tar.gz archives together, newest first."""
         mock_config.flash_retention = 2
         mock_config.dump_dir = tmp_path
-        for name in ("flash_20260101_000000.tar.gz", "flash_20260102_000000.tar.gz",
-                     "flash_20260103_000000.tar", "flash_20260104_000000.tar"):
+        for name in (
+            "flash_20260101_000000.tar.gz",
+            "flash_20260102_000000.tar.gz",
+            "flash_20260103_000000.tar",
+            "flash_20260104_000000.tar",
+        ):
             (tmp_path / name).write_bytes(b"x")
 
         FlashBackup(config=mock_config, platform=Platform.UNRAID)._cleanup_old_backups()
 
         assert sorted(p.name for p in tmp_path.iterdir()) == [
-            "flash_20260103_000000.tar", "flash_20260104_000000.tar",
+            "flash_20260103_000000.tar",
+            "flash_20260104_000000.tar",
         ]

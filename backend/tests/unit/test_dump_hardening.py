@@ -11,8 +11,11 @@ from app.models.discovery import DiscoveredDatabase
 from app.services.db_dumper import DBDumper, cleanup_dump_dir, dump_prefix
 from app.utils.subprocess_runner import CommandResult
 
-PG_OK = b"--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\n" + b"x" * 200 + \
-    b"\n--\n-- PostgreSQL database dump complete\n--\n\n"
+PG_OK = (
+    b"--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\n"
+    + b"x" * 200
+    + b"\n--\n-- PostgreSQL database dump complete\n--\n\n"
+)
 
 
 def _dumper(tmp_path):
@@ -43,7 +46,9 @@ class TestLowLevelExecExitCode:
         api = _api([PG_OK], exit_code=1)
         dumper.docker.containers.get.return_value = _api_container(api)
 
-        result = dumper._dump_postgres_blocking(DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app"))
+        result = dumper._dump_postgres_blocking(
+            DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app")
+        )
 
         assert result.status == "failed"
         assert "exited with code 1" in result.error
@@ -53,7 +58,9 @@ class TestLowLevelExecExitCode:
         dumper = _dumper(tmp_path)
         dumper.docker.containers.get.return_value = _api_container(_api([PG_OK], exit_code=0))
 
-        result = dumper._dump_postgres_blocking(DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app"))
+        result = dumper._dump_postgres_blocking(
+            DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app")
+        )
 
         assert result.status == "success"
         assert result.integrity_check == "ok"
@@ -67,7 +74,9 @@ class TestLowLevelExecExitCode:
         truncated = PG_OK[: len(PG_OK) // 2]
         dumper.docker.containers.get.return_value = _api_container(_api([truncated], exit_code=0))
 
-        result = dumper._dump_postgres_blocking(DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app"))
+        result = dumper._dump_postgres_blocking(
+            DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app")
+        )
 
         assert result.status == "failed"
         assert "incomplete" in result.error
@@ -79,7 +88,9 @@ class TestLowLevelExecExitCode:
         container.image.tags = ["mariadb:11"]
         dumper.docker.containers.get.return_value = container
 
-        result = dumper._dump_mariadb_blocking(DiscoveredDatabase(container_name="db", db_type="mariadb", db_name="app"))
+        result = dumper._dump_mariadb_blocking(
+            DiscoveredDatabase(container_name="db", db_type="mariadb", db_name="app")
+        )
 
         assert result.status == "success"
         args, kwargs = api.exec_create.call_args
@@ -97,8 +108,17 @@ class TestDumpAll:
         async def fake_dump(db):
             partial.write_bytes(b"half")
             from app.services.db_dumper import DumpResult
-            return DumpResult(container_name="pg", db_type="postgres", db_name="app", dump_path=str(partial),
-                              dump_size_bytes=0, integrity_check="failed", status="failed", error="cut")
+
+            return DumpResult(
+                container_name="pg",
+                db_type="postgres",
+                db_name="app",
+                dump_path=str(partial),
+                dump_size_bytes=0,
+                integrity_check="failed",
+                status="failed",
+                error="cut",
+            )
 
         dumper._dump_one = fake_dump
         results = await dumper.dump_all([DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app")])
@@ -119,8 +139,16 @@ class TestDumpAll:
         async def fake_dump(db):
             seen.append(dumper._dump_path(db, "20260101_000000", ".sqlite3"))
             from app.services.db_dumper import DumpResult
-            return DumpResult(container_name=db.container_name, db_type="sqlite", db_name=db.db_name,
-                              dump_path="", dump_size_bytes=1, integrity_check="ok", status="success")
+
+            return DumpResult(
+                container_name=db.container_name,
+                db_type="sqlite",
+                db_name=db.db_name,
+                dump_path="",
+                dump_size_bytes=1,
+                integrity_check="ok",
+                status="success",
+            )
 
         dumper._dump_one = fake_dump
         await dumper.dump_all(dbs + [dbs[0]])  # exact duplicate is dropped
@@ -128,7 +156,10 @@ class TestDumpAll:
         assert len(seen) == 3
         assert len(set(seen)) == 3
         # Every name carries the identity hash (container, type, name, host path).
-        assert os.path.basename(seen[2]) == f"{dump_prefix('app', 'sqlite', 'other.db', '/a/other.db')}_20260101_000000.sqlite3"
+        assert (
+            os.path.basename(seen[2])
+            == f"{dump_prefix('app', 'sqlite', 'other.db', '/a/other.db')}_20260101_000000.sqlite3"
+        )
         assert os.path.basename(seen[2]).startswith("app_other.db-")
 
 

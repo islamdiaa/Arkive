@@ -84,7 +84,7 @@ async def get_logs(
     filtered, truncated = await asyncio.to_thread(_read_log_tail, log_file, level, component, since)
 
     total = len(filtered)
-    paginated = filtered[offset:offset + actual_limit]
+    paginated = filtered[offset : offset + actual_limit]
     return {
         "items": paginated,
         "logs": paginated,
@@ -142,7 +142,7 @@ async def stream_logs(
                         if event.get("event") == "log":
                             yield {"event": "log", "data": json.dumps(event.get("data", {}))}
                             emitted = True
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                 else:
                     await asyncio.sleep(1)

@@ -51,8 +51,13 @@ def _db(container, db_type="postgres", name="app"):
 
 def _ok_dump(db):
     return DumpResult(
-        container_name=db.container_name, db_type=db.db_type, db_name=db.db_name,
-        dump_path="/x", dump_size_bytes=10, integrity_check="ok", status="success",
+        container_name=db.container_name,
+        db_type=db.db_type,
+        db_name=db.db_name,
+        dump_path="/x",
+        dump_size_bytes=10,
+        integrity_check="ok",
+        status="success",
     )
 
 
@@ -61,9 +66,14 @@ def make_orchestrator(config, *, discovery=None, db_dumper=None, backup_result=N
 
     backup_engine = MagicMock()
     backup_engine.init_repo = AsyncMock(return_value=True)
-    backup_engine.backup = AsyncMock(return_value=backup_result or {
-        "status": "success", "snapshot_id": "abc", "total_bytes_processed": 1024,
-    })
+    backup_engine.backup = AsyncMock(
+        return_value=backup_result
+        or {
+            "status": "success",
+            "snapshot_id": "abc",
+            "total_bytes_processed": 1024,
+        }
+    )
     backup_engine.forget = AsyncMock(return_value={"status": "success", "output": ""})
     backup_engine.snapshots = AsyncMock(return_value=[{"id": "abc" * 10, "short_id": "abc", "size": 1}])
 
@@ -225,10 +235,14 @@ async def test_databases_in_stopped_containers_are_skipped_not_failed(config):
     running_db, stopped_db = _db("pg-live"), _db("pg-old")
     # Dumped while it was running; that dump keeps covering it.
     (config.dump_dir / f"{dump_prefix('pg-old', 'postgres', 'app')}_20261001_000000.sql").write_bytes(b"x")
-    discovery = MagicMock(scan=AsyncMock(return_value=[
-        _container("pg-live", [running_db]),
-        _container("pg-old", [stopped_db], status="exited"),
-    ]))
+    discovery = MagicMock(
+        scan=AsyncMock(
+            return_value=[
+                _container("pg-live", [running_db]),
+                _container("pg-old", [stopped_db], status="exited"),
+            ]
+        )
+    )
     dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(running_db)]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
 
@@ -246,8 +260,16 @@ async def test_databases_in_stopped_containers_are_skipped_not_failed(config):
 @pytest.mark.asyncio
 async def test_roles_dumps_are_not_counted_as_databases(config):
     db = _db("pg")
-    roles_ok = DumpResult(container_name="pg", db_type="postgres", db_name="globals", dump_path="/g",
-                          dump_size_bytes=5, integrity_check="ok", status="success", kind="globals")
+    roles_ok = DumpResult(
+        container_name="pg",
+        db_type="postgres",
+        db_name="globals",
+        dump_path="/g",
+        dump_size_bytes=5,
+        integrity_check="ok",
+        status="success",
+        kind="globals",
+    )
     discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg", [db])]))
     dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), roles_ok]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
@@ -262,9 +284,17 @@ async def test_roles_dumps_are_not_counted_as_databases(config):
 @pytest.mark.asyncio
 async def test_failed_roles_dump_makes_run_partial(config):
     db = _db("pg")
-    roles_failed = DumpResult(container_name="pg", db_type="postgres", db_name="globals", dump_path="",
-                              dump_size_bytes=0, integrity_check="skipped", status="failed",
-                              error="permission denied", kind="globals")
+    roles_failed = DumpResult(
+        container_name="pg",
+        db_type="postgres",
+        db_name="globals",
+        dump_path="",
+        dump_size_bytes=0,
+        integrity_check="skipped",
+        status="failed",
+        error="permission denied",
+        kind="globals",
+    )
     discovery = MagicMock(scan=AsyncMock(return_value=[_container("pg", [db])]))
     dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), roles_failed]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
@@ -280,10 +310,14 @@ async def test_failed_roles_dump_makes_run_partial(config):
 @pytest.mark.asyncio
 async def test_duplicate_companion_databases_are_dumped_once(config):
     db = _db("immich_postgres", name="immich")
-    discovery = MagicMock(scan=AsyncMock(return_value=[
-        _container("immich", [db]),
-        _container("immich_postgres", [_db("immich_postgres", name="immich")]),
-    ]))
+    discovery = MagicMock(
+        scan=AsyncMock(
+            return_value=[
+                _container("immich", [db]),
+                _container("immich_postgres", [_db("immich_postgres", name="immich")]),
+            ]
+        )
+    )
     dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db)]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
 
@@ -295,10 +329,15 @@ async def test_duplicate_companion_databases_are_dumped_once(config):
 
 @pytest.mark.asyncio
 async def test_restic_partial_snapshot_marks_run_partial(config):
-    orch = make_orchestrator(config, backup_result={
-        "status": "partial", "snapshot_id": "abc", "total_bytes_processed": 10,
-        "error": "Some files could not be read: /x: permission denied",
-    })
+    orch = make_orchestrator(
+        config,
+        backup_result={
+            "status": "partial",
+            "snapshot_id": "abc",
+            "total_bytes_processed": 10,
+            "error": "Some files could not be read: /x: permission denied",
+        },
+    )
 
     result = await orch.run_backup("job-flash", run_id="r-p")
 
@@ -404,10 +443,15 @@ async def test_storage_exclusions_cover_host_path_aliases(config, tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_notification_event_matches_outcome(config):
-    orch = make_orchestrator(config, backup_result={
-        "status": "partial", "snapshot_id": "abc", "total_bytes_processed": 10,
-        "error": "Some files could not be read: /x",
-    })
+    orch = make_orchestrator(
+        config,
+        backup_result={
+            "status": "partial",
+            "snapshot_id": "abc",
+            "total_bytes_processed": 10,
+            "error": "Some files could not be read: /x",
+        },
+    )
     await orch.run_backup("job-flash", run_id="r-evt-partial")
     assert orch.notifier.send.await_args.args[0] == "backup.partial"
 
@@ -423,7 +467,8 @@ async def test_database_loss_keeps_warning_on_consecutive_empty_runs(config):
     async with aiosqlite.connect(config.db_path) as db:
         await db.execute(
             "INSERT INTO job_runs (id, job_id, status, started_at, databases_discovered, databases_dumped) "
-            "VALUES ('had-dbs', 'job-db', 'success', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 days'), 5, 5)")
+            "VALUES ('had-dbs', 'job-db', 'success', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 days'), 5, 5)"
+        )
         await db.commit()
     discovery = MagicMock(scan=AsyncMock(return_value=[]))
     orch = make_orchestrator(config, discovery=discovery, db_dumper=MagicMock())
@@ -539,8 +584,10 @@ async def test_prerelease_marker_in_target_parent_is_removed(config, tmp_path):
     (parent / EXCLUDE_MARKER).write_text(_EXCLUDE_MARKER_TEXT)
     user_marked = tmp_path / "user-dir"
     async with aiosqlite.connect(config.db_path) as db:
-        await db.execute("UPDATE storage_targets SET config = ? WHERE id = 't1'",
-                         (encrypt_config({"path": str(parent)}, str(config.config_dir)),))
+        await db.execute(
+            "UPDATE storage_targets SET config = ? WHERE id = 't1'",
+            (encrypt_config({"path": str(parent)}, str(config.config_dir)),),
+        )
         await db.commit()
     orch = make_orchestrator(config)
 
@@ -560,8 +607,10 @@ async def test_user_created_marker_in_target_parent_is_left_alone(config, tmp_pa
     (parent / "arkive-repo").mkdir(parents=True)
     (parent / EXCLUDE_MARKER).write_text("my own exclusion\n")
     async with aiosqlite.connect(config.db_path) as db:
-        await db.execute("UPDATE storage_targets SET config = ? WHERE id = 't1'",
-                         (encrypt_config({"path": str(parent)}, str(config.config_dir)),))
+        await db.execute(
+            "UPDATE storage_targets SET config = ? WHERE id = 't1'",
+            (encrypt_config({"path": str(parent)}, str(config.config_dir)),),
+        )
         await db.commit()
     orch = make_orchestrator(config)
 
@@ -583,8 +632,9 @@ async def test_enumeration_warning_makes_run_partial_and_blocks_age_out(config):
     stale = time.time() - 30 * 86400
     os.utime(other, (stale, stale))
     discovery = MagicMock(scan=AsyncMock(return_value=[container]))
-    orch = make_orchestrator(config, discovery=discovery,
-                             db_dumper=MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db)])))
+    orch = make_orchestrator(
+        config, discovery=discovery, db_dumper=MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db)]))
+    )
 
     result = await orch.run_backup("job-db", run_id="r-enum")
 

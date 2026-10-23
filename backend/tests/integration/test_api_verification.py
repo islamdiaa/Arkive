@@ -52,9 +52,7 @@ async def _get_db_path(client):
 async def test_verification_get_empty(client):
     """GET /api/verification returns empty results when no runs exist."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/verification", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/verification", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 0
@@ -80,9 +78,7 @@ async def test_verification_get_with_completed_run(client, tmp_path):
         )
         await db.commit()
 
-    resp = await client.get(
-        "/api/verification", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/verification", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 85
@@ -120,9 +116,7 @@ async def test_verification_get_latest_per_target(client, tmp_path):
         )
         await db.commit()
 
-    resp = await client.get(
-        "/api/verification", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/verification", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 95
@@ -155,9 +149,7 @@ async def test_verification_get_multi_target_average(client, tmp_path):
         )
         await db.commit()
 
-    resp = await client.get(
-        "/api/verification", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/verification", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 90  # average of 80 and 100
@@ -171,9 +163,7 @@ async def test_verification_get_multi_target_average(client, tmp_path):
 async def test_verification_run_no_targets(client):
     """POST /api/verification/run with no enabled targets returns 404."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/verification/run", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/verification/run", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 404
 
 
@@ -185,9 +175,7 @@ async def test_verification_run_creates_runs(client, tmp_path):
     t2 = await _create_target(client, api_key, tmp_path, name="Target2")
 
     _install_verify_engine(client)
-    resp = await client.post(
-        "/api/verification/run", headers=auth_headers(api_key)
-    )
+    resp = await client.post("/api/verification/run", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "started"
@@ -198,9 +186,7 @@ async def test_verification_run_creates_runs(client, tmp_path):
     db_path = await _get_db_path(client)
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM verification_runs ORDER BY target_id"
-        )
+        cursor = await db.execute("SELECT * FROM verification_runs ORDER BY target_id")
         rows = await cursor.fetchall()
         assert len(rows) == 2
         for row in rows:
@@ -215,17 +201,13 @@ async def test_verification_run_creates_activity_log(client, tmp_path):
     await _create_target(client, api_key, tmp_path)
 
     _install_verify_engine(client)
-    resp = await client.post(
-        "/api/verification/run", headers=auth_headers(api_key)
-    )
+    resp = await client.post("/api/verification/run", headers=auth_headers(api_key))
     assert resp.status_code == 200
 
     db_path = await _get_db_path(client)
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM activity_log WHERE type = 'verification'"
-        )
+        cursor = await db.execute("SELECT * FROM activity_log WHERE type = 'verification'")
         rows = await cursor.fetchall()
         assert len(rows) >= 1
         assert dict(rows[0])["action"] == "started"
@@ -304,9 +286,7 @@ async def test_verification_runs_table_exists(client):
     """The verification_runs table should exist after DB init."""
     db_path = await _get_db_path(client)
     async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='verification_runs'"
-        )
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='verification_runs'")
         row = await cursor.fetchone()
     assert row is not None, "verification_runs table not found"
 
@@ -328,9 +308,7 @@ async def test_verification_running_excluded_from_trust_score(client, tmp_path):
         )
         await db.commit()
 
-    resp = await client.get(
-        "/api/verification", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/verification", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["trust_score"] == 0

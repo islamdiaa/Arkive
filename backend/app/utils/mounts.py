@@ -41,8 +41,9 @@ def read_mounts(mountinfo: Path = MOUNTINFO) -> list[MountEntry]:
             continue
         fstype = right.split()[0] if right.split() else ""
         options = fields[5].split(",") if len(fields) > 5 else []
-        entries.append(MountEntry(root=_unescape(fields[3]), mount_point=_unescape(fields[4]),
-                                  fstype=fstype, options=options))
+        entries.append(
+            MountEntry(root=_unescape(fields[3]), mount_point=_unescape(fields[4]), fstype=fstype, options=options)
+        )
     return entries
 
 

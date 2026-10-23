@@ -1,7 +1,5 @@
 """Tests for credential redaction utility."""
 
-import pytest
-
 from app.utils.redact import redact_credentials
 
 

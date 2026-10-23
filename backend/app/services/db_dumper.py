@@ -35,7 +35,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -46,8 +46,8 @@ from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
 from app.services.settings_store import DEFAULTS as SETTING_DEFAULTS
 from app.services.settings_store import get_setting
-from app.utils.subprocess_runner import run_command
 from app.utils.redact import redact_credentials
+from app.utils.subprocess_runner import run_command
 
 logger = logging.getLogger("arkive.db_dumper")
 
@@ -94,7 +94,7 @@ _manifest_lock = threading.Lock()
 
 def safe_name(value: str) -> str:
     """File-name-safe form of a container or database name (as used in dump file names)."""
-    return re.sub(r'[^a-zA-Z0-9_.\-]', '_', value)
+    return re.sub(r"[^a-zA-Z0-9_.\-]", "_", value)
 
 
 def postgres_user_from_env(env: dict[str, str]) -> str:
@@ -102,8 +102,9 @@ def postgres_user_from_env(env: dict[str, str]) -> str:
     return env.get("POSTGRES_USER") or env.get("DB_USERNAME") or env.get("DB_USER") or "postgres"
 
 
-def dump_prefix(container_name: str, db_type: str, db_name: str, host_path: str | None = None,
-                kind: str = "database") -> str:
+def dump_prefix(
+    container_name: str, db_type: str, db_name: str, host_path: str | None = None, kind: str = "database"
+) -> str:
     """Grouping prefix of a database's dump files: ``<safe container>_<safe label>-<hash8>``.
 
     Dump files are ``<prefix>_<UTC timestamp><ext>`` and ``cleanup_dump_dir``
@@ -165,6 +166,7 @@ class StreamResult:
 # Dump file writers
 # ---------------------------------------------------------------------------
 
+
 class _PlainDumpWriter:
     """Writes the stream unchanged; restic compresses and deduplicates it."""
 
@@ -205,7 +207,9 @@ class _RsyncableGzipDumpWriter:
         try:
             self._proc = subprocess.Popen(  # nosec B603 — fixed argv
                 [gzip_binary, "--rsyncable", "-6", "-c"],
-                stdin=subprocess.PIPE, stdout=self._out, stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                stdout=self._out,
+                stderr=subprocess.PIPE,
             )
         except BaseException:
             self._out.close()
@@ -260,7 +264,10 @@ def _rsyncable_gzip_binary() -> str | None:
         return None
     try:
         probe = subprocess.run(  # nosec B603 — fixed argv
-            [binary, "--rsyncable", "-c"], input=b"", capture_output=True, timeout=10,
+            [binary, "--rsyncable", "-c"],
+            input=b"",
+            capture_output=True,
+            timeout=10,
         )
     except Exception as e:
         logger.warning("gzip --rsyncable probe failed (%s); using Python gzip", e)
@@ -287,8 +294,9 @@ def _open_dump_writer(path: str, compression: str):
 # Dump manifest
 # ---------------------------------------------------------------------------
 
+
 def _utc_iso(ts: float | None = None) -> str:
-    moment = datetime.now(timezone.utc) if ts is None else datetime.fromtimestamp(ts, timezone.utc)
+    moment = datetime.now(UTC) if ts is None else datetime.fromtimestamp(ts, UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -297,7 +305,7 @@ def _created_at(name: str, mtime: float) -> str:
     match = _DUMP_TS_PATTERN.match(name)
     if match:
         try:
-            parsed = datetime.strptime(match.group(2), "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(match.group(2), "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
             return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
         except ValueError:
             pass
@@ -390,7 +398,7 @@ def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) ->
         safe_container = safe_name(container)
         if prefix.startswith(safe_container + "_"):
             container_name = container
-            db_name = prefix[len(safe_container) + 1:]
+            db_name = prefix[len(safe_container) + 1 :]
             break
     if not container_name:
         for marker, kind_or_type in ((f"_{GLOBALS_DB_NAME}", "globals"), ("_redis", "redis")):
@@ -402,15 +410,21 @@ def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) ->
         db_name = "redis"
 
     return {
-        "file": name, "container_name": container_name, "image": "", "db_type": db_type,
-        "db_name": db_name, "host_path": None, "kind": kind,
-        "compression": dump_compression_of(name), "size_bytes": stat.st_size,
-        "created_at": _created_at(name, stat.st_mtime), "integrity": "skipped",
+        "file": name,
+        "container_name": container_name,
+        "image": "",
+        "db_type": db_type,
+        "db_name": db_name,
+        "host_path": None,
+        "kind": kind,
+        "compression": dump_compression_of(name),
+        "size_bytes": stat.st_size,
+        "created_at": _created_at(name, stat.st_mtime),
+        "integrity": "skipped",
     }
 
 
-def write_dump_manifest(dump_dir, new_entries: list[dict] | None = None,
-                        known_containers=()) -> dict:
+def write_dump_manifest(dump_dir, new_entries: list[dict] | None = None, known_containers=()) -> dict:
     """Rewrite ``arkive-dumps-manifest.json`` (atomically) for the files now in ``dump_dir``.
 
     Each dump file present gets an entry: from ``new_entries`` (this run),
@@ -474,9 +488,13 @@ def _remove_stale(path: Path, max_age_seconds: float) -> bool:
     return False
 
 
-def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | None = 7,
-                     protect_prefixes: set[str] | None = None,
-                     legacy_prefixes: dict[str, str] | None = None) -> int:
+def cleanup_dump_dir(
+    dump_dir: Path,
+    keep_last: int = 1,
+    max_age_days: int | None = 7,
+    protect_prefixes: set[str] | None = None,
+    legacy_prefixes: dict[str, str] | None = None,
+) -> int:
     """Prune the database dump directory.
 
     Dumps are grouped by their ``dump_prefix`` (regardless of format, so
@@ -558,7 +576,8 @@ def cleanup_dump_dir(dump_dir: Path, keep_last: int = 1, max_age_days: int | Non
                 to_remove.extend(files)  # every database here has a newer hashed dump
                 continue
             is_protected = is_protected or any(
-                owner in protected and not done for owner, done in zip(owners, superseded))
+                owner in protected and not done for owner, done in zip(owners, superseded)
+            )
         for index, path in enumerate(files):
             if index >= keep_last:
                 to_remove.append(path)
@@ -633,7 +652,7 @@ class DBDumper:
         self.compression = SETTING_DEFAULTS.get("dump_compression", "none")
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
     @staticmethod
     def _safe(value: str) -> str:
@@ -701,7 +720,11 @@ class DBDumper:
         return unique
 
     def _exec_stream_to_file(
-        self, container, cmd: list[str], dump_path: str, environment: dict | None = None,
+        self,
+        container,
+        cmd: list[str],
+        dump_path: str,
+        environment: dict | None = None,
     ) -> StreamResult:
         """Run ``cmd`` in ``container`` and stream stdout into ``dump_path``
         (callers pass the ``.partial`` path and rename it once validated).
@@ -719,7 +742,11 @@ class DBDumper:
         exec_id = None
         if isinstance(api, docker.APIClient):
             exec_id = api.exec_create(
-                container.id, cmd, stdout=True, stderr=True, environment=environment or None,
+                container.id,
+                cmd,
+                stdout=True,
+                stderr=True,
+                environment=environment or None,
             )["Id"]
             output = api.exec_start(exec_id, stream=True, demux=True)
             exit_code = None
@@ -762,8 +789,14 @@ class DBDumper:
         )
 
     def _streamed_dump_result(
-        self, db: DiscoveredDatabase, db_type: str, tool: str, dump_path: str,
-        stream: StreamResult, trailer: bytes | None, partial_path: str | None = None,
+        self,
+        db: DiscoveredDatabase,
+        db_type: str,
+        tool: str,
+        dump_path: str,
+        stream: StreamResult,
+        trailer: bytes | None,
+        partial_path: str | None = None,
     ) -> DumpResult:
         """Turn a streamed dump into a DumpResult, detecting failure and truncation.
 
@@ -771,17 +804,28 @@ class DBDumper:
         every check is renamed to ``dump_path``. A failed one is left for the
         caller to discard.
         """
+
         def failed(error: str) -> DumpResult:
             return DumpResult(
-                container_name=db.container_name, db_type=db_type,
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
+                container_name=db.container_name,
+                db_type=db_type,
+                db_name=db.db_name,
+                dump_path=dump_path,
+                dump_size_bytes=0,
                 integrity_check="failed" if stream.bytes_written else "skipped",
-                status="failed", error=redact_credentials(error),
+                status="failed",
+                error=redact_credentials(error),
             )
 
         if stream.exit_code is not None and stream.exit_code != 0:
-            logger.error("%s for %s/%s failed (exit %s): %s", tool, db.container_name, db.db_name,
-                         stream.exit_code, redact_credentials(stream.stderr[:500]))
+            logger.error(
+                "%s for %s/%s failed (exit %s): %s",
+                tool,
+                db.container_name,
+                db.db_name,
+                stream.exit_code,
+                redact_credentials(stream.stderr[:500]),
+            )
             return failed(f"{tool} exited with code {stream.exit_code}: {stream.stderr[:500] or 'no output'}")
 
         if stream.bytes_written == 0:
@@ -792,25 +836,38 @@ class DBDumper:
             if trailer in stream.tail:
                 integrity = "ok"
             else:
-                logger.error("%s output for %s/%s is truncated (no completion trailer)",
-                             tool, db.container_name, db.db_name)
-                return failed(f"{tool} output is incomplete (missing completion trailer): "
-                              f"{stream.stderr[:300] or 'dump was cut short'}")
+                logger.error(
+                    "%s output for %s/%s is truncated (no completion trailer)", tool, db.container_name, db.db_name
+                )
+                return failed(
+                    f"{tool} output is incomplete (missing completion trailer): "
+                    f"{stream.stderr[:300] or 'dump was cut short'}"
+                )
 
         if stream.bytes_written < 100:
-            logger.warning("%s for %s/%s produced suspiciously small output (%d bytes)",
-                           tool, db.container_name, db.db_name, stream.bytes_written)
+            logger.warning(
+                "%s for %s/%s produced suspiciously small output (%d bytes)",
+                tool,
+                db.container_name,
+                db.db_name,
+                stream.bytes_written,
+            )
         if stream.stderr and (db_type != "mongodb" or "error" in stream.stderr.lower()):
-            logger.warning("%s stderr for %s/%s: %s", tool, db.container_name, db.db_name,
-                           redact_credentials(stream.stderr[:500]))
+            logger.warning(
+                "%s stderr for %s/%s: %s", tool, db.container_name, db.db_name, redact_credentials(stream.stderr[:500])
+            )
 
         if partial_path is not None:
             os.replace(partial_path, dump_path)
         size = os.path.getsize(dump_path) if os.path.exists(dump_path) else 0
         return DumpResult(
-            container_name=db.container_name, db_type=db_type,
-            db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-            integrity_check=integrity, status="success",
+            container_name=db.container_name,
+            db_type=db_type,
+            db_name=db.db_name,
+            dump_path=dump_path,
+            dump_size_bytes=size,
+            integrity_check=integrity,
+            status="success",
         )
 
     async def dump_all(self, databases: list[DiscoveredDatabase]) -> list[DumpResult]:
@@ -864,9 +921,15 @@ class DBDumper:
                 result = await asyncio.to_thread(self._dump_postgres_globals_blocking, container_name, connect_db)
             except Exception as e:
                 result = DumpResult(
-                    container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME,
-                    dump_path="", dump_size_bytes=0, integrity_check="skipped", status="failed",
-                    error=redact_credentials(str(e)), kind="globals",
+                    container_name=container_name,
+                    db_type="postgres",
+                    db_name=GLOBALS_DB_NAME,
+                    dump_path="",
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
+                    error=redact_credentials(str(e)),
+                    kind="globals",
                 )
             if result.status != "success":
                 self._remove_dump_file(result.dump_path)
@@ -875,8 +938,9 @@ class DBDumper:
         await self._update_manifest(results, host_paths, {db.container_name for db in databases})
         return results
 
-    async def _update_manifest(self, results: list[DumpResult], host_paths: dict[int, str | None],
-                               known_containers: set[str]) -> None:
+    async def _update_manifest(
+        self, results: list[DumpResult], host_paths: dict[int, str | None], known_containers: set[str]
+    ) -> None:
         def build_and_write() -> None:
             images: dict[str, str] = {}
             entries = []
@@ -888,19 +952,21 @@ class DBDumper:
                 stat = os.stat(result.dump_path)
                 name = os.path.basename(result.dump_path)
                 integrity = result.integrity_detail or result.integrity_check
-                entries.append({
-                    "file": name,
-                    "container_name": result.container_name,
-                    "image": images[result.container_name],
-                    "db_type": result.db_type,
-                    "db_name": result.db_name,
-                    "host_path": host_paths.get(id(result)),
-                    "kind": result.kind,
-                    "compression": dump_compression_of(name),
-                    "size_bytes": stat.st_size,
-                    "created_at": _created_at(name, stat.st_mtime),
-                    "integrity": integrity if integrity in _MANIFEST_INTEGRITY else "skipped",
-                })
+                entries.append(
+                    {
+                        "file": name,
+                        "container_name": result.container_name,
+                        "image": images[result.container_name],
+                        "db_type": result.db_type,
+                        "db_name": result.db_name,
+                        "host_path": host_paths.get(id(result)),
+                        "kind": result.kind,
+                        "compression": dump_compression_of(name),
+                        "size_bytes": stat.st_size,
+                        "created_at": _created_at(name, stat.st_mtime),
+                        "integrity": integrity if integrity in _MANIFEST_INTEGRITY else "skipped",
+                    }
+                )
             write_dump_manifest(self.dump_dir, entries, known_containers)
 
         try:
@@ -962,9 +1028,13 @@ class DBDumper:
             result = await asyncio.to_thread(self._dump_redis_blocking, db)
         else:
             return DumpResult(
-                container_name=db.container_name, db_type=db.db_type,
-                db_name=db.db_name, dump_path="", dump_size_bytes=0,
-                integrity_check="skipped", status="failed",
+                container_name=db.container_name,
+                db_type=db.db_type,
+                db_name=db.db_name,
+                dump_path="",
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
                 error=f"Unsupported database type: {db.db_type}",
             )
         result.duration_seconds = round(time.monotonic() - start, 2)
@@ -987,7 +1057,7 @@ class DBDumper:
         Only allows alphanumeric characters, hyphens, underscores, and dots.
         Raises ValueError if the value contains disallowed characters.
         """
-        if not value or not re.match(r'^[a-zA-Z0-9_.\-]+$', value):
+        if not value or not re.match(r"^[a-zA-Z0-9_.\-]+$", value):
             raise ValueError("Invalid identifier: contains disallowed characters")
         return value
 
@@ -1000,12 +1070,7 @@ class DBDumper:
         option (leading "-"). Names enumerated from pg_database may contain
         spaces or capitals and must still be dumpable.
         """
-        if (
-            not value
-            or len(value.encode()) > 63
-            or value.startswith("-")
-            or any(ch in value for ch in "=/\x00\r\n")
-        ):
+        if not value or len(value.encode()) > 63 or value.startswith("-") or any(ch in value for ch in "=/\x00\r\n"):
             raise ValueError("Invalid database name: contains disallowed characters")
         return value
 
@@ -1070,9 +1135,14 @@ class DBDumper:
             return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER, partial)
         except Exception as e:
             return DumpResult(
-                container_name=db.container_name, db_type="postgres",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
+                container_name=db.container_name,
+                db_type="postgres",
+                db_name=db.db_name,
+                dump_path=dump_path,
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
+                error=redact_credentials(str(e)),
             )
         finally:
             self._discard(partial)
@@ -1098,19 +1168,33 @@ class DBDumper:
                 logger.warning(
                     "pg_dumpall --globals-only on %s: %s is not a superuser; retrying with "
                     "--no-role-passwords (roles will be restored without passwords)",
-                    container_name, pg_user,
+                    container_name,
+                    pg_user,
                 )
                 stream = self._exec_stream_to_file(
-                    container, ["pg_dumpall", "--globals-only", "--no-role-passwords", *options], partial,
+                    container,
+                    ["pg_dumpall", "--globals-only", "--no-role-passwords", *options],
+                    partial,
                 )
             result = self._streamed_dump_result(
-                pseudo_db, "postgres", "pg_dumpall", dump_path, stream, PG_DUMPALL_TRAILER, partial,
+                pseudo_db,
+                "postgres",
+                "pg_dumpall",
+                dump_path,
+                stream,
+                PG_DUMPALL_TRAILER,
+                partial,
             )
         except Exception as e:
             result = DumpResult(
-                container_name=container_name, db_type="postgres", db_name=GLOBALS_DB_NAME,
-                dump_path=dump_path, dump_size_bytes=0, integrity_check="skipped",
-                status="failed", error=redact_credentials(str(e)),
+                container_name=container_name,
+                db_type="postgres",
+                db_name=GLOBALS_DB_NAME,
+                dump_path=dump_path,
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
+                error=redact_credentials(str(e)),
             )
         finally:
             self._discard(partial)
@@ -1129,9 +1213,14 @@ class DBDumper:
 
         def failed(error: str, integrity: str = "skipped", path: str = "") -> DumpResult:
             return DumpResult(
-                container_name=db.container_name, db_type="sqlite",
-                db_name=db.db_name, dump_path=path, dump_size_bytes=0,
-                integrity_check=integrity, status="failed", error=error,
+                container_name=db.container_name,
+                db_type="sqlite",
+                db_name=db.db_name,
+                dump_path=path,
+                dump_size_bytes=0,
+                integrity_check=integrity,
+                status="failed",
+                error=error,
             )
 
         if not db.host_path:
@@ -1185,17 +1274,22 @@ class DBDumper:
             else:
                 detail = (check_result.stdout or check_result.stderr or "").strip()[:300]
                 logger.warning("SQLite integrity check failed for %s/%s: %s", db.container_name, db.db_name, detail)
-                return failed(f"SQLite integrity check failed on the copy: {detail or 'no output'}",
-                              "failed", dump_path)
+                return failed(
+                    f"SQLite integrity check failed on the copy: {detail or 'no output'}", "failed", dump_path
+                )
 
             size = os.path.getsize(partial) if os.path.exists(partial) else 0
             if size == 0:
                 return failed("SQLite backup produced an empty file", "failed", dump_path)
             os.replace(partial, dump_path)
             return DumpResult(
-                container_name=db.container_name, db_type="sqlite",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=size,
-                integrity_check=integrity, status="success",
+                container_name=db.container_name,
+                db_type="sqlite",
+                db_name=db.db_name,
+                dump_path=dump_path,
+                dump_size_bytes=size,
+                integrity_check=integrity,
+                status="success",
                 integrity_detail=integrity_detail,
             )
         finally:
@@ -1241,13 +1335,19 @@ class DBDumper:
                 exec_env["MYSQL_PWD"] = mysql_password
             exec_cmd.extend(["--databases", db_name])
             stream = self._exec_stream_to_file(container, exec_cmd, partial, environment=exec_env)
-            return self._streamed_dump_result(db, "mariadb", dump_binary, dump_path, stream,
-                                              MYSQL_DUMP_TRAILER, partial)
+            return self._streamed_dump_result(
+                db, "mariadb", dump_binary, dump_path, stream, MYSQL_DUMP_TRAILER, partial
+            )
         except Exception as e:
             return DumpResult(
-                container_name=db.container_name, db_type="mariadb",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
+                container_name=db.container_name,
+                db_type="mariadb",
+                db_name=db.db_name,
+                dump_path=dump_path,
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
+                error=redact_credentials(str(e)),
             )
         finally:
             self._discard(partial)
@@ -1267,19 +1367,29 @@ class DBDumper:
             mongo_user = env.get("MONGO_INITDB_ROOT_USERNAME")
             mongo_pass = env.get("MONGO_INITDB_ROOT_PASSWORD")
             if mongo_user and mongo_pass:
-                exec_cmd.extend([
-                    "--username", self._sanitize_identifier(mongo_user),
-                    "--password", mongo_pass,
-                    "--authenticationDatabase", "admin",
-                ])
+                exec_cmd.extend(
+                    [
+                        "--username",
+                        self._sanitize_identifier(mongo_user),
+                        "--password",
+                        mongo_pass,
+                        "--authenticationDatabase",
+                        "admin",
+                    ]
+                )
 
             stream = self._exec_stream_to_file(container, exec_cmd, partial)
             return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None, partial)
         except Exception as e:
             return DumpResult(
-                container_name=db.container_name, db_type="mongodb",
-                db_name=db.db_name, dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=redact_credentials(str(e)),
+                container_name=db.container_name,
+                db_type="mongodb",
+                db_name=db.db_name,
+                dump_path=dump_path,
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
+                error=redact_credentials(str(e)),
             )
         finally:
             self._discard(partial)
@@ -1316,14 +1426,23 @@ class DBDumper:
                     os.replace(partial, dump_path)
             except Exception as e:
                 return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed", error=str(e),
+                    container_name=db.container_name,
+                    db_type="redis",
+                    db_name="redis",
+                    dump_path=dump_path,
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
+                    error=str(e),
                 )
             return DumpResult(
-                container_name=db.container_name, db_type="redis",
-                db_name="redis", dump_path=dump_path, dump_size_bytes=size,
-                integrity_check="skipped", status="success" if size > 0 else "failed",
+                container_name=db.container_name,
+                db_type="redis",
+                db_name="redis",
+                dump_path=dump_path,
+                dump_size_bytes=size,
+                integrity_check="skipped",
+                status="success" if size > 0 else "failed",
                 error=None if size > 0 else "Copied RDB file is empty",
             )
 
@@ -1340,21 +1459,33 @@ class DBDumper:
             if exit_code != 0:
                 error_msg = output.decode(errors="replace") if isinstance(output, bytes) else str(output)
                 return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
+                    container_name=db.container_name,
+                    db_type="redis",
+                    db_name="redis",
+                    dump_path=dump_path,
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
                     error=f"redis-cli LASTSAVE failed: {error_msg[:200]}",
                 )
-            prev_lastsave = output.decode(errors="replace").strip().split()[-1] if isinstance(output, bytes) else str(output).strip().split()[-1]
+            prev_lastsave = (
+                output.decode(errors="replace").strip().split()[-1]
+                if isinstance(output, bytes)
+                else str(output).strip().split()[-1]
+            )
 
             # Trigger BGSAVE (non-blocking)
             exit_code, output = redis_cli("BGSAVE")
             if exit_code != 0:
                 error_msg = output.decode(errors="replace") if isinstance(output, bytes) else str(output)
                 return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
+                    container_name=db.container_name,
+                    db_type="redis",
+                    db_name="redis",
+                    dump_path=dump_path,
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
                     error=f"redis-cli BGSAVE failed: {error_msg[:200]}",
                 )
 
@@ -1367,24 +1498,38 @@ class DBDumper:
                 exit_code, output = redis_cli("LASTSAVE")
                 if exit_code != 0:
                     continue
-                current_lastsave = output.decode(errors="replace").strip().split()[-1] if isinstance(output, bytes) else str(output).strip().split()[-1]
+                current_lastsave = (
+                    output.decode(errors="replace").strip().split()[-1]
+                    if isinstance(output, bytes)
+                    else str(output).strip().split()[-1]
+                )
                 if current_lastsave != prev_lastsave:
                     break
             else:
                 return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
+                    container_name=db.container_name,
+                    db_type="redis",
+                    db_name="redis",
+                    dump_path=dump_path,
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
                     error=f"BGSAVE did not complete within {max_wait}s",
                 )
 
             # Validate that current_lastsave is a numeric timestamp (not an error string)
             if not current_lastsave.isdigit():
-                logger.warning("redis_dump_invalid_lastsave container=%s lastsave=%s", db.container_name, current_lastsave)
+                logger.warning(
+                    "redis_dump_invalid_lastsave container=%s lastsave=%s", db.container_name, current_lastsave
+                )
                 return DumpResult(
-                    container_name=db.container_name, db_type="redis",
-                    db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                    integrity_check="skipped", status="failed",
+                    container_name=db.container_name,
+                    db_type="redis",
+                    db_name="redis",
+                    dump_path=dump_path,
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
                     error=f"LASTSAVE returned non-numeric value: {current_lastsave[:200]}",
                 )
 
@@ -1392,17 +1537,25 @@ class DBDumper:
             exit_code, output = redis_cli("CONFIG", "GET", "dir")
             redis_dir = "/data"  # default
             if exit_code == 0:
-                parts = output.decode(errors="replace").strip().split("\n") if isinstance(output, bytes) else str(output).strip().split("\n")
+                parts = (
+                    output.decode(errors="replace").strip().split("\n")
+                    if isinstance(output, bytes)
+                    else str(output).strip().split("\n")
+                )
                 if len(parts) >= 2:
                     redis_dir = parts[1].strip()
 
             exit_code, output = redis_cli("CONFIG", "GET", "dbfilename")
             rdb_filename = "dump.rdb"  # default
             if exit_code == 0:
-                parts = output.decode(errors="replace").strip().split("\n") if isinstance(output, bytes) else str(output).strip().split("\n")
+                parts = (
+                    output.decode(errors="replace").strip().split("\n")
+                    if isinstance(output, bytes)
+                    else str(output).strip().split("\n")
+                )
                 if len(parts) >= 2:
                     rdb_filename = os.path.basename(parts[1].strip())  # Strip directory components
-                    if not rdb_filename or rdb_filename.startswith('.'):
+                    if not rdb_filename or rdb_filename.startswith("."):
                         rdb_filename = "dump.rdb"  # Safe fallback
 
             # Find the host path for the Redis data directory via bind mounts
@@ -1414,7 +1567,7 @@ class DBDumper:
                 destination = mount.get("Destination", "")
                 # Check if the RDB file's directory matches this mount
                 if rdb_container_path.startswith(destination):
-                    relative = rdb_container_path[len(destination):].lstrip("/")
+                    relative = rdb_container_path[len(destination) :].lstrip("/")
                     host_rdb = os.path.join(source, relative)
                     if os.path.exists(host_rdb):
                         return copied_result(host_rdb)
@@ -1426,36 +1579,58 @@ class DBDumper:
                 if os.path.exists(rdb_path):
                     return copied_result(rdb_path)
 
-            copied, archive_error = self._copy_file_from_container_archive(
-                container, rdb_container_path, partial
-            )
+            copied, archive_error = self._copy_file_from_container_archive(container, rdb_container_path, partial)
             if copied:
                 return copied_result(None)
 
             return DumpResult(
-                container_name=db.container_name, db_type="redis",
-                db_name="redis", dump_path="", dump_size_bytes=0,
-                integrity_check="skipped", status="failed",
+                container_name=db.container_name,
+                db_type="redis",
+                db_name="redis",
+                dump_path="",
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
                 error=f"{rdb_filename} not found in container bind mounts and archive fallback failed: {archive_error}",
             )
         except Exception as e:
             return DumpResult(
-                container_name=db.container_name, db_type="redis",
-                db_name="redis", dump_path=dump_path, dump_size_bytes=0,
-                integrity_check="skipped", status="failed", error=str(e),
+                container_name=db.container_name,
+                db_type="redis",
+                db_name="redis",
+                dump_path=dump_path,
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status="failed",
+                error=str(e),
             )
         finally:
             self._discard(partial)
 
-    def cleanup_old_dumps(self, keep_last: int = 1, max_age_days: int | None = 7,
-                          protect_prefixes: set[str] | None = None,
-                          legacy_prefixes: dict[str, str] | None = None) -> int:
+    def cleanup_old_dumps(
+        self,
+        keep_last: int = 1,
+        max_age_days: int | None = 7,
+        protect_prefixes: set[str] | None = None,
+        legacy_prefixes: dict[str, str] | None = None,
+    ) -> int:
         """Prune the dump directory. See ``cleanup_dump_dir``."""
-        return cleanup_dump_dir(self.dump_dir, keep_last=keep_last, max_age_days=max_age_days,
-                                protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
+        return cleanup_dump_dir(
+            self.dump_dir,
+            keep_last=keep_last,
+            max_age_days=max_age_days,
+            protect_prefixes=protect_prefixes,
+            legacy_prefixes=legacy_prefixes,
+        )
 
-    async def dump_single(self, container_name: str, db_name: str, db_type: str,
-                          host_path: str | None = None, verify_integrity: bool = True) -> DumpResult:
+    async def dump_single(
+        self,
+        container_name: str,
+        db_name: str,
+        db_type: str,
+        host_path: str | None = None,
+        verify_integrity: bool = True,
+    ) -> DumpResult:
         """Dump a single database on-demand (and record it in the dump manifest)."""
         db = DiscoveredDatabase(
             container_name=container_name,

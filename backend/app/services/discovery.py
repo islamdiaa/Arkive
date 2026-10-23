@@ -18,21 +18,30 @@ logger = logging.getLogger("arkive.discovery")
 
 # Image regex patterns for DB detection
 POSTGRES_PATTERNS = [
-    re.compile(r"^postgres(:\S+)?$"), re.compile(r"^library/postgres"),
-    re.compile(r"^bitnami/postgresql"), re.compile(r"^timescale/timescaledb"),
+    re.compile(r"^postgres(:\S+)?$"),
+    re.compile(r"^library/postgres"),
+    re.compile(r"^bitnami/postgresql"),
+    re.compile(r"^timescale/timescaledb"),
     re.compile(r"immich.*postgres"),
 ]
 MYSQL_PATTERNS = [
-    re.compile(r"^mysql(:\S+)?$"), re.compile(r"^mariadb(:\S+)?$"),
-    re.compile(r"^library/mysql"), re.compile(r"^library/mariadb"),
-    re.compile(r"^linuxserver/mariadb"), re.compile(r"^bitnami/mariadb"),
+    re.compile(r"^mysql(:\S+)?$"),
+    re.compile(r"^mariadb(:\S+)?$"),
+    re.compile(r"^library/mysql"),
+    re.compile(r"^library/mariadb"),
+    re.compile(r"^linuxserver/mariadb"),
+    re.compile(r"^bitnami/mariadb"),
 ]
 MONGO_PATTERNS = [
-    re.compile(r"^mongo(:\S+)?$"), re.compile(r"^library/mongo"), re.compile(r"^bitnami/mongodb"),
+    re.compile(r"^mongo(:\S+)?$"),
+    re.compile(r"^library/mongo"),
+    re.compile(r"^bitnami/mongodb"),
 ]
 REDIS_PATTERNS = [
-    re.compile(r"^redis(:\S+)?$"), re.compile(r"^library/redis"),
-    re.compile(r"^bitnami/redis"), re.compile(r"^valkey/valkey"),
+    re.compile(r"^redis(:\S+)?$"),
+    re.compile(r"^library/redis"),
+    re.compile(r"^bitnami/redis"),
+    re.compile(r"^valkey/valkey"),
 ]
 
 # Every database in a Postgres cluster is dumped, not only the one named by the
@@ -58,10 +67,25 @@ _PSQL_ENV = {"PGCONNECT_TIMEOUT": "5", "PGOPTIONS": "-c statement_timeout=15000"
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 SKIP_DIRS = {
-    "media", "movies", "tv", "downloads", "music", "audiobooks", "photos",
-    "transcode", "cache", "tmp", "node_modules", ".git",
+    "media",
+    "movies",
+    "tv",
+    "downloads",
+    "music",
+    "audiobooks",
+    "photos",
+    "transcode",
+    "cache",
+    "tmp",
+    "node_modules",
+    ".git",
     # Backup artifact directories should never be rediscovered as live DBs.
-    "dump", "dumps", "backup", "backups", "restore", "restores",
+    "dump",
+    "dumps",
+    "backup",
+    "backups",
+    "restore",
+    "restores",
 }
 SKIP_FILES = {"Thumbs.db"}
 MAX_DEPTH = 3
@@ -151,12 +175,14 @@ class DiscoveryEngine:
         result = []
         for m in mounts:
             source = self._rewrite_path(m.get("Source", ""))
-            result.append({
-                "type": m.get("Type", ""),
-                "source": source,
-                "destination": m.get("Destination", ""),
-                "rw": m.get("RW", True),
-            })
+            result.append(
+                {
+                    "type": m.get("Type", ""),
+                    "source": source,
+                    "destination": m.get("Destination", ""),
+                    "rw": m.get("RW", True),
+                }
+            )
         return result
 
     @staticmethod
@@ -228,11 +254,7 @@ class DiscoveryEngine:
                 for alias in network_data.get("Aliases", []) or []:
                     names_to_match.add(str(alias or ""))
 
-            normalized_names = {
-                self._normalize_hint(name)
-                for name in names_to_match
-                if name
-            }
+            normalized_names = {self._normalize_hint(name) for name in names_to_match if name}
 
             if normalized_hint in normalized_names:
                 score += 50
@@ -315,7 +337,8 @@ class DiscoveryEngine:
         try:
             exit_code, output = container.exec_run(
                 ["psql", "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", sql],
-                environment=_PSQL_ENV, demux=True,
+                environment=_PSQL_ENV,
+                demux=True,
             )
         except Exception as e:
             return None, redact_credentials(str(e))[:200] or type(e).__name__
@@ -366,12 +389,12 @@ class DiscoveryEngine:
         else:
             enumerated, error = self._enumerate_postgres_databases(container, env, configured_db)
             if enumerated is None:
-                logger.warning("Postgres %s: could not list databases (%s); using %s only",
-                               container.name, error, configured_db)
+                logger.warning(
+                    "Postgres %s: could not list databases (%s); using %s only", container.name, error, configured_db
+                )
                 self._add_pg_warning(
                     container.name,
-                    f"could not list databases in {container.name} ({error}); "
-                    f"only {configured_db} is being backed up",
+                    f"could not list databases in {container.name} ({error}); only {configured_db} is being backed up",
                 )
             else:
                 user = postgres_user_from_env(env)
@@ -379,8 +402,7 @@ class DiscoveryEngine:
                     if name in names:
                         continue
                     if name == PG_MAINTENANCE_DB:
-                        has_tables, error = self._psql_query(container, user, PG_MAINTENANCE_DB,
-                                                             PG_HAS_USER_TABLES_SQL)
+                        has_tables, error = self._psql_query(container, user, PG_MAINTENANCE_DB, PG_HAS_USER_TABLES_SQL)
                         if has_tables is None:
                             self._add_pg_warning(
                                 container.name,
@@ -403,31 +425,37 @@ class DiscoveryEngine:
     def _detect_mysql(self, container, env: dict) -> list[DiscoveredDatabase]:
         """Detect MySQL/MariaDB databases from env vars."""
         db_name = env.get("MYSQL_DATABASE") or env.get("MARIADB_DATABASE") or "mysql"
-        return [DiscoveredDatabase(
-            container_name=container.name,
-            db_type="mariadb",
-            db_name=db_name,
-            host_path=None,
-        )]
+        return [
+            DiscoveredDatabase(
+                container_name=container.name,
+                db_type="mariadb",
+                db_name=db_name,
+                host_path=None,
+            )
+        ]
 
     def _detect_mongo(self, container, env: dict) -> list[DiscoveredDatabase]:
         """Detect MongoDB databases."""
         db_name = env.get("MONGO_INITDB_DATABASE") or "admin"
-        return [DiscoveredDatabase(
-            container_name=container.name,
-            db_type="mongodb",
-            db_name=db_name,
-            host_path=None,
-        )]
+        return [
+            DiscoveredDatabase(
+                container_name=container.name,
+                db_type="mongodb",
+                db_name=db_name,
+                host_path=None,
+            )
+        ]
 
     def _detect_redis(self, container) -> list[DiscoveredDatabase]:
         """Detect Redis databases."""
-        return [DiscoveredDatabase(
-            container_name=container.name,
-            db_type="redis",
-            db_name="redis",
-            host_path=None,
-        )]
+        return [
+            DiscoveredDatabase(
+                container_name=container.name,
+                db_type="redis",
+                db_name="redis",
+                host_path=None,
+            )
+        ]
 
     def _detect_sqlite_from_mounts(self, container, mounts: list[dict]) -> list[DiscoveredDatabase]:
         """Detect SQLite databases from bind mounts."""
@@ -441,15 +469,19 @@ class DiscoveryEngine:
             sqlite_files = self._scan_sqlite_files(source)
             for fpath in sqlite_files:
                 db_name = os.path.basename(fpath)
-                dbs.append(DiscoveredDatabase(
-                    container_name=container.name,
-                    db_type="sqlite",
-                    db_name=db_name,
-                    host_path=fpath,
-                ))
+                dbs.append(
+                    DiscoveredDatabase(
+                        container_name=container.name,
+                        db_type="sqlite",
+                        db_name=db_name,
+                        host_path=fpath,
+                    )
+                )
         return dbs
 
-    def _detect_from_profile(self, container, profile: dict, mounts: list[dict], env: dict, all_containers: list) -> list[DiscoveredDatabase]:
+    def _detect_from_profile(
+        self, container, profile: dict, mounts: list[dict], env: dict, all_containers: list
+    ) -> list[DiscoveredDatabase]:
         """Detect databases based on profile definition."""
         dbs = []
         for db_def in profile.get("databases", []):
@@ -462,16 +494,18 @@ class DiscoveryEngine:
                 for mount in mounts:
                     dest = mount["destination"]
                     if container_path.startswith(dest):
-                        relative = container_path[len(dest):].lstrip("/")
+                        relative = container_path[len(dest) :].lstrip("/")
                         host_path = os.path.join(mount["source"], relative)
                         break
                 if host_path and os.path.exists(host_path):
-                    dbs.append(DiscoveredDatabase(
-                        container_name=container.name,
-                        db_type="sqlite",
-                        db_name=os.path.basename(container_path),
-                        host_path=host_path,
-                    ))
+                    dbs.append(
+                        DiscoveredDatabase(
+                            container_name=container.name,
+                            db_type="sqlite",
+                            db_name=os.path.basename(container_path),
+                            host_path=host_path,
+                        )
+                    )
                 else:
                     logger.warning("Profile %s: SQLite path %s not found on host", profile["name"], container_path)
 
@@ -550,12 +584,14 @@ class DiscoveryEngine:
                         break
                 if not db_name:
                     db_name = db_def.get("default_db", "mysql")
-                dbs.append(DiscoveredDatabase(
-                    container_name=container.name,
-                    db_type="mariadb",
-                    db_name=db_name,
-                    host_path=None,
-                ))
+                dbs.append(
+                    DiscoveredDatabase(
+                        container_name=container.name,
+                        db_type="mariadb",
+                        db_name=db_name,
+                        host_path=None,
+                    )
+                )
 
             elif db_type == "mongodb":
                 env_vars = db_def.get("env_vars", {})
@@ -567,20 +603,24 @@ class DiscoveryEngine:
                         break
                 if not db_name:
                     db_name = db_def.get("default_db", "admin")
-                dbs.append(DiscoveredDatabase(
-                    container_name=container.name,
-                    db_type="mongodb",
-                    db_name=db_name,
-                    host_path=None,
-                ))
+                dbs.append(
+                    DiscoveredDatabase(
+                        container_name=container.name,
+                        db_type="mongodb",
+                        db_name=db_name,
+                        host_path=None,
+                    )
+                )
 
             elif db_type == "redis":
-                dbs.append(DiscoveredDatabase(
-                    container_name=container.name,
-                    db_type="redis",
-                    db_name="redis",
-                    host_path=None,
-                ))
+                dbs.append(
+                    DiscoveredDatabase(
+                        container_name=container.name,
+                        db_type="redis",
+                        db_name="redis",
+                        host_path=None,
+                    )
+                )
 
         return dbs
 
@@ -659,17 +699,19 @@ class DiscoveryEngine:
                             for b in bindings:
                                 ports.append(f"{b.get('HostPort', '')}:{port}")
 
-                discovered.append(DiscoveredContainer(
-                    name=container.name,
-                    image=image,
-                    status=container.status,
-                    databases=databases,
-                    profile=profile_name,
-                    priority=priority,
-                    ports=ports,
-                    mounts=mounts,
-                    compose_project=compose_project,
-                ))
+                discovered.append(
+                    DiscoveredContainer(
+                        name=container.name,
+                        image=image,
+                        status=container.status,
+                        databases=databases,
+                        profile=profile_name,
+                        priority=priority,
+                        ports=ports,
+                        mounts=mounts,
+                        compose_project=compose_project,
+                    )
+                )
 
             except Exception as e:
                 logger.error("Error scanning container %s: %s", container.name, e)
@@ -679,14 +721,17 @@ class DiscoveryEngine:
         by_name = {c.name: c for c in discovered}
         for pg_name, messages in self._pg_warnings.items():
             owner = by_name.get(pg_name) or next(
-                (c for c in discovered if any(d.container_name == pg_name for d in c.databases)), None,
+                (c for c in discovered if any(d.container_name == pg_name for d in c.databases)),
+                None,
             )
             if owner is not None:
                 owner.warnings.extend(m for m in messages if m not in owner.warnings)
 
         duration = time.monotonic() - start
-        logger.info("Discovery scan completed: %d containers, %d databases in %.2fs",
-                     len(discovered),
-                     sum(len(c.databases) for c in discovered),
-                     duration)
+        logger.info(
+            "Discovery scan completed: %d containers, %d databases in %.2fs",
+            len(discovered),
+            sum(len(c.databases) for c in discovered),
+            duration,
+        )
         return discovered

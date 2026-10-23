@@ -25,7 +25,17 @@ def _validate_events(events: list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(events))
 
 
-VALID_NOTIFICATION_TYPES = {"slack", "discord", "telegram", "email", "ntfy", "gotify", "pushover", "webhook", "uptimekuma"}
+VALID_NOTIFICATION_TYPES = {
+    "slack",
+    "discord",
+    "telegram",
+    "email",
+    "ntfy",
+    "gotify",
+    "pushover",
+    "webhook",
+    "uptimekuma",
+}
 
 
 class NotificationChannelCreate(BaseModel):
