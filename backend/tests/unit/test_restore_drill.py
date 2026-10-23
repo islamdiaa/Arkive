@@ -555,7 +555,10 @@ def _docker_with_source():
 
 
 @pytest.mark.asyncio
-async def test_drill_passes_and_is_recorded(tmp_path):
+async def test_drill_passes_and_is_recorded(tmp_path, monkeypatch):
+    # Running as root: no user override on the throwaway container (the
+    # non-root case is covered separately; CI runners are not root).
+    monkeypatch.setattr(rd.os, "geteuid", lambda: 0)
     cfg = await _make_cfg(tmp_path)
     backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
     docker = _docker_with_source()
@@ -592,7 +595,7 @@ async def test_drill_passes_and_is_recorded(tmp_path):
     assert kw["environment"]["POSTGRES_DB"] == "appdb"
     assert kw["environment"]["POSTGRES_PASSWORD"] not in ("", "hunter2")
     assert "TZ" not in kw["environment"]
-    assert "user" not in kw  # tests run as root
+    assert "user" not in kw
     # No host path known -> dump copied in with put_archive, default volume removed with v=True.
     assert "volumes" not in kw
     path, members = docker.created[0].archives[0]
