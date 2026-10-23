@@ -170,8 +170,8 @@ async def list_all_runs(
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""  # nosec B608
 
     cursor = await db.execute(
-        f"SELECT COUNT(*) FROM job_runs r {where_clause}",
-        params,  # nosec B608
+        f"SELECT COUNT(*) FROM job_runs r {where_clause}",  # nosec B608 - fixed clauses, values bound
+        params,
     )
     total = (await cursor.fetchone())[0]
 
@@ -467,8 +467,8 @@ async def update_job(
     params.append(job_id)
 
     await db.execute(
-        f"UPDATE backup_jobs SET {', '.join(updates)} WHERE id = ?",
-        params,  # nosec B608
+        f"UPDATE backup_jobs SET {', '.join(updates)} WHERE id = ?",  # nosec B608 - allowlisted columns
+        params,
     )
 
     # Activity log

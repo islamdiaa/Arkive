@@ -475,8 +475,8 @@ async def update_target(
         new_config = body.config
 
     await db.execute(
-        f"UPDATE storage_targets SET {', '.join(updates)} WHERE id = ?",
-        params,  # nosec B608
+        f"UPDATE storage_targets SET {', '.join(updates)} WHERE id = ?",  # nosec B608 - allowlisted columns
+        params,
     )
 
     changed = [u.split(" = ")[0] for u in updates if u != "updated_at = ?"]
