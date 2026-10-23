@@ -3,8 +3,8 @@ Security tests — authentication bypass, brute force, privilege escalation.
 """
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,9 +77,7 @@ async def test_rate_limiting_triggers_after_5_attempts(client):
     client.cookies.clear()
 
     for i in range(5):
-        resp = await client.get(
-            "/api/jobs", headers=auth_headers(f"ark_bad_{i}")
-        )
+        resp = await client.get("/api/jobs", headers=auth_headers(f"ark_bad_{i}"))
         assert resp.status_code == 401
 
     resp = await client.get("/api/jobs", headers=auth_headers("ark_bad_6"))
@@ -108,4 +106,3 @@ async def test_status_accessible_without_auth(client):
     await do_setup(client)
     resp = await client.get("/api/status")
     assert resp.status_code == 200
-

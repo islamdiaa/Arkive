@@ -11,8 +11,8 @@ import aiosqlite
 # Defaults for settings read outside the settings API.
 DEFAULTS: dict[str, str] = {
     "heartbeat_url": "",
-    "stale_backup_hours": "0",          # 0 = derive from each job's schedule
-    "dump_compression": "none",         # none | gzip
+    "stale_backup_hours": "0",  # 0 = derive from each job's schedule
+    "dump_compression": "none",  # none | gzip
     "restore_drill_enabled": "true",
     "restore_drill_schedule": "0 7 * * 0",
     "restore_drill_max_databases": "3",
@@ -33,8 +33,9 @@ async def get_setting(db: aiosqlite.Connection, key: str, default: str | None = 
     return str(row[0])
 
 
-async def get_int_setting(db: aiosqlite.Connection, key: str, default: int | None = None,
-                          minimum: int | None = None) -> int:
+async def get_int_setting(
+    db: aiosqlite.Connection, key: str, default: int | None = None, minimum: int | None = None
+) -> int:
     fallback = int(DEFAULTS.get(key, "0")) if default is None else default
     try:
         value = int(await get_setting(db, key, str(fallback)))

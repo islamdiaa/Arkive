@@ -1,8 +1,8 @@
 """Unit tests for app.services.scheduler — ArkiveScheduler."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.services.scheduler import ArkiveScheduler
@@ -112,12 +112,14 @@ class TestArkiveSchedulerListAndQuery:
     def test_get_all_next_runs_with_jobs(self, scheduler):
         """get_all_next_runs returns entries for scheduled jobs."""
         # Add job without starting scheduler (next_run_time will be None)
-        scheduler._add_job({
-            "id": "j1",
-            "schedule": "0 2 * * *",
-            "name": "Nightly",
-            "type": "full",
-        })
+        scheduler._add_job(
+            {
+                "id": "j1",
+                "schedule": "0 2 * * *",
+                "name": "Nightly",
+                "type": "full",
+            }
+        )
         result = scheduler.get_all_next_runs()
         assert isinstance(result, dict)
         # Job should be in the map

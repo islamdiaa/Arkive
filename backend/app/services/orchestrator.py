@@ -7,7 +7,7 @@ import os
 import shutil
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +20,20 @@ from app.core.security import decrypt_config
 from app.services.backup_engine import EXCLUDE_MARKER, BackupEngine
 from app.services.cloud_manager import CloudManager
 from app.services.db_dumper import (
-    PARTIAL_SUFFIX, DBDumper, DumpResult, cleanup_dump_dir, dump_prefix, legacy_dump_prefix,
+    PARTIAL_SUFFIX,
+    DBDumper,
+    DumpResult,
+    cleanup_dump_dir,
+    dump_prefix,
+    legacy_dump_prefix,
 )
 from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
-from app.services.lock_manager import BackupLockManager
-from app.services.lock_manager import _get_proc_start_time  # noqa: F401 — re-export for backward compat
+from app.services.lock_manager import (
+    BackupLockManager,
+    _get_proc_start_time,  # noqa: F401 — re-export for backward compat
+)
 from app.services.notifier import Notifier
 from app.services.repo_paths import build_repo_path
 from app.services.retention import read_retention_settings
@@ -51,15 +58,20 @@ def cleanup_stale_backup_lock(config_dir: Path | None = None) -> bool:
     return mgr.cleanup_stale_backup_lock()
 
 
-DEFAULT_MIN_DISK_BYTES = 1 * 1024 ** 3   # 1 GB
-DEFAULT_WARN_DISK_BYTES = 5 * 1024 ** 3  # 5 GB
+DEFAULT_MIN_DISK_BYTES = 1 * 1024**3  # 1 GB
+DEFAULT_WARN_DISK_BYTES = 5 * 1024**3  # 5 GB
 
 
 ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     "auth_error": {
         "patterns": [
-            "401", "403", "token expired", "unauthorized", "forbidden",
-            "auth", "credential",
+            "401",
+            "403",
+            "token expired",
+            "unauthorized",
+            "forbidden",
+            "auth",
+            "credential",
         ],
         "severity": "HIGH",
         "auto_retry": False,
@@ -67,8 +79,13 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "network_error": {
         "patterns": [
-            "connection refused", "timeout", "dns", "network",
-            "unreachable", "connect", "resolve",
+            "connection refused",
+            "timeout",
+            "dns",
+            "network",
+            "unreachable",
+            "connect",
+            "resolve",
         ],
         "severity": "MEDIUM",
         "auto_retry": True,
@@ -76,8 +93,13 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "storage_full": {
         "patterns": [
-            "quota", "storage cap", "exceeded", "no space left on device",
-            "disk full", "enospc", "disk quota",
+            "quota",
+            "storage cap",
+            "exceeded",
+            "no space left on device",
+            "disk full",
+            "enospc",
+            "disk quota",
         ],
         "severity": "CRITICAL",
         "auto_retry": False,
@@ -85,7 +107,10 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "permission_error": {
         "patterns": [
-            "permission denied", "access denied", "eperm", "eacces",
+            "permission denied",
+            "access denied",
+            "eperm",
+            "eacces",
         ],
         "severity": "HIGH",
         "auto_retry": False,
@@ -93,8 +118,11 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "container_error": {
         "patterns": [
-            "not running", "exec_run", "container not found",
-            "no such container", "is not running",
+            "not running",
+            "exec_run",
+            "container not found",
+            "no such container",
+            "is not running",
         ],
         "severity": "MEDIUM",
         "auto_retry": False,
@@ -102,8 +130,11 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "dump_error": {
         "patterns": [
-            "integrity_check", "corrupt", "malformed",
-            "database disk image", "dump failed",
+            "integrity_check",
+            "corrupt",
+            "malformed",
+            "database disk image",
+            "dump failed",
         ],
         "severity": "CRITICAL",
         "auto_retry": False,
@@ -111,8 +142,10 @@ ERROR_CATEGORIES: dict[str, dict[str, Any]] = {
     },
     "restic_error": {
         "patterns": [
-            "repository is already locked", "unable to create lock",
-            "restic", "snapshot",
+            "repository is already locked",
+            "unable to create lock",
+            "restic",
+            "snapshot",
         ],
         "severity": "LOW",
         "auto_retry": True,
@@ -148,8 +181,12 @@ class _CancelledError(Exception):
 
 
 _PHASE_ORDER = [
-    "discovering", "dumping_databases", "flash_backup",
-    "uploading", "retention_cleanup", "refreshing_snapshots",
+    "discovering",
+    "dumping_databases",
+    "flash_backup",
+    "uploading",
+    "retention_cleanup",
+    "refreshing_snapshots",
 ]
 
 
@@ -195,7 +232,7 @@ class BackupOrchestrator:
 
     async def _mark_run_conflict(self, run_id: str, job_id: str, trigger: str, message: str) -> str:
         """Persist a terminal run when startup is blocked by a lock conflict."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         terminal_status = "skipped" if trigger == "scheduled" else "failed"
         severity = "info" if trigger == "scheduled" else "warning"
         async with aiosqlite.connect(self.config.db_path) as db:
@@ -260,8 +297,12 @@ class BackupOrchestrator:
             return True
         if wait_seconds <= 0:
             return False
-        logger.info("Backup run %s waiting up to %ds for the running operation to finish: %s",
-                    run_id, int(wait_seconds), self._lock_conflict_message())
+        logger.info(
+            "Backup run %s waiting up to %ds for the running operation to finish: %s",
+            run_id,
+            int(wait_seconds),
+            self._lock_conflict_message(),
+        )
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
             await asyncio.sleep(min(self.lock_poll_seconds, max(deadline - time.monotonic(), 0)))
@@ -279,8 +320,13 @@ class BackupOrchestrator:
             except Exception as e:
                 last_error = e
                 if attempt < self.discovery_attempts:
-                    logger.warning("Discovery attempt %d/%d failed, retrying in %ds: %s",
-                                   attempt, self.discovery_attempts, self.discovery_retry_seconds, e)
+                    logger.warning(
+                        "Discovery attempt %d/%d failed, retrying in %ds: %s",
+                        attempt,
+                        self.discovery_attempts,
+                        self.discovery_retry_seconds,
+                        e,
+                    )
                     await asyncio.sleep(self.discovery_retry_seconds)
         assert last_error is not None
         raise last_error
@@ -307,11 +353,17 @@ class BackupOrchestrator:
             row = await cursor.fetchone()
         return int(row[0] or 0) if row else 0
 
-    async def run_backup(self, job_id: str, trigger: str = "manual",
-                         skip_databases: bool = False, skip_flash: bool = False,
-                         dry_run: bool = False, run_id: str | None = None,
-                         lock_wait_seconds: float | None = None,
-                         **kwargs) -> dict:
+    async def run_backup(
+        self,
+        job_id: str,
+        trigger: str = "manual",
+        skip_databases: bool = False,
+        skip_flash: bool = False,
+        dry_run: bool = False,
+        run_id: str | None = None,
+        lock_wait_seconds: float | None = None,
+        **kwargs,
+    ) -> dict:
         """Execute the full backup pipeline.
 
         Pipeline steps:
@@ -347,14 +399,17 @@ class BackupOrchestrator:
             logger.warning("Backup run %s could not start: %s", run_id, message)
             terminal_status = await self._mark_run_conflict(run_id, job_id, trigger, message)
             event_name = "backup:cancelled" if terminal_status == "skipped" else "backup:failed"
-            await self.event_bus.publish(event_name, {
-                "run_id": run_id,
-                "job_id": job_id,
-                "status": terminal_status,
-                "error": message,
-                "error_category": "conflict",
-                "user_action": "Wait for the current backup/restore operation to finish",
-            })
+            await self.event_bus.publish(
+                event_name,
+                {
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "status": terminal_status,
+                    "error": message,
+                    "error_category": "conflict",
+                    "user_action": "Wait for the current backup/restore operation to finish",
+                },
+            )
             current_run_id.reset(_run_id_token)
             return {"status": "conflict", "message": message, "run_id": run_id}
 
@@ -382,15 +437,9 @@ class BackupOrchestrator:
 
             job_type = job.get("type") or "full"
             include_databases = (
-                not skip_databases
-                and bool(job.get("include_databases", True))
-                and job_type in DATABASE_JOB_TYPES
+                not skip_databases and bool(job.get("include_databases", True)) and job_type in DATABASE_JOB_TYPES
             )
-            include_flash = (
-                not skip_flash
-                and bool(job.get("include_flash", True))
-                and job_type in FLASH_JOB_TYPES
-            )
+            include_flash = not skip_flash and bool(job.get("include_flash", True)) and job_type in FLASH_JOB_TYPES
 
             # Create run record (skip if already created by caller)
             async with aiosqlite.connect(self.config.db_path) as db:
@@ -403,9 +452,14 @@ class BackupOrchestrator:
                     )
                     await db.commit()
 
-            await self.event_bus.publish("backup:started", {
-                "run_id": run_id, "job_id": job_id, "trigger": trigger,
-            })
+            await self.event_bus.publish(
+                "backup:started",
+                {
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "trigger": trigger,
+                },
+            )
 
             # Step 3: Discovery
             await self._update_progress(run_id, "discovering")
@@ -447,7 +501,8 @@ class BackupOrchestrator:
                         warnings.append(f"no databases discovered (a recent run found {previous})")
 
             cleanup_max_age, protect_prefixes, legacy_prefixes = self._dump_cleanup_policy(
-                discovery_ok, containers, all_databases)
+                discovery_ok, containers, all_databases
+            )
 
             if self._is_cancelled(run_id):
                 return await self._cancel(run_id)
@@ -484,11 +539,18 @@ class BackupOrchestrator:
                     status = container_status.get(d.container_name, "running")
                     if d.db_type in EXEC_DUMP_TYPES and status != "running":
                         skipped_dbs.append(f"{d.container_name}/{d.db_name}")
-                        dump_results.append(DumpResult(
-                            container_name=d.container_name, db_type=d.db_type, db_name=d.db_name,
-                            dump_path="", dump_size_bytes=0, integrity_check="skipped",
-                            status="skipped", error=f"Container is {status}, not running",
-                        ))
+                        dump_results.append(
+                            DumpResult(
+                                container_name=d.container_name,
+                                db_type=d.db_type,
+                                db_name=d.db_name,
+                                dump_path="",
+                                dump_size_bytes=0,
+                                integrity_check="skipped",
+                                status="skipped",
+                                error=f"Container is {status}, not running",
+                            )
+                        )
                     else:
                         to_dump.append(d)
                 if to_dump:
@@ -501,8 +563,17 @@ class BackupOrchestrator:
                             """INSERT INTO job_run_databases
                             (run_id, container_name, db_type, db_name, dump_size_bytes, integrity_check, status, host_path, error)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (run_id, dr.container_name, dr.db_type, dr.db_name,
-                             dr.dump_size_bytes, dr.integrity_check, dr.status, dr.dump_path, dr.error),
+                            (
+                                run_id,
+                                dr.container_name,
+                                dr.db_type,
+                                dr.db_name,
+                                dr.dump_size_bytes,
+                                dr.integrity_check,
+                                dr.status,
+                                dr.dump_path,
+                                dr.error,
+                            ),
                         )
                     # Roles/globals dumps are recorded per run but aren't databases.
                     database_results = [d for d in dump_results if d.kind == "database"]
@@ -515,25 +586,30 @@ class BackupOrchestrator:
                     )
                     await db.commit()
                 if skipped_dbs:
-                    logger.info("Skipped %d database(s) in stopped containers: %s",
-                                len(skipped_dbs), ", ".join(skipped_dbs))
+                    logger.info(
+                        "Skipped %d database(s) in stopped containers: %s", len(skipped_dbs), ", ".join(skipped_dbs)
+                    )
                 # A stopped database is only covered by a dump made while it
                 # ran; one that never had a dump isn't backed up at all.
                 undumped = [
-                    f"{d.container_name}/{d.db_name}" for d in all_databases
-                    if f"{d.container_name}/{d.db_name}" in skipped_dbs
-                    and not self._has_dump(d)
+                    f"{d.container_name}/{d.db_name}"
+                    for d in all_databases
+                    if f"{d.container_name}/{d.db_name}" in skipped_dbs and not self._has_dump(d)
                 ]
                 if undumped:
-                    warnings.append("database(s) in stopped containers have never been dumped: "
-                                    + ", ".join(undumped))
+                    warnings.append("database(s) in stopped containers have never been dumped: " + ", ".join(undumped))
 
             # Keep only the newest dump per database (older generations live
             # in earlier snapshots) and drop dumps of containers that are gone,
             # so each snapshot reflects the current state.
             try:
-                cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
-                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
+                cleanup_dump_dir(
+                    self.config.dump_dir,
+                    keep_last=1,
+                    max_age_days=cleanup_max_age,
+                    protect_prefixes=protect_prefixes,
+                    legacy_prefixes=legacy_prefixes,
+                )
             except Exception as e:
                 logger.warning("Pre-upload dump cleanup failed: %s", e)
 
@@ -603,9 +679,7 @@ class BackupOrchestrator:
                 backup_paths.extend(resolved_job_paths)
 
                 # Also include enabled watched directories
-                cursor = await db.execute(
-                    "SELECT path FROM watched_directories WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT path FROM watched_directories WHERE enabled = 1")
                 for row in await cursor.fetchall():
                     if row["path"] not in backup_paths:
                         backup_paths.append(row["path"])
@@ -643,8 +717,9 @@ class BackupOrchestrator:
                         try:
                             await self.cloud_manager.write_target_config(target)
                         except Exception as e:
-                            logger.warning("Could not write rclone config for %s: %s",
-                                           target.get("name", target.get("id", "")), e)
+                            logger.warning(
+                                "Could not write rclone config for %s: %s", target.get("name", target.get("id", "")), e
+                            )
 
                     # Init repo if needed
                     await self.backup_engine.init_repo(target)
@@ -677,8 +752,14 @@ class BackupOrchestrator:
                     await db.execute(
                         """INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id, upload_bytes, error)
                         VALUES (?, ?, ?, ?, ?, ?)""",
-                        (run_id, target.get("id", ""), target_status,
-                         result.get("snapshot_id", ""), upload_bytes, target_error or None),
+                        (
+                            run_id,
+                            target.get("id", ""),
+                            target_status,
+                            result.get("snapshot_id", ""),
+                            upload_bytes,
+                            target_error or None,
+                        ),
                     )
                     await db.commit()
                     if target_status in ("success", "partial"):
@@ -700,9 +781,11 @@ class BackupOrchestrator:
                     prune=False,
                 )
                 if forget_result.get("status") != "success":
-                    logger.warning("Retention (forget) failed for target %s: %s",
-                                   target.get("name", target.get("id", "")),
-                                   forget_result.get("error") or forget_result.get("output"))
+                    logger.warning(
+                        "Retention (forget) failed for target %s: %s",
+                        target.get("name", target.get("id", "")),
+                        forget_result.get("error") or forget_result.get("output"),
+                    )
 
             # Step 8b: Refresh snapshot cache
             await self._update_progress(run_id, "refreshing_snapshots")
@@ -721,19 +804,22 @@ class BackupOrchestrator:
                                 """INSERT OR REPLACE INTO snapshots
                                 (id, target_id, full_id, time, hostname, paths, tags, size_bytes)
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                                (short_id, target_id, snap.get("id", ""),
-                                 snap.get("time", ""), snap.get("hostname", ""),
-                                 json.dumps(snap.get("paths", [])),
-                                 json.dumps(snap.get("tags", [])),
-                                 snap.get("size", 0)),
+                                (
+                                    short_id,
+                                    target_id,
+                                    snap.get("id", ""),
+                                    snap.get("time", ""),
+                                    snap.get("hostname", ""),
+                                    json.dumps(snap.get("paths", [])),
+                                    json.dumps(snap.get("tags", [])),
+                                    snap.get("size", 0),
+                                ),
                             )
 
                         # Remove stale snapshots from DB that restic no longer has.
                         # An empty listing usually means restic failed, so keep
                         # the cache rather than wiping it.
-                        cursor = await db.execute(
-                            "SELECT id FROM snapshots WHERE target_id = ?", (target_id,)
-                        )
+                        cursor = await db.execute("SELECT id FROM snapshots WHERE target_id = ?", (target_id,))
                         db_ids = {row[0] for row in await cursor.fetchall()}
                         stale_ids = db_ids - current_ids if current_ids else set()
                         if stale_ids:
@@ -742,8 +828,7 @@ class BackupOrchestrator:
                                 f"DELETE FROM snapshots WHERE target_id = ? AND id IN ({placeholders})",  # nosec B608
                                 [target_id, *stale_ids],
                             )
-                            logger.info("Removed %d stale snapshot records for target %s",
-                                        len(stale_ids), target_id)
+                            logger.info("Removed %d stale snapshot records for target %s", len(stale_ids), target_id)
 
                         if snapshots:
                             total_size = sum(s.get("size", 0) for s in snapshots)
@@ -757,8 +842,9 @@ class BackupOrchestrator:
                             )
                         await db.commit()
                     except Exception as e:
-                        logger.warning("Failed to refresh snapshots for target %s: %s",
-                                       target.get("name", target.get("id", "")), e)
+                        logger.warning(
+                            "Failed to refresh snapshots for target %s: %s", target.get("name", target.get("id", "")), e
+                        )
 
             # Step 9: Complete — check if any targets failed
             duration = int(time.monotonic() - start_time)
@@ -794,26 +880,47 @@ class BackupOrchestrator:
                 await db.execute(
                     """UPDATE job_runs SET status = ?, completed_at = ?,
                     duration_seconds = ?, total_size_bytes = ?, error_message = ? WHERE id = ?""",
-                    (final_status, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), duration,
-                     total_bytes, None if final_status == "success" else status_msg[:2000], run_id),
+                    (
+                        final_status,
+                        datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        duration,
+                        total_bytes,
+                        None if final_status == "success" else status_msg[:2000],
+                        run_id,
+                    ),
                 )
                 # Activity log
                 severity = "info" if final_status == "success" else "warning"
                 await db.execute(
                     """INSERT INTO activity_log (type, action, message, details, severity)
                     VALUES ('backup', 'completed', ?, ?, ?)""",
-                    (status_msg,
-                     json.dumps({"run_id": run_id, "job_id": job_id, "duration": duration,
-                                 "status": final_status, "failed_targets": target_failures,
-                                 "warnings": substep_failures}),
-                     severity),
+                    (
+                        status_msg,
+                        json.dumps(
+                            {
+                                "run_id": run_id,
+                                "job_id": job_id,
+                                "duration": duration,
+                                "status": final_status,
+                                "failed_targets": target_failures,
+                                "warnings": substep_failures,
+                            }
+                        ),
+                        severity,
+                    ),
                 )
                 await db.commit()
 
-            await self.event_bus.publish("backup:completed", {
-                "run_id": run_id, "job_id": job_id, "duration": duration,
-                "status": final_status, "total_bytes": total_bytes,
-            })
+            await self.event_bus.publish(
+                "backup:completed",
+                {
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "duration": duration,
+                    "status": final_status,
+                    "total_bytes": total_bytes,
+                },
+            )
 
             event_type, title, severity = {
                 "success": ("backup.success", "Backup Completed", "success"),
@@ -844,15 +951,20 @@ class BackupOrchestrator:
                 await db.execute(
                     """UPDATE job_runs SET status = 'failed', completed_at = ?,
                     duration_seconds = ?, error_message = ? WHERE id = ?""",
-                    (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), duration, str(e), run_id),
+                    (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), duration, str(e), run_id),
                 )
                 await db.commit()
 
-            await self.event_bus.publish("backup:failed", {
-                "run_id": run_id, "job_id": job_id, "error": str(e),
-                "error_category": error_category,
-                "user_action": error_info.get("user_action"),
-            })
+            await self.event_bus.publish(
+                "backup:failed",
+                {
+                    "run_id": run_id,
+                    "job_id": job_id,
+                    "error": str(e),
+                    "error_category": error_category,
+                    "user_action": error_info.get("user_action"),
+                },
+            )
 
             try:
                 await self.notifier.send(
@@ -865,15 +977,19 @@ class BackupOrchestrator:
             except Exception as notify_err:
                 logger.warning("Failure notification failed (non-critical): %s", notify_err)
 
-            return {"status": "failed", "run_id": run_id, "error": str(e),
-                    "error_category": error_category}
+            return {"status": "failed", "run_id": run_id, "error": str(e), "error_category": error_category}
 
         finally:
             # Clean up old dump files even on failure (or when Docker is down)
             # to prevent cascading disk-full issues.
             try:
-                cleanup_dump_dir(self.config.dump_dir, keep_last=1, max_age_days=cleanup_max_age,
-                                 protect_prefixes=protect_prefixes, legacy_prefixes=legacy_prefixes)
+                cleanup_dump_dir(
+                    self.config.dump_dir,
+                    keep_last=1,
+                    max_age_days=cleanup_max_age,
+                    protect_prefixes=protect_prefixes,
+                    legacy_prefixes=legacy_prefixes,
+                )
             except Exception as e:
                 logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
@@ -896,14 +1012,15 @@ class BackupOrchestrator:
         async with aiosqlite.connect(self.config.db_path) as db:
             await db.execute(
                 "UPDATE job_runs SET status = 'cancelled', completed_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), run_id),
+                (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), run_id),
             )
             await db.commit()
         await self.event_bus.publish("backup:cancelled", {"run_id": run_id})
         return {"status": "cancelled", "run_id": run_id}
 
-    def _dump_cleanup_policy(self, discovery_ok: bool, containers: list, all_databases: list
-                             ) -> tuple[int | None, set[str], dict[str, str]]:
+    def _dump_cleanup_policy(
+        self, discovery_ok: bool, containers: list, all_databases: list
+    ) -> tuple[int | None, set[str], dict[str, str]]:
         """(max_age_days, protect_prefixes, legacy_prefixes) for dump cleanup.
 
         Dumps are aged out only for databases that are gone, which this run can
@@ -927,8 +1044,12 @@ class BackupOrchestrator:
             and any(db.db_type in EXEC_DUMP_TYPES for db in getattr(c, "databases", []) or [])
             for c in containers
         )
-        complete = (discovery_ok and bool(all_databases) and not stopped_exec
-                    and not any(getattr(c, "warnings", None) for c in containers))
+        complete = (
+            discovery_ok
+            and bool(all_databases)
+            and not stopped_exec
+            and not any(getattr(c, "warnings", None) for c in containers)
+        )
         return (self.dump_max_age_days if complete else None), protect, legacy
 
     def _has_dump(self, db) -> bool:
@@ -1011,8 +1132,11 @@ class BackupOrchestrator:
         docker_client = getattr(self.backup_engine, "docker_client", None)
         aliases: list[str] = []
         for path in storage + [partials]:
-            base, pattern = (path[: -len(f"/*{PARTIAL_SUFFIX}")], f"/*{PARTIAL_SUFFIX}") \
-                if path.endswith(f"/*{PARTIAL_SUFFIX}") else (path, "")
+            base, pattern = (
+                (path[: -len(f"/*{PARTIAL_SUFFIX}")], f"/*{PARTIAL_SUFFIX}")
+                if path.endswith(f"/*{PARTIAL_SUFFIX}")
+                else (path, "")
+            )
             try:
                 host_path = host_path_for(base, docker_client)
             except Exception:
@@ -1026,13 +1150,18 @@ class BackupOrchestrator:
         normalized = phase.split(":")[0] if ":" in phase else phase
         idx = _PHASE_ORDER.index(normalized) if normalized in _PHASE_ORDER else 0
         percent = round(((idx + 1) / len(_PHASE_ORDER)) * 100)
-        await self.event_bus.publish("backup:progress", {
-            "run_id": run_id,
-            "phase": phase,
-            "percent": percent,
-        })
+        await self.event_bus.publish(
+            "backup:progress",
+            {
+                "run_id": run_id,
+                "phase": phase,
+                "percent": percent,
+            },
+        )
 
-    async def _check_disk_space_for_backup(self, run_id: str, min_bytes: int = DEFAULT_MIN_DISK_BYTES, warn_bytes: int = DEFAULT_WARN_DISK_BYTES) -> None:
+    async def _check_disk_space_for_backup(
+        self, run_id: str, min_bytes: int = DEFAULT_MIN_DISK_BYTES, warn_bytes: int = DEFAULT_WARN_DISK_BYTES
+    ) -> None:
         """Check available disk space on dump directory. Raises RuntimeError if below min_bytes."""
         dump_dir = str(self.config.dump_dir)
         try:
@@ -1041,15 +1170,21 @@ class BackupOrchestrator:
             logger.warning("Could not check disk space on %s: %s", dump_dir, e)
             return
         free = usage.free
-        free_gb = free / (1024 ** 3)
+        free_gb = free / (1024**3)
         if free < min_bytes:
-            msg = (f"Insufficient disk space on dump directory ({dump_dir}): "
-                   f"{free_gb:.1f} GB free, {min_bytes // (1024**3)} GB required. "
-                   "Free disk space or lower the min_disk_space_bytes setting.")
+            msg = (
+                f"Insufficient disk space on dump directory ({dump_dir}): "
+                f"{free_gb:.1f} GB free, {min_bytes // (1024**3)} GB required. "
+                "Free disk space or lower the min_disk_space_bytes setting."
+            )
             logger.error("Pre-backup disk check FAILED: %s", msg)
             raise RuntimeError(msg)
         if free < warn_bytes:
-            logger.warning("Low disk space on dump directory (%s): %.1f GB free. Backup will proceed but consider freeing space.", dump_dir, free_gb)
+            logger.warning(
+                "Low disk space on dump directory (%s): %.1f GB free. Backup will proceed but consider freeing space.",
+                dump_dir,
+                free_gb,
+            )
         else:
             logger.info("Disk space check OK: %.1f GB free on %s", free_gb, dump_dir)
 
@@ -1057,10 +1192,9 @@ class BackupOrchestrator:
         """Backup Arkive's own SQLite database."""
         try:
             from app.utils.subprocess_runner import run_command
+
             self_backup_path = str(self.config.dump_dir / "arkive_self.db")
-            result = await run_command([
-                "sqlite3", str(self.config.db_path), f".backup {self_backup_path}"
-            ])
+            result = await run_command(["sqlite3", str(self.config.db_path), f".backup {self_backup_path}"])
             if result.returncode == 0:
                 logger.info("Self-backup completed: %s", self_backup_path)
             else:

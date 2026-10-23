@@ -32,7 +32,7 @@ import time
 import uuid
 import zlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -98,12 +98,13 @@ CONTAINER_LOAD_ERR = "/tmp/arkive-drill-load.err"  # nosec B108 - inside the thr
 # are only ever expanded inside double quotes.
 _PG_LOAD_SCRIPT = (
     'psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
-    '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_DUMP_FILE
-    + " >/dev/null 2>" + CONTAINER_LOAD_ERR
+    '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_DUMP_FILE + " >/dev/null 2>" + CONTAINER_LOAD_ERR
 )
 _MYSQL_LOAD_SCRIPT = (
-    '"$ARKIVE_DRILL_CLIENT" -h 127.0.0.1 --protocol=tcp -uroot <' + CONTAINER_DUMP_FILE
-    + " >/dev/null 2>" + CONTAINER_LOAD_ERR
+    '"$ARKIVE_DRILL_CLIENT" -h 127.0.0.1 --protocol=tcp -uroot <'
+    + CONTAINER_DUMP_FILE
+    + " >/dev/null 2>"
+    + CONTAINER_LOAD_ERR
 )
 
 _PG_COUNT_SQL = (
@@ -121,7 +122,7 @@ _MYSQL_COUNT_SQL = (
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _safe(value: str) -> str:
@@ -152,7 +153,7 @@ def _psql_token(text: str) -> str | None:
     while i < len(text):
         ch = text[i]
         if ch == '"':
-            if text[i + 1:i + 2] == '"':
+            if text[i + 1 : i + 2] == '"':
                 out.append('"')
                 i += 2
                 continue
@@ -188,7 +189,7 @@ def _conninfo_value(conninfo: str, key: str) -> str | None:
                 if ch == "\\" and i + 1 < n:
                     value.append(conninfo[i + 1])
                     i += 2
-                elif ch == "'" and conninfo[i + 1:i + 2] == "'":
+                elif ch == "'" and conninfo[i + 1 : i + 2] == "'":
                     value.append("'")
                     i += 2
                 elif ch == "'":
@@ -242,11 +243,11 @@ class DrillAlreadyRunningError(RuntimeError):
     """A drill is already in progress."""
 
 
-class DrillSkip(Exception):
+class DrillSkip(Exception):  # noqa: N818 - control flow, not an error
     """A database could not be tested for an environmental reason (not a dump failure)."""
 
 
-class DrillFailure(Exception):
+class DrillFailure(Exception):  # noqa: N818 - a test result, not an error
     """The dump itself is broken (corrupt, truncated, does not load)."""
 
 
@@ -291,12 +292,16 @@ class DrillResult:
     duration_seconds: float = 0.0
 
     @classmethod
-    def for_candidate(cls, cand: DumpCandidate, status: str, detail: str,
-                      duration: float = 0.0) -> "DrillResult":
+    def for_candidate(cls, cand: DumpCandidate, status: str, detail: str, duration: float = 0.0) -> DrillResult:
         return cls(
-            container_name=cand.container_name, db_type=cand.db_type, db_name=cand.db_name,
-            dump_file=cand.file, dump_size_bytes=cand.size_bytes, status=status,
-            detail=redact_credentials(detail)[:2000], duration_seconds=round(duration, 2),
+            container_name=cand.container_name,
+            db_type=cand.db_type,
+            db_name=cand.db_name,
+            dump_file=cand.file,
+            dump_size_bytes=cand.size_bytes,
+            status=status,
+            detail=redact_credentials(detail)[:2000],
+            duration_seconds=round(duration, 2),
         )
 
 
@@ -309,7 +314,7 @@ class DrillOutcome:
     snapshot_id: str | None = None
     results: list[DrillResult] = field(default_factory=list)
 
-    def skip(self, reason: str) -> "DrillOutcome":
+    def skip(self, reason: str) -> DrillOutcome:
         self.status = "skipped"
         self.error_message = reason
         return self
@@ -340,21 +345,24 @@ def candidates_from_manifest(manifest: dict, files: dict[str, dict]) -> list[Dum
         size = listing.get("size") if listing else None
         if not isinstance(size, int):
             size = entry.get("size_bytes") if isinstance(entry.get("size_bytes"), int) else 0
-        candidates.append(DumpCandidate(
-            file=name,
-            container_name=str(entry.get("container_name") or ""),
-            db_type=str(entry.get("db_type") or "").lower(),
-            db_name=str(entry.get("db_name") or ""),
-            size_bytes=size,
-            image=str(entry.get("image")) if entry.get("image") else None,
-            kind=str(entry.get("kind") or "database").lower(),
-            in_snapshot=listing is not None,
-        ))
+        candidates.append(
+            DumpCandidate(
+                file=name,
+                container_name=str(entry.get("container_name") or ""),
+                db_type=str(entry.get("db_type") or "").lower(),
+                db_name=str(entry.get("db_name") or ""),
+                size_bytes=size,
+                image=str(entry.get("image")) if entry.get("image") else None,
+                kind=str(entry.get("kind") or "database").lower(),
+                in_snapshot=listing is not None,
+            )
+        )
     return candidates
 
 
-def infer_candidates(files: dict[str, dict], known: list[dict],
-                     images: dict[str, str] | None = None) -> list[DumpCandidate]:
+def infer_candidates(
+    files: dict[str, dict], known: list[dict], images: dict[str, str] | None = None
+) -> list[DumpCandidate]:
     """Infer candidates for snapshots written before the dump manifest existed.
 
     Dump files are named ``<safe container>_<safe db label>_<YYYYmmdd_HHMMSS>.<ext>``;
@@ -378,9 +386,14 @@ def infer_candidates(files: dict[str, dict], known: list[dict],
 
     newest: dict[tuple[str, str, str, str], tuple[str, DumpCandidate]] = {}
     for name, listing in files.items():
-        if (name in _NON_DUMP_FILES or name.startswith(_NON_DUMP_PREFIXES) or name.startswith(".")
-                or name.endswith(_SIDECAR_SUFFIXES) or ".partial" in name
-                or not _SAFE_NAME_RE.match(name)):
+        if (
+            name in _NON_DUMP_FILES
+            or name.startswith(_NON_DUMP_PREFIXES)
+            or name.startswith(".")
+            or name.endswith(_SIDECAR_SUFFIXES)
+            or ".partial" in name
+            or not _SAFE_NAME_RE.match(name)
+        ):
             continue  # not a finished dump (temp file, sidecar, flash archive, ...)
         match = _DUMP_NAME_RE.match(name)
         if not match:
@@ -390,23 +403,31 @@ def infer_candidates(files: dict[str, dict], known: list[dict],
         cand: DumpCandidate | None = None
         for pattern, record in patterns:
             if prefix == pattern or (
-                prefix.startswith(pattern + "-")
-                and re.fullmatch(r"[0-9a-f]{8}", prefix[len(pattern) + 1:])
+                prefix.startswith(pattern + "-") and re.fullmatch(r"[0-9a-f]{8}", prefix[len(pattern) + 1 :])
             ):
                 container = str(record["container_name"])
                 cand = DumpCandidate(
-                    file=name, container_name=container,
-                    db_type=str(record["db_type"]).lower(), db_name=str(record["db_name"]),
-                    size_bytes=size, image=images.get(container),
+                    file=name,
+                    container_name=container,
+                    db_type=str(record["db_type"]).lower(),
+                    db_name=str(record["db_name"]),
+                    size_bytes=size,
+                    image=images.get(container),
                 )
                 break
         # New-style names end in an identity hash: "<container>_globals-<hash8>".
         roles_prefix = re.sub(r"-[0-9a-f]{8}$", "", prefix)
         if cand is None and roles_prefix.endswith("_globals") and roles_prefix[: -len("_globals")] in containers:
             container = containers[roles_prefix[: -len("_globals")]]
-            cand = DumpCandidate(file=name, container_name=container, db_type="postgres",
-                                 db_name="globals", size_bytes=size, image=images.get(container),
-                                 kind="globals")
+            cand = DumpCandidate(
+                file=name,
+                container_name=container,
+                db_type="postgres",
+                db_name="globals",
+                size_bytes=size,
+                image=images.get(container),
+                kind="globals",
+            )
         if cand is None:
             if ext == "rdb":
                 db_type = "redis"
@@ -416,8 +437,13 @@ def infer_candidates(files: dict[str, dict], known: list[dict],
                 db_type = "sqlite"
             else:
                 db_type = "unknown"
-            cand = DumpCandidate(file=name, container_name=prefix, db_type=db_type,
-                                 db_name=name if db_type == "sqlite" else "", size_bytes=size)
+            cand = DumpCandidate(
+                file=name,
+                container_name=prefix,
+                db_type=db_type,
+                db_name=name if db_type == "sqlite" else "",
+                size_bytes=size,
+            )
         dedupe = (cand.container_name, cand.db_type, cand.db_name, cand.kind)
         if dedupe not in newest or ts > newest[dedupe][0]:
             newest[dedupe] = (ts, cand)
@@ -448,15 +474,15 @@ def select_candidates(
     limit_mb = max(1, max_bytes // MIB)
     for cand in candidates:
         if not cand.in_snapshot:
-            excluded.append((cand, "failed",
-                             "listed in the snapshot's dump manifest but missing from the snapshot"))
+            excluded.append((cand, "failed", "listed in the snapshot's dump manifest but missing from the snapshot"))
         elif cand.kind == "globals":
             excluded.append((cand, "skipped", "roles/globals dump; not drill-tested"))
         elif cand.db_type in NOT_DRILLED_TYPES:
             excluded.append((cand, "skipped", f"{cand.db_type} dumps are not drill-tested"))
         elif cand.db_type not in DRILLABLE_TYPES:
-            excluded.append((cand, "skipped", "database type unknown (no manifest entry or "
-                                              "discovery record); not drill-tested"))
+            excluded.append(
+                (cand, "skipped", "database type unknown (no manifest entry or discovery record); not drill-tested")
+            )
         elif cand.size_bytes > max_bytes:
             excluded.append((cand, "skipped", f"dump is {_mb(cand.size_bytes)} MB; limit is {limit_mb} MB"))
         else:
@@ -464,8 +490,7 @@ def select_candidates(
 
     def order(cand: DumpCandidate):
         last_at, last_status = history.get(cand.key, ("", ""))
-        return (0 if last_status == "failed" else 1, last_at, cand.container_name,
-                cand.db_name, cand.file)
+        return (0 if last_status == "failed" else 1, last_at, cand.container_name, cand.db_name, cand.file)
 
     testable.sort(key=order)
     chosen = testable[: max(1, max_databases)]
@@ -484,8 +509,7 @@ def select_candidates(
     swap_in(lambda c: c.is_sql_server, lambda i: False)
     if len(chosen) >= 2:
         sql_count = lambda: sum(1 for c in chosen if c.is_sql_server)  # noqa: E731
-        swap_in(lambda c: c.db_type == "sqlite",
-                lambda i: chosen[i].is_sql_server and sql_count() == 1)
+        swap_in(lambda c: c.db_type == "sqlite", lambda i: chosen[i].is_sql_server and sql_count() == 1)
     chosen.sort(key=order)
     return chosen, excluded
 
@@ -531,8 +555,10 @@ def verify_sqlite_file(path: Path) -> tuple[str, str]:
         if tables == 0:
             return "failed", "no tables found in a non-empty database file"
         if unverifiable:
-            return "passed", (f"{tables} tables; integrity not verifiable with stock SQLite "
-                              f"(app-specific collation/extension: {unverifiable[:200]})")
+            return "passed", (
+                f"{tables} tables; integrity not verifiable with stock SQLite "
+                f"(app-specific collation/extension: {unverifiable[:200]})"
+            )
         return "passed", f"integrity_check ok; {tables} tables"
     finally:
         conn.close()
@@ -600,7 +626,8 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
                 in_copy = True
             elif postgres and database is None and line.startswith(b"\\connect "):
                 database = parse_pg_connect(
-                    line[len(b"\\connect "):].rstrip(b"\r\n").decode("utf-8", errors="replace"))
+                    line[len(b"\\connect ") :].rstrip(b"\r\n").decode("utf-8", errors="replace")
+                )
     except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
         raise DrillFailure(f"corrupt gzip stream: {exc}") from exc
     finally:
@@ -618,8 +645,9 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
         fh.seek(max(0, size - 4096))
         tail = fh.read()
     trailer = PG_DUMP_TRAILER if postgres else MYSQL_DUMP_TRAILER
-    return PreparedDump(path=dest, size_bytes=size, create_tables=create_tables,
-                        database=database, trailer_ok=trailer in tail)
+    return PreparedDump(
+        path=dest, size_bytes=size, create_tables=create_tables, database=database, trailer_ok=trailer in tail
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,8 +686,15 @@ class RestoreDrillEngine:
     # Head-room always left free on the restore dir's disk.
     min_free_bytes: int = 1024 * MIB
 
-    def __init__(self, config: ArkiveConfig, backup_engine=None, docker_client=None,
-                 notifier=None, event_bus=None, lock_manager: BackupLockManager | None = None):
+    def __init__(
+        self,
+        config: ArkiveConfig,
+        backup_engine=None,
+        docker_client=None,
+        notifier=None,
+        event_bus=None,
+        lock_manager: BackupLockManager | None = None,
+    ):
         self.config = config
         self.backup_engine = backup_engine
         self.docker_client = docker_client
@@ -778,8 +813,14 @@ class RestoreDrillEngine:
         await self._publish("drill:completed", summary)
         if outcome.status == "failed":
             await self._notify_failure(outcome)
-        logger.info("Restore drill %s finished: %s (%d passed, %d failed, %ds)",
-                    drill_id, outcome.status, outcome.passed, outcome.failed, duration)
+        logger.info(
+            "Restore drill %s finished: %s (%d passed, %d failed, %ds)",
+            drill_id,
+            outcome.status,
+            outcome.passed,
+            outcome.failed,
+            duration,
+        )
         return {**summary, "error_message": outcome.error_message}
 
     async def _perform(self, drill_id: str, drill_dir: Path) -> DrillOutcome:
@@ -829,26 +870,32 @@ class RestoreDrillEngine:
 
         host_restore_dir = await self._resolve_host_restore_dir() if chosen else None
         for index, cand in enumerate(chosen):
-            result = await self._drill_one(drill_id, index, cand, target, snapshot_id,
-                                           drill_dir, host_restore_dir)
+            result = await self._drill_one(drill_id, index, cand, target, snapshot_id, drill_dir, host_restore_dir)
             outcome.results.append(result)
 
         if outcome.failed:
             outcome.status = "failed"
-            names = ", ".join(f"{r.container_name}/{r.db_name or r.dump_file}"
-                              for r in outcome.results if r.status == "failed")
+            names = ", ".join(
+                f"{r.container_name}/{r.db_name or r.dump_file}" for r in outcome.results if r.status == "failed"
+            )
             outcome.error_message = f"{outcome.failed} database(s) did not restore: {names}"[:1000]
         elif outcome.passed:
             outcome.status = "passed"
         elif not chosen:
-            outcome.skip(f"snapshot {short_id} has no drill-testable database dumps "
-                         f"({len(excluded)} skipped)")
+            outcome.skip(f"snapshot {short_id} has no drill-testable database dumps ({len(excluded)} skipped)")
         else:
             chosen_files = {c.file for c in chosen}
-            reasons = [f"{r.container_name}/{r.db_name or r.dump_file}: {r.detail}"
-                       for r in outcome.results if r.status == "skipped" and r.dump_file in chosen_files]
-            outcome.skip((f"no database could be tested ({len(reasons)} selected, none could be "
-                          f"started or restored for testing): " + "; ".join(reasons))[:1000])
+            reasons = [
+                f"{r.container_name}/{r.db_name or r.dump_file}: {r.detail}"
+                for r in outcome.results
+                if r.status == "skipped" and r.dump_file in chosen_files
+            ]
+            outcome.skip(
+                (
+                    f"no database could be tested ({len(reasons)} selected, none could be "
+                    f"started or restored for testing): " + "; ".join(reasons)
+                )[:1000]
+            )
         return outcome
 
     @staticmethod
@@ -868,8 +915,16 @@ class RestoreDrillEngine:
         drill_dir.mkdir()  # never adopt an existing directory
         (drill_dir / DRILL_MARKER).write_text(drill_id)
 
-    async def _drill_one(self, drill_id: str, index: int, cand: DumpCandidate, target: dict,
-                         snapshot_id: str, drill_dir: Path, host_restore_dir: str | None) -> DrillResult:
+    async def _drill_one(
+        self,
+        drill_id: str,
+        index: int,
+        cand: DumpCandidate,
+        target: dict,
+        snapshot_id: str,
+        drill_dir: Path,
+        host_restore_dir: str | None,
+    ) -> DrillResult:
         started = time.monotonic()
         work = drill_dir / f"db-{index}"
         try:
@@ -877,17 +932,22 @@ class RestoreDrillEngine:
             free = await asyncio.to_thread(lambda: shutil.disk_usage(work).free)
             needed = cand.size_bytes + self.min_free_bytes
             if free < needed:
-                raise DrillSkip(f"not enough free space in {self.config.restore_dir} "
-                                f"({_mb(free)} MB free, ~{_mb(needed)} MB needed)")
+                raise DrillSkip(
+                    f"not enough free space in {self.config.restore_dir} "
+                    f"({_mb(free)} MB free, ~{_mb(needed)} MB needed)"
+                )
             dump_dir = str(self.config.dump_dir).rstrip("/")
             restore_to = work / "restore"
             result = await self.backup_engine.restore(
-                target=target, snapshot_id=snapshot_id,
-                paths=[f"{dump_dir}/{cand.file}"], restore_to=str(restore_to),
+                target=target,
+                snapshot_id=snapshot_id,
+                paths=[f"{dump_dir}/{cand.file}"],
+                restore_to=str(restore_to),
             )
             if result.get("status") != "success":
-                raise DrillFailure(f"restore from the repository failed: "
-                                   f"{result.get('error') or 'restic returned an error'}")
+                raise DrillFailure(
+                    f"restore from the repository failed: {result.get('error') or 'restic returned an error'}"
+                )
             restored = restore_to / dump_dir.lstrip("/") / cand.file
             if not await asyncio.to_thread(restored.is_file):
                 raise DrillFailure("dump file missing after restore")
@@ -895,7 +955,13 @@ class RestoreDrillEngine:
                 status, detail = await asyncio.to_thread(verify_sqlite_file, restored)
             else:
                 status, detail = await asyncio.to_thread(
-                    self._drill_sql_blocking, drill_id, index, cand, restored, work, host_restore_dir,
+                    self._drill_sql_blocking,
+                    drill_id,
+                    index,
+                    cand,
+                    restored,
+                    work,
+                    host_restore_dir,
                 )
         except DrillSkip as exc:
             status, detail = "skipped", str(exc)
@@ -912,8 +978,7 @@ class RestoreDrillEngine:
         finally:
             await asyncio.to_thread(shutil.rmtree, work, True)
         log = logger.warning if status == "failed" else logger.info
-        log("Drill %s/%s (%s): %s — %s", cand.container_name, cand.db_name or cand.file,
-            cand.db_type, status, detail)
+        log("Drill %s/%s (%s): %s — %s", cand.container_name, cand.db_name or cand.file, cand.db_type, status, detail)
         return DrillResult.for_candidate(cand, status, detail, time.monotonic() - started)
 
     # ---- SQL server drill (blocking; runs in a worker thread) ----
@@ -923,14 +988,14 @@ class RestoreDrillEngine:
             raise DrillSkip("Docker is not available")
         return self.docker_client
 
-    def _drill_sql_blocking(self, drill_id: str, index: int, cand: DumpCandidate,
-                            restored: Path, work: Path, host_restore_dir: str | None) -> tuple[str, str]:
+    def _drill_sql_blocking(
+        self, drill_id: str, index: int, cand: DumpCandidate, restored: Path, work: Path, host_restore_dir: str | None
+    ) -> tuple[str, str]:
         dump_dir = work / "dump"
         data_dir = work / "data"
         dump_dir.mkdir(parents=True, exist_ok=True)
         data_dir.mkdir(parents=True, exist_ok=True)
-        prepared = prepare_sql_dump(restored, dump_dir / "dump.sql", cand.db_type,
-                                    min_free_bytes=self.min_free_bytes)
+        prepared = prepare_sql_dump(restored, dump_dir / "dump.sql", cand.db_type, min_free_bytes=self.min_free_bytes)
         if not prepared.trailer_ok:
             raise DrillFailure("dump is truncated (no completion trailer)")
 
@@ -938,8 +1003,10 @@ class RestoreDrillEngine:
         needed = prepared.size_bytes * 2 + self.min_free_bytes
         free = shutil.disk_usage(work).free
         if free < needed:
-            raise DrillSkip(f"not enough free space in {self.config.restore_dir} to load the dump "
-                            f"({_mb(free)} MB free, ~{_mb(needed)} MB needed)")
+            raise DrillSkip(
+                f"not enough free space in {self.config.restore_dir} to load the dump "
+                f"({_mb(free)} MB free, ~{_mb(needed)} MB needed)"
+            )
 
         host_work = None
         if host_restore_dir:
@@ -954,8 +1021,7 @@ class RestoreDrillEngine:
         docker = self._docker()
         image, source_env, src_entrypoint, src_cmd = self._source_details(docker, cand)
         if not image:
-            raise DrillSkip(f"source image for {cand.container_name} is unknown "
-                            "(container gone and no image recorded)")
+            raise DrillSkip(f"source image for {cand.container_name} is unknown (container gone and no image recorded)")
         image_config = self._ensure_image(docker, image)
         spec = self._server_spec(cand.db_type, image, source_env, image_config)
 
@@ -983,7 +1049,14 @@ class RestoreDrillEngine:
                 # limits, slow storage) are "skipped", never "failed".
                 try:
                     container = self._create_container(
-                        docker, drill_id, index, attempt, spec, entrypoint, command, volumes,
+                        docker,
+                        drill_id,
+                        index,
+                        attempt,
+                        spec,
+                        entrypoint,
+                        command,
+                        volumes,
                     )
                     if tar_path is not None:
                         with open(tar_path, "rb") as fh:
@@ -996,14 +1069,15 @@ class RestoreDrillEngine:
                 except Exception as exc:
                     if type(exc).__name__ == "DockerUnavailableError":
                         raise
-                    raise DrillSkip(f"could not start a throwaway {spec.db_type} server from {image}: "
-                                    f"{exc}; the dump was not tested") from exc
+                    raise DrillSkip(
+                        f"could not start a throwaway {spec.db_type} server from {image}: "
+                        f"{exc}; the dump was not tested"
+                    ) from exc
                 if not ready:
                     if why.startswith("container exited") and attempt + 1 < len(attempts):
                         notes.append(f"with the {label}: {why}")
                         continue
-                    raise DrillSkip(f"database server from {image} did not start ({why}); "
-                                    "the dump was not tested")
+                    raise DrillSkip(f"database server from {image} did not start ({why}); the dump was not tested")
                 # Server is up: from here on a problem is a real restore failure,
                 # including unexpected errors (e.g. the server dying mid-load).
                 try:
@@ -1064,12 +1138,21 @@ class RestoreDrillEngine:
                 image_env[key] = value
         password = secrets.token_urlsafe(24)
         if db_type == "postgres":
-            env = {k: source_env[k] for k in ("POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS", "PGDATA")
-                   if source_env.get(k)}
+            env = {
+                k: source_env[k]
+                for k in ("POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS", "PGDATA")
+                if source_env.get(k)
+            }
             env["POSTGRES_PASSWORD"] = password
             data_dir = env.get("PGDATA") or image_env.get("PGDATA") or "/var/lib/postgresql/data"
-            return _ServerSpec(db_type=db_type, image=image, data_dir=data_dir, env=env,
-                               password=password, pg_user=env.get("POSTGRES_USER") or "postgres")
+            return _ServerSpec(
+                db_type=db_type,
+                image=image,
+                data_dir=data_dir,
+                env=env,
+                password=password,
+                pg_user=env.get("POSTGRES_USER") or "postgres",
+            )
         volumes = image_config.get("Volumes") or {}
         data_dir = "/var/lib/mysql"
         if "/var/lib/mysql" not in volumes and "/config" in volumes:
@@ -1077,8 +1160,9 @@ class RestoreDrillEngine:
         env = {"MARIADB_ROOT_PASSWORD": password, "MYSQL_ROOT_PASSWORD": password}
         return _ServerSpec(db_type=db_type, image=image, data_dir=data_dir, env=env, password=password)
 
-    def _create_container(self, docker, drill_id: str, index: int, attempt: int, spec: _ServerSpec,
-                          entrypoint, command, volumes):
+    def _create_container(
+        self, docker, drill_id: str, index: int, attempt: int, spec: _ServerSpec, entrypoint, command, volumes
+    ):
         kwargs: dict[str, Any] = {
             "image": spec.image,
             "environment": spec.env,
@@ -1186,12 +1270,15 @@ class RestoreDrillEngine:
             if status == "running":
                 try:
                     if spec.is_postgres:
-                        code, _ = self._exec(container, ["pg_isready", "-q", "-h", "127.0.0.1",
-                                                         "-U", spec.pg_user, "-d", "postgres"])
+                        code, _ = self._exec(
+                            container, ["pg_isready", "-q", "-h", "127.0.0.1", "-U", spec.pg_user, "-d", "postgres"]
+                        )
                     elif self._resolve_mysql_binaries(container, spec):
-                        code, _ = self._exec(container, [spec.admin, "ping", "-h", "127.0.0.1",
-                                                         "--protocol=tcp", "-uroot"],
-                                             {"MYSQL_PWD": spec.password})
+                        code, _ = self._exec(
+                            container,
+                            [spec.admin, "ping", "-h", "127.0.0.1", "--protocol=tcp", "-uroot"],
+                            {"MYSQL_PWD": spec.password},
+                        )
                     else:
                         code = None
                 except Exception:
@@ -1201,28 +1288,32 @@ class RestoreDrillEngine:
             if time.monotonic() >= deadline:
                 if not spec.is_postgres and not (spec.client and spec.admin):
                     return False, "no mysql/mariadb client found in the image"
-                return False, (f"not ready after {int(self.ready_timeout_seconds)}s: "
-                               f"{self._log_tail(container)}")
+                return False, (f"not ready after {int(self.ready_timeout_seconds)}s: {self._log_tail(container)}")
             time.sleep(self.poll_seconds)
 
     def _load_timeout(self, size_bytes: int) -> float:
-        return min(self.max_load_timeout_seconds,
-                   max(self.min_load_timeout_seconds, self.min_load_timeout_seconds + size_bytes / MIB))
+        return min(
+            self.max_load_timeout_seconds,
+            max(self.min_load_timeout_seconds, self.min_load_timeout_seconds + size_bytes / MIB),
+        )
 
-    def _load_and_check(self, container, spec: _ServerSpec, prepared: PreparedDump,
-                        cand: DumpCandidate) -> tuple[str, str]:
+    def _load_and_check(
+        self, container, spec: _ServerSpec, prepared: PreparedDump, cand: DumpCandidate
+    ) -> tuple[str, str]:
         timeout = self._load_timeout(prepared.size_bytes)
         load_started = time.monotonic()
         if spec.is_postgres:
             # The manifest / history name is authoritative; the dump's own
             # \\connect line is the fallback.
-            database = next((name for name in (cand.db_name, prepared.database)
-                             if valid_pg_dbname(name)), None)
+            database = next((name for name in (cand.db_name, prepared.database) if valid_pg_dbname(name)), None)
             if database is None:
                 raise DrillFailure("could not determine which database the dump creates")
             maintenance_db = "template1" if database == "postgres" else "postgres"
-            env = {"PGPASSWORD": spec.password, "ARKIVE_DRILL_USER": spec.pg_user,
-                   "ARKIVE_DRILL_MAINTDB": maintenance_db}
+            env = {
+                "PGPASSWORD": spec.password,
+                "ARKIVE_DRILL_USER": spec.pg_user,
+                "ARKIVE_DRILL_MAINTDB": maintenance_db,
+            }
             code = self._exec_long(container, ["sh", "-c", _PG_LOAD_SCRIPT], env, timeout)
             tool = "psql"
         else:
@@ -1242,8 +1333,17 @@ class RestoreDrillEngine:
         else:
             code, output = self._exec(
                 container,
-                [spec.client or "mysql", "-h", "127.0.0.1", "--protocol=tcp", "-uroot", "-N", "-B",
-                 "-e", _MYSQL_COUNT_SQL],
+                [
+                    spec.client or "mysql",
+                    "-h",
+                    "127.0.0.1",
+                    "--protocol=tcp",
+                    "-uroot",
+                    "-N",
+                    "-B",
+                    "-e",
+                    _MYSQL_COUNT_SQL,
+                ],
                 {"MYSQL_PWD": spec.password},
             )
         numbers = re.findall(r"^\s*(\d+)\s*$", output, re.MULTILINE)
@@ -1285,8 +1385,11 @@ class RestoreDrillEngine:
         try:
             container.remove(force=True, v=True)
         except Exception as exc:
-            logger.warning("Could not remove drill container %s: %s",
-                           getattr(container, "name", getattr(container, "id", "?")), exc)
+            logger.warning(
+                "Could not remove drill container %s: %s",
+                getattr(container, "name", getattr(container, "id", "?")),
+                exc,
+            )
 
     # ---- startup sweep helpers ----
 
@@ -1344,9 +1447,7 @@ class RestoreDrillEngine:
     async def _load_targets(self) -> list[dict]:
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM storage_targets WHERE enabled = 1 ORDER BY created_at, rowid"
-            )
+            cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1 ORDER BY created_at, rowid")
             rows = [dict(r) for r in await cursor.fetchall()]
         # Local targets restore fastest; otherwise keep the configured order.
         rows.sort(key=lambda t: 0 if t.get("type") == "local" else 1)
@@ -1393,8 +1494,7 @@ class RestoreDrillEngine:
                 # empty dump directory (whatever path the snapshot covers).
                 entries = await self.backup_engine.ls(target, snapshot_id, dump_dir, strict=True)
             except ResticError as exc:
-                error = DrillRepositoryError(
-                    f"could not list {dump_dir} in snapshot {short_id} on {name}: {exc}")
+                error = DrillRepositoryError(f"could not list {dump_dir} in snapshot {short_id} on {name}: {exc}")
                 error.target, error.snapshot_id = target, short_id
                 raise error from exc
             return target, snapshot_id, short_id, entries or []
@@ -1409,8 +1509,7 @@ class RestoreDrillEngine:
             return await self.backup_engine.snapshots(target)
         return await lister(target)
 
-    async def _read_manifest(self, target: dict, snapshot_id: str, short_id: str,
-                             drill_dir: Path) -> dict | None:
+    async def _read_manifest(self, target: dict, snapshot_id: str, short_id: str, drill_dir: Path) -> dict | None:
         """The dump manifest stored in the snapshot.
 
         Raises DrillRepositoryError when it cannot be restored or is corrupt
@@ -1429,12 +1528,16 @@ class RestoreDrillEngine:
         try:
             await asyncio.to_thread(restore_to.mkdir, parents=True, exist_ok=True)
             result = await self.backup_engine.restore(
-                target=target, snapshot_id=snapshot_id,
-                paths=[f"{dump_dir}/{DUMP_MANIFEST_NAME}"], restore_to=str(restore_to),
+                target=target,
+                snapshot_id=snapshot_id,
+                paths=[f"{dump_dir}/{DUMP_MANIFEST_NAME}"],
+                restore_to=str(restore_to),
             )
             if result.get("status") != "success":
-                raise failure(f"restoring the dump manifest from snapshot {short_id} failed: "
-                              f"{result.get('error') or 'restic returned an error'}")
+                raise failure(
+                    f"restoring the dump manifest from snapshot {short_id} failed: "
+                    f"{result.get('error') or 'restic returned an error'}"
+                )
             path = restore_to / dump_dir.lstrip("/") / DUMP_MANIFEST_NAME
 
             def _load() -> dict | None:
@@ -1526,17 +1629,38 @@ class RestoreDrillEngine:
                            duration_seconds = ?, databases_tested = ?, databases_passed = ?,
                            databases_failed = ?, error_message = ?
                        WHERE id = ?""",
-                    (outcome.status, outcome.target_id, outcome.snapshot_id, _now(), duration,
-                     len(outcome.tested), outcome.passed, outcome.failed, outcome.error_message, drill_id),
+                    (
+                        outcome.status,
+                        outcome.target_id,
+                        outcome.snapshot_id,
+                        _now(),
+                        duration,
+                        len(outcome.tested),
+                        outcome.passed,
+                        outcome.failed,
+                        outcome.error_message,
+                        drill_id,
+                    ),
                 )
                 await db.executemany(
                     """INSERT INTO restore_drill_results
                        (drill_id, container_name, db_type, db_name, dump_file, dump_size_bytes,
                         status, detail, duration_seconds)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [(drill_id, r.container_name, r.db_type or "unknown", r.db_name, r.dump_file,
-                      r.dump_size_bytes or 0, r.status, r.detail, r.duration_seconds)
-                     for r in outcome.results],
+                    [
+                        (
+                            drill_id,
+                            r.container_name,
+                            r.db_type or "unknown",
+                            r.db_name,
+                            r.dump_file,
+                            r.dump_size_bytes or 0,
+                            r.status,
+                            r.detail,
+                            r.duration_seconds,
+                        )
+                        for r in outcome.results
+                    ],
                 )
                 await db.commit()
         except Exception as exc:
@@ -1545,8 +1669,7 @@ class RestoreDrillEngine:
     async def _record_activity(self, drill_id: str, outcome: DrillOutcome, duration: int) -> None:
         tested = len(outcome.tested)
         if outcome.status == "passed":
-            message = (f"Restore drill passed: {outcome.passed} database(s) restored from "
-                       f"snapshot {outcome.snapshot_id}")
+            message = f"Restore drill passed: {outcome.passed} database(s) restored from snapshot {outcome.snapshot_id}"
             severity = "info"
         elif outcome.status == "failed":
             message = f"Restore drill failed: {outcome.error_message or f'{outcome.failed} of {tested} failed'}"
@@ -1564,8 +1687,13 @@ class RestoreDrillEngine:
             "databases_passed": outcome.passed,
             "databases_failed": outcome.failed,
             "results": [
-                {"container_name": r.container_name, "db_name": r.db_name, "db_type": r.db_type,
-                 "status": r.status, "detail": r.detail[:300]}
+                {
+                    "container_name": r.container_name,
+                    "db_name": r.db_name,
+                    "db_type": r.db_type,
+                    "status": r.status,
+                    "detail": r.detail[:300],
+                }
                 for r in outcome.results
             ][:50],
         }
@@ -1579,17 +1707,21 @@ class RestoreDrillEngine:
         if not self.notifier:
             return
         failures = [r for r in outcome.results if r.status == "failed"]
-        lines = [f"- {r.container_name}/{r.db_name or r.dump_file} ({r.db_type}): {r.detail[:300]}"
-                 for r in failures[:10]]
-        body = (f"{len(failures)} of {len(outcome.tested)} database dump(s) from snapshot "
-                f"{outcome.snapshot_id} on {outcome.target_name} could not be restored.")
+        lines = [
+            f"- {r.container_name}/{r.db_name or r.dump_file} ({r.db_type}): {r.detail[:300]}" for r in failures[:10]
+        ]
+        body = (
+            f"{len(failures)} of {len(outcome.tested)} database dump(s) from snapshot "
+            f"{outcome.snapshot_id} on {outcome.target_name} could not be restored."
+        )
         if lines:
             body += "\n" + "\n".join(lines)
         elif outcome.error_message:
             body = outcome.error_message
         try:
-            await self.notifier.send("drill.failed", "Restore Drill Failed", body,
-                                     severity="error", dedupe_key="restore_drill")
+            await self.notifier.send(
+                "drill.failed", "Restore Drill Failed", body, severity="error", dedupe_key="restore_drill"
+            )
         except Exception as exc:
             logger.warning("Failed to send restore drill notification: %s", exc)
 

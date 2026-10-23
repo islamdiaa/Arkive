@@ -107,16 +107,21 @@ async def refresh_snapshots(
             await db.execute(
                 """INSERT OR REPLACE INTO snapshots (id, target_id, full_id, time, hostname, paths, tags, size_bytes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (short_id, target["id"], snap.get("id", ""), snap.get("time", ""),
-                 snap.get("hostname", ""), json.dumps(snap.get("paths", [])),
-                 json.dumps(snap.get("tags", [])), snapshot_size),
+                (
+                    short_id,
+                    target["id"],
+                    snap.get("id", ""),
+                    snap.get("time", ""),
+                    snap.get("hostname", ""),
+                    json.dumps(snap.get("paths", [])),
+                    json.dumps(snap.get("tags", [])),
+                    snapshot_size,
+                ),
             )
             total_size += snapshot_size
         # Drop cached snapshots that no longer exist in the repo (forgotten/pruned).
         for stale_id in cached_ids - seen_ids:
-            await db.execute(
-                "DELETE FROM snapshots WHERE id = ? AND target_id = ?", (stale_id, target["id"])
-            )
+            await db.execute("DELETE FROM snapshots WHERE id = ? AND target_id = ?", (stale_id, target["id"]))
         total += len(snapshots)
 
         # Update target stats

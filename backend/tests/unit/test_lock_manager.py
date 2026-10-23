@@ -11,10 +11,7 @@ Covers:
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from app.services.lock_manager import BackupLockManager, LockFileData, parse_lock_file
 
@@ -82,11 +79,15 @@ class TestStaleLockCleanup:
         """Lock file referencing a non-existent PID should be removed."""
         mgr = BackupLockManager(tmp_path)
         lock_file = tmp_path / "backup.lock"
-        lock_file.write_text(json.dumps({
-            "pid": 999999999,  # PID that doesn't exist
-            "proc_start_time": "12345",
-            "started_at": "2026-01-01T00:00:00Z",
-        }))
+        lock_file.write_text(
+            json.dumps(
+                {
+                    "pid": 999999999,  # PID that doesn't exist
+                    "proc_start_time": "12345",
+                    "started_at": "2026-01-01T00:00:00Z",
+                }
+            )
+        )
 
         result = mgr.cleanup_stale_backup_lock()
         assert result is True
@@ -106,10 +107,14 @@ class TestStaleLockCleanup:
         """Lock file with string PID should be treated as invalid and removed."""
         mgr = BackupLockManager(tmp_path)
         lock_file = tmp_path / "backup.lock"
-        lock_file.write_text(json.dumps({
-            "pid": "1234",  # Invalid: should be int
-            "proc_start_time": "9876543210",
-        }))
+        lock_file.write_text(
+            json.dumps(
+                {
+                    "pid": "1234",  # Invalid: should be int
+                    "proc_start_time": "9876543210",
+                }
+            )
+        )
 
         result = mgr.cleanup_stale_backup_lock()
         assert result is True
@@ -128,11 +133,13 @@ class TestConcurrentLockAcquisition:
     def test_second_acquire_fails(self, tmp_path):
         """Second lock acquisition attempt should fail when lock already held."""
         mgr = BackupLockManager(tmp_path)
-        current_pid = os.getpid()
+        os.getpid()
 
         # Mock _is_process_alive to simulate /proc behavior on macOS
-        with patch("app.services.lock_manager._get_proc_start_time", return_value="12345"), \
-             patch("app.services.lock_manager._is_process_alive", return_value=True):
+        with (
+            patch("app.services.lock_manager._get_proc_start_time", return_value="12345"),
+            patch("app.services.lock_manager._is_process_alive", return_value=True),
+        ):
             result1 = mgr.acquire_backup_lock("run-1")
             assert result1 is True
             assert mgr.lock_file.exists()
@@ -163,11 +170,15 @@ class TestRestoreLockBlocksBackup:
         restore_lock = tmp_path / "restore.lock"
 
         # Simulate a live restore lock
-        restore_lock.write_text(json.dumps({
-            "pid": 12345,
-            "proc_start_time": "99999",
-            "started_at": "2026-01-01T00:00:00Z",
-        }))
+        restore_lock.write_text(
+            json.dumps(
+                {
+                    "pid": 12345,
+                    "proc_start_time": "99999",
+                    "started_at": "2026-01-01T00:00:00Z",
+                }
+            )
+        )
 
         with patch("app.services.lock_manager._is_process_alive", return_value=True):
             result = mgr.acquire_backup_lock("run-1")
@@ -178,11 +189,15 @@ class TestRestoreLockBlocksBackup:
         """Stale restore lock (dead PID) should not block backup."""
         mgr = BackupLockManager(tmp_path)
         restore_lock = tmp_path / "restore.lock"
-        restore_lock.write_text(json.dumps({
-            "pid": 999999999,  # Dead PID
-            "proc_start_time": "12345",
-            "started_at": "2026-01-01T00:00:00Z",
-        }))
+        restore_lock.write_text(
+            json.dumps(
+                {
+                    "pid": 999999999,  # Dead PID
+                    "proc_start_time": "12345",
+                    "started_at": "2026-01-01T00:00:00Z",
+                }
+            )
+        )
 
         with patch("app.services.lock_manager._get_proc_start_time", return_value="12345"):
             result = mgr.acquire_backup_lock("run-1")
@@ -250,13 +265,16 @@ class TestBackwardCompatibility:
 
     def test_get_proc_start_time_importable_from_orchestrator(self):
         from app.services.orchestrator import _get_proc_start_time
+
         assert callable(_get_proc_start_time)
 
     def test_lock_file_constants_importable(self):
         from app.services.orchestrator import LOCK_FILE, RESTORE_LOCK_FILE
+
         assert "backup.lock" in str(LOCK_FILE)
         assert "restore.lock" in str(RESTORE_LOCK_FILE)
 
     def test_cleanup_stale_backup_lock_importable(self):
         from app.services.orchestrator import cleanup_stale_backup_lock
+
         assert callable(cleanup_stale_backup_lock)

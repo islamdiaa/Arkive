@@ -10,9 +10,9 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.activity import log_activity
-from app.services.discovery_persistence import persist_discovery_results
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services.discovery_persistence import persist_discovery_results
 from app.services.freshness import describe_stale_job, evaluate_freshness, ping_heartbeat
 from app.services.lock_manager import BackupLockManager
 from app.services.retention import read_retention_settings
@@ -40,9 +40,18 @@ _HEALTHY_STATES = {"online", "ok", "healthy"}
 class ArkiveScheduler:
     """Manages scheduled backup jobs using APScheduler."""
 
-    def __init__(self, orchestrator, config: ArkiveConfig,
-                 discovery=None, backup_engine=None, cloud_manager=None, notifier=None,
-                 verify_engine=None, event_bus=None, restore_drill=None):
+    def __init__(
+        self,
+        orchestrator,
+        config: ArkiveConfig,
+        discovery=None,
+        backup_engine=None,
+        cloud_manager=None,
+        notifier=None,
+        verify_engine=None,
+        event_bus=None,
+        restore_drill=None,
+    ):
         self.orchestrator = orchestrator
         self.config = config
         self.discovery = discovery
@@ -54,9 +63,9 @@ class ArkiveScheduler:
         self.restore_drill = restore_drill
         self.scheduler = AsyncIOScheduler(
             job_defaults={
-                'misfire_grace_time': 3600,
-                'coalesce': True,
-                'max_instances': 1,
+                "misfire_grace_time": 3600,
+                "coalesce": True,
+                "max_instances": 1,
             }
         )
         self._job_map: dict[str, str] = {}  # backup_job_id -> apscheduler_job_id
@@ -68,9 +77,7 @@ class ArkiveScheduler:
         """Load all enabled jobs from DB, register system jobs, and start scheduler."""
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM backup_jobs WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM backup_jobs WHERE enabled = 1")
             jobs = await cursor.fetchall()
 
         for job in jobs:
@@ -85,6 +92,7 @@ class ArkiveScheduler:
         # Add error listener so job exceptions are always logged
         # APScheduler uses mask= parameter; EVENT_JOB_ERROR = 8192
         from apscheduler.events import EVENT_JOB_ERROR
+
         self.scheduler.add_listener(self._on_job_error, mask=EVENT_JOB_ERROR)
 
         self.scheduler.start()
@@ -143,7 +151,7 @@ class ArkiveScheduler:
         if not self.scheduler.get_job(SYSTEM_JOB_RETENTION):
             self.scheduler.add_job(
                 self._run_retention_cleanup,
-                trigger=CronTrigger(day_of_week='sun', hour=4, minute=0),
+                trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
                 id=SYSTEM_JOB_RETENTION,
                 replace_existing=True,
                 name="Retention Cleanup",
@@ -176,7 +184,7 @@ class ArkiveScheduler:
         if not self.scheduler.get_job(SYSTEM_JOB_INTEGRITY_CHECK):
             self.scheduler.add_job(
                 self._run_integrity_check,
-                trigger=CronTrigger(day_of_week='sun', hour=5, minute=0),
+                trigger=CronTrigger(day_of_week="sun", hour=5, minute=0),
                 id=SYSTEM_JOB_INTEGRITY_CHECK,
                 replace_existing=True,
                 name="Integrity Check",
@@ -187,7 +195,7 @@ class ArkiveScheduler:
         if not self.scheduler.get_job(SYSTEM_JOB_INTEGRITY_VERIFY):
             self.scheduler.add_job(
                 self._run_integrity_verify,
-                trigger=CronTrigger(day_of_week='sun', hour=6, minute=0),
+                trigger=CronTrigger(day_of_week="sun", hour=6, minute=0),
                 id=SYSTEM_JOB_INTEGRITY_VERIFY,
                 replace_existing=True,
                 name="Integrity Verify",
@@ -239,8 +247,9 @@ class ArkiveScheduler:
                     logger.warning("Could not record stale backup activity: %s", e)
             if self.notifier:
                 try:
-                    await self.notifier.send("backup.stale", "Backups Overdue", message,
-                                             severity="error", job_id=job["job_id"])
+                    await self.notifier.send(
+                        "backup.stale", "Backups Overdue", message, severity="error", job_id=job["job_id"]
+                    )
                 except Exception as e:
                     logger.warning("Failed to send stale backup notification: %s", e)
 
@@ -251,8 +260,9 @@ class ArkiveScheduler:
             name = next((j["job_name"] for j in freshness["jobs"] if j["job_id"] == job_id), job_id)
             try:
                 async with aiosqlite.connect(self.config.db_path) as db:
-                    await log_activity(db, "backup", "fresh",
-                                       f"{name} is producing good backups again", {"job_id": job_id})
+                    await log_activity(
+                        db, "backup", "fresh", f"{name} is producing good backups again", {"job_id": job_id}
+                    )
             except Exception as e:
                 logger.warning("Could not record backup recovery activity: %s", e)
 
@@ -279,7 +289,9 @@ class ArkiveScheduler:
             async with aiosqlite.connect(self.config.db_path) as db:
                 await persist_discovery_results(db, containers or [])
                 await log_activity(
-                    db, "system", "discovery_scan",
+                    db,
+                    "system",
+                    "discovery_scan",
                     f"Discovery scan completed: {count} containers found",
                     {"container_count": count},
                 )
@@ -309,14 +321,11 @@ class ArkiveScheduler:
             async with aiosqlite.connect(self.config.db_path) as db:
                 keep_daily, keep_weekly, keep_monthly = await read_retention_settings(db)
 
-            logger.info("Retention settings: daily=%d, weekly=%d, monthly=%d",
-                        keep_daily, keep_weekly, keep_monthly)
+            logger.info("Retention settings: daily=%d, weekly=%d, monthly=%d", keep_daily, keep_weekly, keep_monthly)
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -335,10 +344,14 @@ class ArkiveScheduler:
                     # first, or retention never thins them out.
                     try:
                         relabel = await self.backup_engine.normalize_legacy_hostnames(
-                            target, str(self.config.dump_dir), await self._owned_snapshot_ids(target["id"]))
+                            target, str(self.config.dump_dir), await self._owned_snapshot_ids(target["id"])
+                        )
                         if isinstance(relabel, dict) and relabel.get("status") == "failed":
-                            logger.warning("Could not re-label legacy snapshots on target %s: %s",
-                                           target["id"], relabel.get("error"))
+                            logger.warning(
+                                "Could not re-label legacy snapshots on target %s: %s",
+                                target["id"],
+                                relabel.get("error"),
+                            )
                     except Exception as e:
                         logger.warning("Legacy snapshot re-label skipped for target %s: %s", target["id"], e)
                     result = await self.backup_engine.forget(
@@ -347,25 +360,32 @@ class ArkiveScheduler:
                         keep_weekly=keep_weekly,
                         keep_monthly=keep_monthly,
                     )
-                    results.append({
-                        "target_id": target["id"],
-                        "status": result.get("status", "unknown"),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": result.get("status", "unknown"),
+                        }
+                    )
                     logger.info(
                         "Retention cleanup for target %s: %s",
-                        target["id"], result.get("status"),
+                        target["id"],
+                        result.get("status"),
                     )
                 except Exception as e:
                     logger.error("Retention cleanup failed for target %s: %s", target["id"], e)
-                    results.append({
-                        "target_id": target["id"],
-                        "status": "failed",
-                        "error": str(e),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": "failed",
+                            "error": str(e),
+                        }
+                    )
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await log_activity(
-                    db, "system", "retention_cleanup",
+                    db,
+                    "system",
+                    "retention_cleanup",
                     f"Retention cleanup completed for {len(targets)} targets",
                     {"results": results},
                 )
@@ -398,9 +418,7 @@ class ArkiveScheduler:
             logger.debug("System job: starting health check")
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -430,7 +448,9 @@ class ArkiveScheduler:
                         await db.commit()
                     logger.debug(
                         "Health check for target %s (%s): %s",
-                        target["id"], target.get("name"), new_status,
+                        target["id"],
+                        target.get("name"),
+                        new_status,
                     )
                 except Exception as e:
                     new_status = "error"
@@ -454,30 +474,38 @@ class ArkiveScheduler:
                 is_healthy = new_status in _HEALTHY_STATES
                 first_check = previous_status in (None, "", "unknown")
                 if was_healthy != is_healthy and not (first_check and is_healthy):
-                    changes.append({
-                        "target_id": target["id"], "name": target.get("name"),
-                        "from": previous_status, "to": new_status,
-                    })
+                    changes.append(
+                        {
+                            "target_id": target["id"],
+                            "name": target.get("name"),
+                            "from": previous_status,
+                            "to": new_status,
+                        }
+                    )
 
             # Routine checks run every 5 minutes; only status changes are
             # worth an activity entry (and a notification when a target fails).
             for change in changes:
                 went_bad = change["to"] == "error"
-                message = (f"Storage target {change['name']} is "
-                           f"{'unreachable' if went_bad else 'reachable again'}")
+                message = f"Storage target {change['name']} is {'unreachable' if went_bad else 'reachable again'}"
                 if went_bad:
                     logger.warning(message)
                 else:
                     logger.info(message)
                 async with aiosqlite.connect(self.config.db_path) as db:
                     await log_activity(
-                        db, "target", "health_changed", message, change,
+                        db,
+                        "target",
+                        "health_changed",
+                        message,
+                        change,
                         severity="warning" if went_bad else "info",
                     )
                 if went_bad and self.notifier:
                     try:
-                        await self.notifier.send("target.error", "Storage Target Unreachable",
-                                                 message, severity="error")
+                        await self.notifier.send(
+                            "target.error", "Storage Target Unreachable", message, severity="error"
+                        )
                     except Exception as notify_err:
                         logger.warning("Failed to send target health notification: %s", notify_err)
             logger.debug("System job: health check complete — %d targets checked", len(targets))
@@ -495,7 +523,9 @@ class ArkiveScheduler:
                 deleted = cursor.rowcount
                 await db.commit()
                 await log_activity(
-                    db, "system", "activity_log_prune",
+                    db,
+                    "system",
+                    "activity_log_prune",
                     f"Activity log pruned: {deleted} entries older than 90 days removed",
                     {"deleted_count": deleted},
                 )
@@ -518,9 +548,7 @@ class ArkiveScheduler:
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT * FROM storage_targets WHERE enabled = 1"
-                )
+                cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
                 targets = [dict(row) for row in await cursor.fetchall()]
 
             if not targets:
@@ -536,25 +564,33 @@ class ArkiveScheduler:
                         str(self.config.config_dir),
                     )
                     result = await self.backup_engine.check(target)
-                    results.append({
-                        "target_id": target["id"],
-                        "status": result.get("status", "unknown"),
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": result.get("status", "unknown"),
+                        }
+                    )
                     logger.info(
                         "Integrity check for target %s (%s): %s",
-                        target["id"], target_name, result.get("status"),
+                        target["id"],
+                        target_name,
+                        result.get("status"),
                     )
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(
                         "Integrity check failed for target %s (%s): %s",
-                        target["id"], target_name, error_msg,
+                        target["id"],
+                        target_name,
+                        error_msg,
                     )
-                    results.append({
-                        "target_id": target["id"],
-                        "status": "failed",
-                        "error": error_msg,
-                    })
+                    results.append(
+                        {
+                            "target_id": target["id"],
+                            "status": "failed",
+                            "error": error_msg,
+                        }
+                    )
                     if self.notifier:
                         try:
                             await self.notifier.send(
@@ -564,19 +600,17 @@ class ArkiveScheduler:
                                 "error",
                             )
                         except Exception as notify_err:
-                            logger.error(
-                                "Failed to send integrity failure notification: %s", notify_err
-                            )
+                            logger.error("Failed to send integrity failure notification: %s", notify_err)
 
             async with aiosqlite.connect(self.config.db_path) as db:
                 await log_activity(
-                    db, "system", "integrity_check",
+                    db,
+                    "system",
+                    "integrity_check",
                     f"Integrity check completed for {len(targets)} targets",
                     {"results": results},
                 )
-            logger.info(
-                "System job: integrity check complete — %d targets processed", len(targets)
-            )
+            logger.info("System job: integrity check complete — %d targets processed", len(targets))
         except Exception as e:
             logger.error("System job: integrity check failed: %s", e)
 
@@ -601,25 +635,28 @@ class ArkiveScheduler:
             async with aiosqlite.connect(self.config.db_path) as db:
                 severity = "info" if status == "completed" else "warning"
                 await log_activity(
-                    db, "system", "integrity_verify",
+                    db,
+                    "system",
+                    "integrity_verify",
                     f"Integrity verify {status}: trust score {trust_score}",
-                    {"status": status, "trust_score": trust_score,
-                     "targets": result.get("targets", [])},
+                    {"status": status, "trust_score": trust_score, "targets": result.get("targets", [])},
                     severity=severity,
                 )
 
             # Publish SSE event so the frontend updates
             if self.event_bus:
-                await self.event_bus.publish("verification:completed", {
-                    "status": status,
-                    "trust_score": trust_score,
-                    "target_count": len(result.get("targets", [])),
-                })
+                await self.event_bus.publish(
+                    "verification:completed",
+                    {
+                        "status": status,
+                        "trust_score": trust_score,
+                        "target_count": len(result.get("targets", [])),
+                    },
+                )
 
             # Notify on failure or low trust score
             failed_targets = [
-                t for t in result.get("targets", [])
-                if t.get("status") == "failed" or t.get("trust_score", 100) < 50
+                t for t in result.get("targets", []) if t.get("status") == "failed" or t.get("trust_score", 100) < 50
             ]
             if failed_targets and self.notifier:
                 names = ", ".join(t.get("target_name", t.get("target_id", "?")) for t in failed_targets)
@@ -635,7 +672,8 @@ class ArkiveScheduler:
 
             logger.info(
                 "System job: integrity verify complete — status=%s trust_score=%.1f",
-                status, trust_score,
+                status,
+                trust_score,
             )
         except Exception as e:
             logger.error("System job: integrity verify failed: %s", e)
@@ -660,8 +698,9 @@ class ArkiveScheduler:
         try:
             trigger = CronTrigger.from_crontab(schedule)
         except ValueError:
-            logger.error("Invalid restore_drill_schedule %r; using default %r",
-                         schedule, DEFAULTS["restore_drill_schedule"])
+            logger.error(
+                "Invalid restore_drill_schedule %r; using default %r", schedule, DEFAULTS["restore_drill_schedule"]
+            )
             schedule = DEFAULTS["restore_drill_schedule"]
             trigger = CronTrigger.from_crontab(schedule)
         # Remove first: before start() replace_existing doesn't dedupe the pending queue.
@@ -710,13 +749,20 @@ class ArkiveScheduler:
             return
         if len(recent) < self.drill_skip_alert_threshold or any(r[0] != "skipped" for r in recent):
             return
-        message = (f"The last {len(recent)} restore drills could not test any database: "
-                   f"{(recent[0][1] or 'no reason recorded')[:300]}")
+        message = (
+            f"The last {len(recent)} restore drills could not test any database: "
+            f"{(recent[0][1] or 'no reason recorded')[:300]}"
+        )
         logger.warning(message)
         if self.notifier:
             try:
-                await self.notifier.send("drill.failed", "Restore Drills Not Testing Anything", message,
-                                         severity="warning", dedupe_key="drill-untested")
+                await self.notifier.send(
+                    "drill.failed",
+                    "Restore Drills Not Testing Anything",
+                    message,
+                    severity="warning",
+                    dedupe_key="drill-untested",
+                )
             except Exception as e:
                 logger.warning("Failed to send untested-drill notification: %s", e)
 

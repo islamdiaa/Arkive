@@ -5,9 +5,11 @@ Verifies that GET /api/targets properly redacts sensitive fields
 (keys, secrets, passwords, tokens) while preserving non-sensitive
 fields (bucket names, regions, hosts, paths, endpoints).
 """
+
 import os
 
 import pytest
+
 from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
@@ -128,23 +130,33 @@ LOCAL_CONFIG = {
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("provider", [
-    "b2", "s3", "wasabi", "sftp", "dropbox", "gdrive",
-])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "b2",
+        "s3",
+        "wasabi",
+        "sftp",
+        "dropbox",
+        "gdrive",
+    ],
+)
 async def test_list_redacts_sensitive_fields(client, provider):
     """Sensitive config fields are masked with '***' in list response."""
     api_key = await setup_auth(client)
     prov_spec = PROVIDER_CONFIGS[provider]
 
     # Create target
-    create_resp = await client.post("/api/targets", json={
-        "name": f"Redact Test {provider}",
-        "type": provider,
-        "config": prov_spec["config"],
-    }, headers=auth_headers(api_key))
-    assert create_resp.status_code == 201, (
-        f"Failed to create {provider} target: {create_resp.text}"
+    create_resp = await client.post(
+        "/api/targets",
+        json={
+            "name": f"Redact Test {provider}",
+            "type": provider,
+            "config": prov_spec["config"],
+        },
+        headers=auth_headers(api_key),
     )
+    assert create_resp.status_code == 201, f"Failed to create {provider} target: {create_resp.text}"
 
     # List targets and find ours
     list_resp = await client.get("/api/targets", headers=auth_headers(api_key))
@@ -167,8 +179,7 @@ async def test_list_redacts_sensitive_fields(client, provider):
     # Verify non-sensitive fields are NOT redacted
     for field, expected_value in prov_spec["visible_fields"].items():
         assert config.get(field) == expected_value, (
-            f"Provider {provider}: field '{field}' should be '{expected_value}' "
-            f"but got '{config.get(field)}'"
+            f"Provider {provider}: field '{field}' should be '{expected_value}' but got '{config.get(field)}'"
         )
 
 
@@ -183,11 +194,15 @@ async def test_list_redacts_local_target_sensitive_fields(client, tmp_path):
         "secret_key": "should_be_redacted",
     }
 
-    create_resp = await client.post("/api/targets", json={
-        "name": "Redact Test local",
-        "type": "local",
-        "config": config,
-    }, headers=auth_headers(api_key))
+    create_resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Redact Test local",
+            "type": "local",
+            "config": config,
+        },
+        headers=auth_headers(api_key),
+    )
     assert create_resp.status_code == 201
 
     list_resp = await client.get("/api/targets", headers=auth_headers(api_key))
@@ -221,11 +236,15 @@ async def test_redaction_is_case_insensitive_for_field_names(client):
         "API_KEY_EXTRA": "should_redact",
     }
 
-    create_resp = await client.post("/api/targets", json={
-        "name": "Case Sensitivity Test",
-        "type": "b2",
-        "config": config,
-    }, headers=auth_headers(api_key))
+    create_resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Case Sensitivity Test",
+            "type": "b2",
+            "config": config,
+        },
+        headers=auth_headers(api_key),
+    )
     assert create_resp.status_code == 201
 
     list_resp = await client.get("/api/targets", headers=auth_headers(api_key))
@@ -244,18 +263,20 @@ async def test_get_single_target_also_redacts_sensitive_fields(client):
     """GET /api/targets/{id} also redacts sensitive config fields."""
     api_key = await setup_auth(client)
 
-    create_resp = await client.post("/api/targets", json={
-        "name": "Single Get Redaction Test",
-        "type": "b2",
-        "config": {"key_id": "real_key_id", "app_key": "real_app_key", "bucket": "bkt"},
-    }, headers=auth_headers(api_key))
+    create_resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Single Get Redaction Test",
+            "type": "b2",
+            "config": {"key_id": "real_key_id", "app_key": "real_app_key", "bucket": "bkt"},
+        },
+        headers=auth_headers(api_key),
+    )
     assert create_resp.status_code == 201
     target_id = create_resp.json()["id"]
 
     # Single target GET also redacts sensitive fields
-    get_resp = await client.get(
-        f"/api/targets/{target_id}", headers=auth_headers(api_key)
-    )
+    get_resp = await client.get(f"/api/targets/{target_id}", headers=auth_headers(api_key))
     assert get_resp.status_code == 200
     config = get_resp.json()["config"]
     # Sensitive fields containing "key" are redacted
@@ -282,11 +303,15 @@ async def test_redaction_does_not_affect_non_credential_fields(client, tmp_path)
     # Add one required sensitive field so creation passes validation
     config = {**non_sensitive_fields, "access_key": "AK", "secret_key": "SK"}
 
-    create_resp = await client.post("/api/targets", json={
-        "name": "Non-sensitive Fields Test",
-        "type": "s3",
-        "config": config,
-    }, headers=auth_headers(api_key))
+    create_resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Non-sensitive Fields Test",
+            "type": "s3",
+            "config": config,
+        },
+        headers=auth_headers(api_key),
+    )
     assert create_resp.status_code == 201
 
     list_resp = await client.get("/api/targets", headers=auth_headers(api_key))
@@ -295,6 +320,5 @@ async def test_redaction_does_not_affect_non_credential_fields(client, tmp_path)
 
     for field, expected in non_sensitive_fields.items():
         assert target["config"].get(field) == expected, (
-            f"Non-sensitive field '{field}' should be '{expected}' but got "
-            f"'{target['config'].get(field)}'"
+            f"Non-sensitive field '{field}' should be '{expected}' but got '{target['config'].get(field)}'"
         )

@@ -1,19 +1,14 @@
 """Phase 6: Discovery engine tests with FakeDockerClient."""
 
-import os
 import sqlite3
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import yaml
 
-from app.core.config import ArkiveConfig
 from app.services.discovery import DiscoveryEngine
 from tests.fakes.fake_docker import (
-    FakeDockerClient,
     FakeContainer,
-    create_fake_docker_client,
+    FakeDockerClient,
     create_empty_docker_client,
 )
 
@@ -30,8 +25,12 @@ class TestDiscoveryScan:
         assert len(containers) == 6
         names = {c.name for c in containers}
         assert names == {
-            "fake-postgres", "fake-mariadb", "fake-mongo",
-            "fake-redis", "fake-vaultwarden", "fake-adguard",
+            "fake-postgres",
+            "fake-mariadb",
+            "fake-mongo",
+            "fake-redis",
+            "fake-vaultwarden",
+            "fake-adguard",
         }
 
         # Collect all DB types detected
@@ -93,12 +92,14 @@ class TestDiscoveryScan:
         vw_container = FakeContainer(
             name="test-vaultwarden",
             image_tags=["vaultwarden/server:latest"],
-            mounts=[{
-                "Type": "bind",
-                "Source": str(vw_data),
-                "Destination": "/data",
-                "RW": True,
-            }],
+            mounts=[
+                {
+                    "Type": "bind",
+                    "Source": str(vw_data),
+                    "Destination": "/data",
+                    "RW": True,
+                }
+            ],
         )
 
         client = FakeDockerClient([vw_container])

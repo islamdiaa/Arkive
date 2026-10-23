@@ -305,6 +305,7 @@ MIGRATIONS: dict[int, list[str]] = {
     ],
 }
 
+
 async def run_migrations(db_path: str | Path) -> int:
     """Apply pending schema migrations. Returns number of migrations applied."""
     db_path = Path(db_path)
@@ -327,9 +328,7 @@ async def run_migrations(db_path: str | Path) -> int:
             try:
                 for sql in MIGRATIONS[version]:
                     await db.execute(sql)
-                await db.execute(
-                    "INSERT INTO schema_version (version) VALUES (?)", (version,)
-                )
+                await db.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
             except Exception as exc:
                 await db.rollback()
                 logger.error("Migration %d failed: %s", version, exc)

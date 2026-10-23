@@ -9,16 +9,16 @@ Provides:
 - Mock config fixture
 - Daemon thread cleanup to prevent aiosqlite hangs
 """
-from contextlib import asynccontextmanager
+
 import os
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-
 
 SLOW_DIR_MARKERS = {
     "tests/cloud_providers/": ("provider", "slow"),
@@ -146,11 +146,13 @@ async def build_test_client(config_dir: Path):
     deps_mod._config = test_config
 
     # Patch scheduler functions to no-ops for tests
-    with patch("app.services.scheduler.ArkiveScheduler", MagicMock()), \
-         patch("app.core.config.ArkiveConfig", TestConfig):
-
-        from app.main import create_app
+    with (
+        patch("app.services.scheduler.ArkiveScheduler", MagicMock()),
+        patch("app.core.config.ArkiveConfig", TestConfig),
+    ):
         from app.api.auth import _reset_setup_rate_limit
+        from app.main import create_app
+
         _reset_setup_rate_limit()
 
         test_app = create_app()
@@ -183,10 +185,12 @@ async def build_test_client(config_dir: Path):
 
     # Reset setup endpoint rate-limit state between tests
     import app.api.auth as auth_mod
+
     auth_mod._setup_attempts.clear()
 
     # Reset security module cache
     from app.core.security import _reset_fernet
+
     _reset_fernet()
 
     if previous_config_dir is None:
@@ -282,8 +286,7 @@ def mock_docker_client_enhanced():
     docker_client.containers = MagicMock()
     docker_client.containers.list = MagicMock(return_value=[])
 
-    def make_container(name="test-container", image="postgres:16", status="running",
-                       env=None, mounts=None):
+    def make_container(name="test-container", image="postgres:16", status="running", env=None, mounts=None):
         container = MagicMock()
         container.name = name
         container.status = status
@@ -384,15 +387,14 @@ def pytest_sessionfinish(session, exitstatus):
     if not os.environ.get("PYTEST_XDIST_WORKER"):
         stray = sorted(_mock_artifacts() - _artifacts_at_start)
         if stray:
-            print(f"\nTests created files from mocked config paths in {Path.cwd()}: {stray}\n"
-                  "Rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 (without -n) to find the test.")
+            print(
+                f"\nTests created files from mocked config paths in {Path.cwd()}: {stray}\n"
+                "Rerun with ARKIVE_TRACE_MOCK_ARTIFACTS=1 (without -n) to find the test."
+            )
             if session.exitstatus == 0:
                 session.exitstatus = 1
             exitstatus = session.exitstatus
-    alive = [
-        t for t in threading.enumerate()
-        if t.is_alive() and t != threading.main_thread() and t.daemon
-    ]
+    alive = [t for t in threading.enumerate() if t.is_alive() and t != threading.main_thread() and t.daemon]
     if alive:
         os._exit(exitstatus)
 

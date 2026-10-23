@@ -5,7 +5,6 @@ This prevents the class of bug where the frontend reads a field that the
 backend never returns (e.g., the "0 snapshots" bug from missing total_snapshots).
 """
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -49,7 +48,7 @@ def _parse_demo_status_keys() -> set[str]:
     content = MOCK_TS_PATH.read_text()
 
     # Find the opening brace of DEMO_STATUS
-    start_match = re.search(r'const DEMO_STATUS\s*=\s*\{', content)
+    start_match = re.search(r"const DEMO_STATUS\s*=\s*\{", content)
     if not start_match:
         pytest.fail("Could not find DEMO_STATUS in mock.ts")
 
@@ -59,9 +58,9 @@ def _parse_demo_status_keys() -> set[str]:
     depth = 0
     block_end = brace_start
     for i in range(brace_start, len(content)):
-        if content[i] == '{':
+        if content[i] == "{":
             depth += 1
-        elif content[i] == '}':
+        elif content[i] == "}":
             depth -= 1
             if depth == 0:
                 block_end = i
@@ -69,18 +68,18 @@ def _parse_demo_status_keys() -> set[str]:
     else:
         pytest.fail("Could not find closing brace for DEMO_STATUS")
 
-    block = content[brace_start + 1:block_end]
+    block = content[brace_start + 1 : block_end]
 
     # Extract only top-level keys (at brace depth 0)
     keys = set()
     current_depth = 0
-    for line in block.split('\n'):
+    for line in block.split("\n"):
         stripped = line.strip()
         if current_depth == 0:
-            m = re.match(r'(\w+)\s*:', stripped)
+            m = re.match(r"(\w+)\s*:", stripped)
             if m:
                 keys.add(m.group(1))
-        current_depth += stripped.count('{') - stripped.count('}')
+        current_depth += stripped.count("{") - stripped.count("}")
 
     return keys
 
@@ -96,8 +95,9 @@ class TestMockTsStatusContract:
     def test_mock_has_total_snapshots(self):
         """DEMO_STATUS must include total_snapshots to prevent '0 snapshots' bug."""
         keys = _parse_demo_status_keys()
-        assert "total_snapshots" in keys, \
+        assert "total_snapshots" in keys, (
             "DEMO_STATUS missing total_snapshots -- this caused the '0 snapshots' dashboard bug"
+        )
         logger.info("total_snapshots present in DEMO_STATUS")
 
     def test_mock_has_setup_completed(self):
@@ -151,14 +151,12 @@ async def test_real_api_returns_superset_of_mock_status_fields(client):
     assert resp.status_code == 200
     real_keys = set(resp.json().keys())
 
-    mock_keys = _parse_demo_status_keys()
+    _parse_demo_status_keys()
 
     # The real API should return at least all fields the mock promises.
     # Note: the mock may use different names for some fields (e.g., backup_running
     # vs the structured last_backup object). We check for critical overlap.
-    critical_fields = {"version", "platform", "hostname", "setup_completed",
-                       "uptime_seconds", "total_snapshots"}
+    critical_fields = {"version", "platform", "hostname", "setup_completed", "uptime_seconds", "total_snapshots"}
     missing_critical = critical_fields - real_keys
-    assert not missing_critical, \
-        f"Real API missing critical fields that mock provides: {missing_critical}"
+    assert not missing_critical, f"Real API missing critical fields that mock provides: {missing_critical}"
     logger.info("Real API covers all critical mock fields")

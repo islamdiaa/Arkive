@@ -4,11 +4,12 @@ API integration tests for auth endpoints.
 Adapted from Arkive v2 for v3 flat route layout (app.api.auth).
 Tests: setup flow, session check, API key regeneration, auth failures, rate limiting.
 """
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from tests.conftest import do_setup, auth_headers
 
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -98,7 +99,7 @@ async def test_setup_default_jobs_have_correct_types(client):
 async def test_setup_stores_encryption_password(client):
     """Setup with encryption_password should store it in settings."""
     data = await do_setup(client, encryption_password="my-strong-password")
-    api_key = data["api_key"]
+    data["api_key"]
     # Verify setup completed (indirectly confirms password was stored)
     resp = await client.get("/api/auth/session")
     assert resp.status_code == 200
@@ -124,14 +125,18 @@ async def test_setup_with_target_ids(client, tmp_path):
     # Create a local target dir first and manually insert a target
     target_path = str(tmp_path / "backup_dest")
     import os
+
     os.makedirs(target_path, exist_ok=True)
 
     # Do setup in setup-mode (no auth needed)
-    resp = await client.post("/api/targets", json={
-        "name": "Local",
-        "type": "local",
-        "config": {"path": target_path},
-    })
+    resp = await client.post(
+        "/api/targets",
+        json={
+            "name": "Local",
+            "type": "local",
+            "config": {"path": target_path},
+        },
+    )
     assert resp.status_code == 201
     target_id = resp.json()["id"]
 
@@ -150,12 +155,16 @@ async def test_setup_with_directory_ids(client, tmp_path):
     # Create a real directory and register it
     watch_dir = str(tmp_path / "appdata")
     import os
+
     os.makedirs(watch_dir, exist_ok=True)
 
-    resp = await client.post("/api/directories", json={
-        "path": watch_dir,
-        "label": "Appdata",
-    })
+    resp = await client.post(
+        "/api/directories",
+        json={
+            "path": watch_dir,
+            "label": "Appdata",
+        },
+    )
     assert resp.status_code == 201
     dir_id = resp.json()["id"]
 
@@ -173,6 +182,7 @@ async def test_setup_with_storage_config_creates_target_and_links_cloud_sync_job
     """Setup wizard storage payload should create a target and attach it to Cloud Sync."""
     target_path = str(tmp_path / "wizard-target")
     import os
+
     os.makedirs(target_path, exist_ok=True)
 
     data = await do_setup(client, storage={"type": "local", "path": target_path, "name": "Wizard Target"})
@@ -196,6 +206,7 @@ async def test_setup_persists_directories_as_watched_directories(client, tmp_pat
     """Setup wizard directories should populate watched_directories for later scans/export."""
     watch_dir = str(tmp_path / "wizard-appdata")
     import os
+
     os.makedirs(watch_dir, exist_ok=True)
 
     data = await do_setup(client, directories=[watch_dir])

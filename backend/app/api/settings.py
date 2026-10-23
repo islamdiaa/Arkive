@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 import yaml
@@ -18,9 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from app.core.activity import log_activity
 from app.core.dependencies import get_cloud_manager, get_config, get_db, get_event_bus, require_auth
 from app.core.security import decrypt_config, decrypt_value, encrypt_config, encrypt_value, is_encrypted
-from app.core.activity import log_activity
 from app.services.freshness import ping_heartbeat
 from app.services.recovery_kit import build_recovery_kit
 from app.services.settings_store import DEFAULTS, get_setting, set_setting
@@ -89,6 +89,7 @@ def _validate_setting_value(key: str, value) -> str:
     if key == "timezone":
         try:
             import zoneinfo
+
             zoneinfo.ZoneInfo(text)
         except Exception:
             raise HTTPException(status_code=422, detail=f"Invalid timezone: '{text}'")
@@ -164,9 +165,7 @@ async def _reload_drill_job(request: Request) -> None:
 @router.get("")
 async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
     """Get all application settings with sensitive values redacted."""
-    cursor = await db.execute(
-        "SELECT key, value, encrypted, updated_at FROM settings ORDER BY key"
-    )
+    cursor = await db.execute("SELECT key, value, encrypted, updated_at FROM settings ORDER BY key")
     rows = await cursor.fetchall()
 
     items = []
@@ -175,14 +174,16 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         key = row["key"]
         sensitive = _is_sensitive(key, row["encrypted"])
         values[key] = row["value"]
-        items.append({
-            "key": key,
-            "value": REDACTED if sensitive else row["value"],
-            "encrypted": bool(row["encrypted"]),
-            "sensitive": sensitive,
-            "has_value": bool(row["value"]),
-            "updated_at": row["updated_at"],
-        })
+        items.append(
+            {
+                "key": key,
+                "value": REDACTED if sensitive else row["value"],
+                "encrypted": bool(row["encrypted"]),
+                "sensitive": sensitive,
+                "has_value": bool(row["value"]),
+                "updated_at": row["updated_at"],
+            }
+        )
 
     keep_daily = _int_setting(values, "keep_daily", 7)
     keep_weekly = _int_setting(values, "keep_weekly", 4)
@@ -203,13 +204,14 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         "heartbeat_url": values.get("heartbeat_url", DEFAULTS["heartbeat_url"]),
         "stale_backup_hours": _int_setting(values, "stale_backup_hours", 0),
         "dump_compression": values.get("dump_compression", DEFAULTS["dump_compression"]),
-        "restore_drill_enabled": values.get(
-            "restore_drill_enabled", DEFAULTS["restore_drill_enabled"]) == "true",
+        "restore_drill_enabled": values.get("restore_drill_enabled", DEFAULTS["restore_drill_enabled"]) == "true",
         "restore_drill_schedule": values.get("restore_drill_schedule", DEFAULTS["restore_drill_schedule"]),
         "restore_drill_max_databases": _int_setting(
-            values, "restore_drill_max_databases", int(DEFAULTS["restore_drill_max_databases"])),
+            values, "restore_drill_max_databases", int(DEFAULTS["restore_drill_max_databases"])
+        ),
         "restore_drill_max_dump_mb": _int_setting(
-            values, "restore_drill_max_dump_mb", int(DEFAULTS["restore_drill_max_dump_mb"])),
+            values, "restore_drill_max_dump_mb", int(DEFAULTS["restore_drill_max_dump_mb"])
+        ),
         "recovery_kit_confirmed_at": values.get("recovery_kit_confirmed_at"),
         "api_key_set": "api_key_hash" in values,
         "encryption_password_set": ("encryption_password" in values or "restic_password" in values),
@@ -229,22 +231,43 @@ class ResetConfirm(BaseModel):
 
 
 WRITABLE_SETTINGS = {
-    "server_name", "timezone", "theme", "log_level", "web_url",
+    "server_name",
+    "timezone",
+    "theme",
+    "log_level",
+    "web_url",
     "retention_days",
-    "keep_daily", "keep_weekly", "keep_monthly", "flash_retention",
-    "backup_schedule", "db_dump_schedule", "cloud_sync_schedule", "flash_schedule",
-    "notify_on_success", "notify_on_failure",
-    "min_disk_space_bytes", "warn_disk_space_bytes",
+    "keep_daily",
+    "keep_weekly",
+    "keep_monthly",
+    "flash_retention",
+    "backup_schedule",
+    "db_dump_schedule",
+    "cloud_sync_schedule",
+    "flash_schedule",
+    "notify_on_success",
+    "notify_on_failure",
+    "min_disk_space_bytes",
+    "warn_disk_space_bytes",
     "bandwidth_limit",
-    "heartbeat_url", "stale_backup_hours", "dump_compression",
-    "restore_drill_enabled", "restore_drill_schedule",
-    "restore_drill_max_databases", "restore_drill_max_dump_mb",
+    "heartbeat_url",
+    "stale_backup_hours",
+    "dump_compression",
+    "restore_drill_enabled",
+    "restore_drill_schedule",
+    "restore_drill_max_databases",
+    "restore_drill_max_dump_mb",
 }
 # Settings whose change must re-register the restore drill system job.
 _DRILL_SCHEDULE_KEYS = {"restore_drill_enabled", "restore_drill_schedule"}
 READONLY_SETTINGS = {
-    "api_key_hash", "api_key", "encryption_password", "restic_password",
-    "setup_completed_at", "setup_completed", "platform",
+    "api_key_hash",
+    "api_key",
+    "encryption_password",
+    "restic_password",
+    "setup_completed_at",
+    "setup_completed",
+    "platform",
 }
 
 
@@ -276,7 +299,7 @@ async def update_settings_bulk(
             detail=f"Unknown settings: {', '.join(unknown)}. Allowed: {', '.join(sorted(WRITABLE_SETTINGS))}",
         )
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     updated = []
 
     cleaned = {key: _validate_setting_value(key, value) for key, value in settings_payload.items()}
@@ -298,13 +321,15 @@ async def update_settings_bulk(
                 (key, value, encrypted, now),
             )
 
-        updated.append({
-            "key": key,
-            "value": REDACTED if _is_sensitive(key, encrypted) else value,
-            "encrypted": bool(encrypted),
-            "sensitive": _is_sensitive(key, encrypted),
-            "updated_at": now,
-        })
+        updated.append(
+            {
+                "key": key,
+                "value": REDACTED if _is_sensitive(key, encrypted) else value,
+                "encrypted": bool(encrypted),
+                "sensitive": _is_sensitive(key, encrypted),
+                "updated_at": now,
+            }
+        )
 
     await db.commit()
 
@@ -339,7 +364,7 @@ async def update_setting(
 
     body.value = _validate_setting_value(key, body.value)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     encrypted = 1 if _is_sensitive(key, 0) else 0
 
     cursor = await db.execute("SELECT key FROM settings WHERE key = ?", (key,))
@@ -370,7 +395,6 @@ async def update_setting(
     }
 
 
-
 @router.post("/recovery-kit")
 async def generate_recovery_kit(
     request: Request,
@@ -390,7 +414,7 @@ async def generate_recovery_kit(
 @router.post("/recovery-kit/confirm")
 async def confirm_recovery_kit(db: aiosqlite.Connection = Depends(get_db)):
     """Record that the user stored the recovery kit outside this server."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     await set_setting(db, "recovery_kit_confirmed_at", now)
     await log_activity(db, "system", "recovery_kit", "Recovery kit marked as saved")
     return {"confirmed_at": now}
@@ -422,9 +446,16 @@ async def reset_settings(
             detail='Reset requires confirmation. Send { "confirm": true } in the request body.',
         )
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    preserved_keys = {"api_key_hash", "encryption_password", "restic_password", "setup_completed", "setup_completed_at", "api_key"}
+    preserved_keys = {
+        "api_key_hash",
+        "encryption_password",
+        "restic_password",
+        "setup_completed",
+        "setup_completed_at",
+        "api_key",
+    }
     placeholders = ", ".join("?" for _ in preserved_keys)  # nosec B608
     await db.execute(
         f"DELETE FROM settings WHERE key NOT IN ({placeholders})",  # nosec B608
@@ -450,9 +481,14 @@ async def reset_settings(
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("settings", "reset", "All settings reset to defaults",
-         json.dumps({"preserved": sorted(preserved_keys), "reset_at": now}),
-         "warning", now),
+        (
+            "settings",
+            "reset",
+            "All settings reset to defaults",
+            json.dumps({"preserved": sorted(preserved_keys), "reset_at": now}),
+            "warning",
+            now,
+        ),
     )
     await db.commit()
 
@@ -488,13 +524,13 @@ async def cron_preview(
         )
 
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cron_iter = croniter(cron_expr, now)
         next_runs = []
         for _ in range(3):
             next_time = cron_iter.get_next(datetime)
             if next_time.tzinfo is None:
-                next_time = next_time.replace(tzinfo=timezone.utc)
+                next_time = next_time.replace(tzinfo=UTC)
             next_runs.append(next_time.strftime("%Y-%m-%dT%H:%M:%SZ"))
 
         return {"cron": cron_expr, "next_runs": next_runs, "count": len(next_runs)}
@@ -536,9 +572,7 @@ async def _get_all_targets_for_export(db: aiosqlite.Connection) -> list[dict]:
     targets = []
     for row in rows:
         t = dict(row)
-        t["config"] = _redact_export_config(
-            decrypt_config(t.get("config", "{}"), str(config.config_dir))
-        )
+        t["config"] = _redact_export_config(decrypt_config(t.get("config", "{}"), str(config.config_dir)))
         t["enabled"] = bool(t.get("enabled", 1))
         targets.append(t)
     return targets
@@ -585,7 +619,9 @@ async def _get_all_notifications_for_export(db: aiosqlite.Connection) -> list[di
     for row in rows:
         ch = dict(row)
         try:
-            ch["events"] = json.loads(ch.get("events", "[]")) if isinstance(ch.get("events"), str) else ch.get("events", [])
+            ch["events"] = (
+                json.loads(ch.get("events", "[]")) if isinstance(ch.get("events"), str) else ch.get("events", [])
+            )
         except (json.JSONDecodeError, TypeError):
             ch["events"] = []
         ch["enabled"] = bool(ch.get("enabled", 1))
@@ -599,7 +635,7 @@ async def export_config(db: aiosqlite.Connection = Depends(get_db)):
     config = {
         "arkive_config": {
             "version": 1,
-            "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "settings": await _get_all_settings_for_export(db),
             "storage_targets": await _get_all_targets_for_export(db),
             "backup_jobs": await _get_all_jobs_for_export(db),
@@ -623,8 +659,17 @@ async def export_config(db: aiosqlite.Connection = Depends(get_db)):
 _REDACTED_PLACEHOLDERS = {REDACTED, "***", "••••••", "[REDACTED]", "***REDACTED***"}
 _VALID_JOB_TYPES = {"full", "db_dump", "flash"}
 _BLOCKED_DIR_PREFIXES = (
-    "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot",
-    "/proc", "/sys", "/dev", "/var/run", "/root",
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/var/run",
+    "/root",
 )
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -688,13 +733,15 @@ async def _reload_scheduler_jobs(scheduler, old_job_ids: set[str], jobs: list[di
             continue
         try:
             if callable(add):
-                await add({
-                    "id": job["id"],
-                    "name": job["name"],
-                    "schedule": job["schedule"],
-                    "type": job["type"],
-                    "enabled": True,
-                })
+                await add(
+                    {
+                        "id": job["id"],
+                        "name": job["name"],
+                        "schedule": job["schedule"],
+                        "type": job["type"],
+                        "enabled": True,
+                    }
+                )
             elif callable(reschedule):
                 await reschedule(job["id"], job["schedule"])
         except Exception as exc:
@@ -738,7 +785,7 @@ async def import_config(
         raise HTTPException(status_code=400, detail="Invalid config format. Expected 'arkive_config' root key.")
 
     arkive_config = config["arkive_config"]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     app_config = get_config()
     config_dir = str(app_config.config_dir)
     warnings: list[str] = []
@@ -852,10 +899,19 @@ async def import_config(
                      name = excluded.name, type = excluded.type, enabled = excluded.enabled,
                      config = excluded.config, status = excluded.status,
                      updated_at = excluded.updated_at""",
-                (tid, name, ttype, 1 if t.get("enabled", True) else 0,
-                 encrypt_config(cfg, config_dir), status, t.get("last_tested"),
-                 _as_int(t.get("snapshot_count")), _as_int(t.get("total_size_bytes")),
-                 str(t.get("created_at") or now), now),
+                (
+                    tid,
+                    name,
+                    ttype,
+                    1 if t.get("enabled", True) else 0,
+                    encrypt_config(cfg, config_dir),
+                    status,
+                    t.get("last_tested"),
+                    _as_int(t.get("snapshot_count")),
+                    _as_int(t.get("total_size_bytes")),
+                    str(t.get("created_at") or now),
+                    now,
+                ),
             )
             kept_ids.add(tid)
             restored["storage_targets"] += 1
@@ -908,11 +964,20 @@ async def import_config(
                      directories = excluded.directories, exclude_patterns = excluded.exclude_patterns,
                      include_databases = excluded.include_databases,
                      include_flash = excluded.include_flash, updated_at = excluded.updated_at""",
-                (jid, name, jtype, schedule, 1 if enabled else 0,
-                 json.dumps(targets), json.dumps(directories), json.dumps(excludes),
-                 1 if j.get("include_databases", True) else 0,
-                 1 if j.get("include_flash", True) else 0,
-                 str(j.get("created_at") or now), now),
+                (
+                    jid,
+                    name,
+                    jtype,
+                    schedule,
+                    1 if enabled else 0,
+                    json.dumps(targets),
+                    json.dumps(directories),
+                    json.dumps(excludes),
+                    1 if j.get("include_databases", True) else 0,
+                    1 if j.get("include_flash", True) else 0,
+                    str(j.get("created_at") or now),
+                    now,
+                ),
             )
             kept_job_ids.add(jid)
             imported_job_rows.append({"id": jid, "name": name, "type": jtype, "schedule": schedule, "enabled": enabled})
@@ -943,12 +1008,17 @@ async def import_config(
                    (id, path, label, exclude_patterns, enabled, size_bytes,
                     file_count, last_scanned, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (_safe_id(d.get("id")), path,
-                 _CONTROL_RE.sub("", str(d.get("label") or os.path.basename(path) or "Unnamed")),
-                 json.dumps([str(x) for x in _as_list(d.get("exclude_patterns"))]),
-                 1 if d.get("enabled", True) else 0,
-                 d.get("size_bytes"), d.get("file_count"),
-                 d.get("last_scanned"), str(d.get("created_at") or now)),
+                (
+                    _safe_id(d.get("id")),
+                    path,
+                    _CONTROL_RE.sub("", str(d.get("label") or os.path.basename(path) or "Unnamed")),
+                    json.dumps([str(x) for x in _as_list(d.get("exclude_patterns"))]),
+                    1 if d.get("enabled", True) else 0,
+                    d.get("size_bytes"),
+                    d.get("file_count"),
+                    d.get("last_scanned"),
+                    str(d.get("created_at") or now),
+                ),
             )
             restored["watched_directories"] += 1
 
@@ -993,19 +1063,31 @@ async def import_config(
                    (id, type, name, enabled, config, events, last_sent,
                     last_status, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (_safe_id(ch.get("id")), ctype, name,
-                 1 if ch.get("enabled", True) and cfg["url"] else 0,
-                 json.dumps(cfg), json.dumps(events),
-                 ch.get("last_sent"), ch.get("last_status"),
-                 str(ch.get("created_at") or now)),
+                (
+                    _safe_id(ch.get("id")),
+                    ctype,
+                    name,
+                    1 if ch.get("enabled", True) and cfg["url"] else 0,
+                    json.dumps(cfg),
+                    json.dumps(events),
+                    ch.get("last_sent"),
+                    ch.get("last_status"),
+                    str(ch.get("created_at") or now),
+                ),
             )
             restored["notification_channels"] += 1
 
     await db.execute(
         """INSERT INTO activity_log (type, action, message, details, severity, timestamp)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        ("settings", "imported", "Configuration imported from YAML",
-         json.dumps({**restored, "warnings": len(warnings)}), "warning" if warnings else "info", now),
+        (
+            "settings",
+            "imported",
+            "Configuration imported from YAML",
+            json.dumps({**restored, "warnings": len(warnings)}),
+            "warning" if warnings else "info",
+            now,
+        ),
     )
     await db.commit()
 

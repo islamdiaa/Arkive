@@ -32,20 +32,22 @@ async def test_create_target_rejects_newline_in_sftp_host(client):
     data = await do_setup(client)
     resp = await client.post(
         "/api/targets",
-        json={"name": "evil", "type": "sftp",
-              "config": {"host": INJECTED_HOST, "username": "u", "password": "p"}},
+        json={"name": "evil", "type": "sftp", "config": {"host": INJECTED_HOST, "username": "u", "password": "p"}},
         headers=auth_headers(data["api_key"]),
     )
     assert resp.status_code == 422
     assert "control characters" in resp.text
 
 
-@pytest.mark.parametrize("field,value", [
-    ("endpoint", "https://s3.example.com\n[other]\ntype = local"),
-    ("bucket", "bucket\rname"),
-    ("secret_key", "abc\x00def"),
-    ("region", "us-east-1\x1b"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("endpoint", "https://s3.example.com\n[other]\ntype = local"),
+        ("bucket", "bucket\rname"),
+        ("secret_key", "abc\x00def"),
+        ("region", "us-east-1\x1b"),
+    ],
+)
 async def test_create_s3_target_rejects_control_chars(client, field, value):
     data = await do_setup(client)
     config = {"endpoint": "https://s3.example.com", "access_key": "AK", "secret_key": "SK", "bucket": "b"}
@@ -62,8 +64,11 @@ async def test_create_target_rejects_control_char_in_nested_value(client):
     data = await do_setup(client)
     resp = await client.post(
         "/api/targets",
-        json={"name": "b2", "type": "b2",
-              "config": {"key_id": "k", "app_key": "a", "bucket": "b", "extra": {"x": "1\n2"}}},
+        json={
+            "name": "b2",
+            "type": "b2",
+            "config": {"key_id": "k", "app_key": "a", "bucket": "b", "extra": {"x": "1\n2"}},
+        },
         headers=auth_headers(data["api_key"]),
     )
     assert resp.status_code == 422
@@ -90,16 +95,18 @@ async def test_update_target_rejects_newline_in_config(client, tmp_path):
     api_key = data["api_key"]
     created = await client.post(
         "/api/targets",
-        json={"name": "s3", "type": "s3",
-              "config": {"endpoint": "https://e", "access_key": "AK", "secret_key": "SK", "bucket": "b"}},
+        json={
+            "name": "s3",
+            "type": "s3",
+            "config": {"endpoint": "https://e", "access_key": "AK", "secret_key": "SK", "bucket": "b"},
+        },
         headers=auth_headers(api_key),
     )
     assert created.status_code == 201
     target_id = created.json()["id"]
     resp = await client.put(
         f"/api/targets/{target_id}",
-        json={"config": {"endpoint": "https://e\nprovider = x", "access_key": "AK", "secret_key": "SK",
-                         "bucket": "b"}},
+        json={"config": {"endpoint": "https://e\nprovider = x", "access_key": "AK", "secret_key": "SK", "bucket": "b"}},
         headers=auth_headers(api_key),
     )
     assert resp.status_code == 422
@@ -118,10 +125,13 @@ async def test_test_connection_inline_rejects_newline(client):
 
 
 async def test_setup_storage_with_newline_creates_no_target(client):
-    resp = await client.post("/api/auth/setup", json={
-        "encryption_password": "test-password",
-        "storage": {"type": "sftp", "host": INJECTED_HOST, "username": "u"},
-    })
+    resp = await client.post(
+        "/api/auth/setup",
+        json={
+            "encryption_password": "test-password",
+            "storage": {"type": "sftp", "host": INJECTED_HOST, "username": "u"},
+        },
+    )
     assert resp.status_code == 201
     body = resp.json()
     assert body["target_created"] is False
@@ -147,20 +157,26 @@ class TestCloudManagerRefusesUnsafeValues:
         await cm.write_target_config({"id": "good", "type": "b2", "config": {"key_id": "k", "app_key": "a"}})
         before = cm.rclone_config.read_text()
         with pytest.raises(RcloneConfigError):
-            await cm.write_target_config({
-                "id": "bad", "type": "s3",
-                "config": {"access_key": "AK", "secret_key": "SK", "endpoint": "https://e\nenv_auth = true"},
-            })
+            await cm.write_target_config(
+                {
+                    "id": "bad",
+                    "type": "s3",
+                    "config": {"access_key": "AK", "secret_key": "SK", "endpoint": "https://e\nenv_auth = true"},
+                }
+            )
         assert cm.rclone_config.read_text() == before
 
     async def test_sftp_host_injection_never_reaches_file(self, cm):
         with patch("app.services.cloud_manager.run_command", new_callable=AsyncMock) as run:
             run.return_value = MagicMock(returncode=0, stdout="OBS", stderr="")
             with pytest.raises(RcloneConfigError):
-                await cm.write_target_config({
-                    "id": "sftp1", "type": "sftp",
-                    "config": {"host": INJECTED_HOST, "username": "u", "password": "p"},
-                })
+                await cm.write_target_config(
+                    {
+                        "id": "sftp1",
+                        "type": "sftp",
+                        "config": {"host": INJECTED_HOST, "username": "u", "password": "p"},
+                    }
+                )
         assert not cm.rclone_config.exists() or "ssh =" not in cm.rclone_config.read_text()
 
     @pytest.mark.parametrize("bad_id", ["a]\n[b", "../x", "", "x" * 65, "id with space"])
@@ -179,10 +195,13 @@ async def test_obscure_failure_raises_without_argv_fallback(tmp_path):
     with patch("app.services.cloud_manager.run_command", new_callable=AsyncMock) as run:
         run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
         with pytest.raises(RuntimeError, match="rclone obscure failed"):
-            await cm.write_target_config({
-                "id": "sftp1", "type": "sftp",
-                "config": {"host": "nas.local", "username": "u", "password": "hunter2-secret"},
-            })
+            await cm.write_target_config(
+                {
+                    "id": "sftp1",
+                    "type": "sftp",
+                    "config": {"host": "nas.local", "username": "u", "password": "hunter2-secret"},
+                }
+            )
     run.assert_called_once()
     argv = run.call_args.args[0]
     assert argv == ["rclone", "obscure", "-"]
@@ -196,10 +215,13 @@ async def test_obscure_timeout_raises(tmp_path):
     with patch("app.services.cloud_manager.run_command", new_callable=AsyncMock) as run:
         run.return_value = MagicMock(returncode=-1, stdout="", stderr="Command timed out after 30s")
         with pytest.raises(RuntimeError):
-            await cm.write_target_config({
-                "id": "sftp1", "type": "sftp",
-                "config": {"host": "nas.local", "username": "u", "password": "pw"},
-            })
+            await cm.write_target_config(
+                {
+                    "id": "sftp1",
+                    "type": "sftp",
+                    "config": {"host": "nas.local", "username": "u", "password": "pw"},
+                }
+            )
     assert run.call_count == 1
 
 
@@ -208,17 +230,20 @@ async def test_obscure_timeout_raises(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("argv,secret", [
-    (["rclone", "obscure", "--", "hunter2"], "hunter2"),
-    (["/usr/bin/rclone", "obscure", "hunter2"], "hunter2"),
-    (["mysqldump", "-u", "root", "-phunter2", "db"], "hunter2"),
-    (["mysqldump", "--password", "hunter2", "db"], "hunter2"),
-    (["mysqldump", "--password=hunter2", "db"], "hunter2"),
-    (["env", "PGPASSWORD=hunter2", "pg_dump"], "hunter2"),
-    (["env", "MYSQL_PWD=hunter2", "mysqldump"], "hunter2"),
-    (["rclone", "config", "create", "x", "sftp", "pass=hunter2"], "hunter2"),
-    (["tool", "--token", "hunter2"], "hunter2"),
-])
+@pytest.mark.parametrize(
+    "argv,secret",
+    [
+        (["rclone", "obscure", "--", "hunter2"], "hunter2"),
+        (["/usr/bin/rclone", "obscure", "hunter2"], "hunter2"),
+        (["mysqldump", "-u", "root", "-phunter2", "db"], "hunter2"),
+        (["mysqldump", "--password", "hunter2", "db"], "hunter2"),
+        (["mysqldump", "--password=hunter2", "db"], "hunter2"),
+        (["env", "PGPASSWORD=hunter2", "pg_dump"], "hunter2"),
+        (["env", "MYSQL_PWD=hunter2", "mysqldump"], "hunter2"),
+        (["rclone", "config", "create", "x", "sftp", "pass=hunter2"], "hunter2"),
+        (["tool", "--token", "hunter2"], "hunter2"),
+    ],
+)
 def test_redact_command_masks_secrets(argv, secret):
     rendered = redact_command(argv)
     assert secret not in rendered
@@ -235,7 +260,8 @@ async def test_run_command_logs_redacted_argv(caplog):
 
     caplog.set_level(logging.DEBUG, logger="arkive.subprocess")
     result = await run_command(
-        ["sh", "-c", "exit 3", "--password", "s3cr3t-value"], timeout=10,
+        ["sh", "-c", "exit 3", "--password", "s3cr3t-value"],
+        timeout=10,
     )
     assert result.returncode == 3
     assert "s3cr3t-value" not in caplog.text
@@ -440,6 +466,7 @@ async def test_status_hostname_resolved_off_event_loop(client):
 
     def _fake_resolve(**kwargs):
         import threading
+
         seen_threads.append(threading.current_thread().name)
         return "tower"
 

@@ -17,9 +17,16 @@ logger = logging.getLogger("arkive.backup_engine")
 
 # Patterns that indicate transient/retryable errors
 _TRANSIENT_PATTERNS = [
-    "connection refused", "timeout", "network", "unreachable",
-    "temporary failure", "dns", "i/o timeout", "connection reset",
-    "broken pipe", "eof",
+    "connection refused",
+    "timeout",
+    "network",
+    "unreachable",
+    "temporary failure",
+    "dns",
+    "i/o timeout",
+    "connection reset",
+    "broken pipe",
+    "eof",
 ]
 
 _NON_TRANSIENT_AUTH_PATTERNS = [
@@ -61,10 +68,11 @@ def _is_transient_error(stderr: str) -> bool:
         return False
     return any(pattern in lower for pattern in _TRANSIENT_PATTERNS)
 
+
 # Restic snapshot IDs are hex strings (8 or 64 chars), or "latest"
-_SNAPSHOT_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+_SNAPSHOT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # Path validation: block traversal sequences
-_PATH_TRAVERSAL_RE = re.compile(r'(^|/)\.\.(/|$)')
+_PATH_TRAVERSAL_RE = re.compile(r"(^|/)\.\.(/|$)")
 
 
 def _validate_snapshot_id(snapshot_id: str) -> str:
@@ -118,6 +126,7 @@ class BackupEngine:
     async def _get_password(self) -> str:
         """Get restic encryption password from settings."""
         import aiosqlite
+
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
             row = await db.execute("SELECT value FROM settings WHERE key = 'encryption_password'")
@@ -134,19 +143,16 @@ class BackupEngine:
         Returns "" on DB error (table missing, bootstrap scenarios, etc.).
         """
         import aiosqlite
+
         try:
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT value FROM settings WHERE key = 'bandwidth_limit'"
-                )
+                cursor = await db.execute("SELECT value FROM settings WHERE key = 'bandwidth_limit'")
                 result = await cursor.fetchone()
                 if result and result["value"]:
                     val = result["value"]
                     if not re.match(r"^[1-9]\d*$", val):
-                        logger.warning(
-                            "bandwidth_limit '%s' failed re-validation — ignoring", val
-                        )
+                        logger.warning("bandwidth_limit '%s' failed re-validation — ignoring", val)
                         return ""
                     return val
         except Exception as e:
@@ -156,12 +162,11 @@ class BackupEngine:
     async def _get_server_name(self) -> str:
         """Read optional server_name from settings."""
         import aiosqlite
+
         try:
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute(
-                    "SELECT value FROM settings WHERE key = 'server_name'"
-                )
+                cursor = await db.execute("SELECT value FROM settings WHERE key = 'server_name'")
                 result = await cursor.fetchone()
                 return str(result["value"]).strip() if result and result["value"] else ""
         except Exception:
@@ -183,7 +188,8 @@ class BackupEngine:
         # Check if already initialized
         result = await run_command(
             ["restic", "-r", repo, "snapshots", "--json"],
-            env=env, timeout=60,
+            env=env,
+            timeout=60,
         )
         if result.returncode == 0:
             logger.info("Repository already initialized: %s", repo)
@@ -192,7 +198,8 @@ class BackupEngine:
         # Initialize
         result = await run_command(
             ["restic", "init", "-r", repo],
-            env=env, timeout=120,
+            env=env,
+            timeout=120,
         )
         if result.returncode == 0:
             logger.info("Repository initialized: %s", repo)
@@ -201,11 +208,15 @@ class BackupEngine:
         logger.error("Failed to init repo %s: %s", repo, result.stderr)
         return False
 
-    async def backup(self, target: dict, paths: list[str],
-                     excludes: list[str] | None = None,
-                     tags: list[str] | None = None,
-                     cancel_check=None,
-                     hostname: str | None = None) -> dict[str, Any]:
+    async def backup(
+        self,
+        target: dict,
+        paths: list[str],
+        excludes: list[str] | None = None,
+        tags: list[str] | None = None,
+        cancel_check=None,
+        hostname: str | None = None,
+    ) -> dict[str, Any]:
         """Run restic backup. Returns snapshot info."""
         password = await self._get_password()
         if not password:
@@ -218,8 +229,16 @@ class BackupEngine:
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
         cmd = [
-            "restic", "backup", "-r", repo, "--json", "--retry-lock", RETRY_LOCK,
-            "--exclude-caches", "--exclude-if-present", EXCLUDE_MARKER,
+            "restic",
+            "backup",
+            "-r",
+            repo,
+            "--json",
+            "--retry-lock",
+            RETRY_LOCK,
+            "--exclude-caches",
+            "--exclude-if-present",
+            EXCLUDE_MARKER,
         ]
         resolved_host = (hostname or "").strip() or await self.current_hostname()
         if resolved_host:
@@ -251,7 +270,10 @@ class BackupEngine:
                 wait_time = RETRY_BACKOFF_BASE * attempt
                 logger.warning(
                     "Backup attempt %d/%d failed for %s (transient error), retrying in %ds: %s",
-                    attempt, MAX_RETRIES, target.get("name"), wait_time,
+                    attempt,
+                    MAX_RETRIES,
+                    target.get("name"),
+                    wait_time,
                     last_result.stderr[:200],
                 )
                 await asyncio.sleep(wait_time)
@@ -286,8 +308,7 @@ class BackupEngine:
 
         if result.returncode == RESTIC_EXIT_INCOMPLETE:
             detail = "; ".join(file_errors) or result.stderr.strip()[:500]
-            logger.warning("Backup for %s is incomplete — some files could not be read: %s",
-                           target.get("name"), detail)
+            logger.warning("Backup for %s is incomplete — some files could not be read: %s", target.get("name"), detail)
             return {
                 "status": "partial",
                 "error": f"Some files could not be read: {detail}",
@@ -305,9 +326,9 @@ class BackupEngine:
             "files_changed": snapshot_info.get("files_changed", 0),
         }
 
-    async def forget(self, target: dict, keep_daily: int = 7,
-                     keep_weekly: int = 4, keep_monthly: int = 6,
-                     prune: bool = True) -> dict:
+    async def forget(
+        self, target: dict, keep_daily: int = 7, keep_weekly: int = 4, keep_monthly: int = 6, prune: bool = True
+    ) -> dict:
         """Run restic forget with retention policy, optionally pruning unused data."""
         password = await self._get_password()
         if not password:
@@ -316,11 +337,14 @@ class BackupEngine:
 
         # Validate retention values — prevent accidental deletion of all snapshots
         if keep_daily < 1 or keep_weekly < 1 or keep_monthly < 1:
-            logger.error("Invalid retention values: daily=%d weekly=%d monthly=%d — "
-                         "all values must be >= 1 to prevent data loss",
-                         keep_daily, keep_weekly, keep_monthly)
-            return {"status": "failed",
-                    "output": "Retention values must be >= 1 to prevent data loss"}
+            logger.error(
+                "Invalid retention values: daily=%d weekly=%d monthly=%d — "
+                "all values must be >= 1 to prevent data loss",
+                keep_daily,
+                keep_weekly,
+                keep_monthly,
+            )
+            return {"status": "failed", "output": "Retention values must be >= 1 to prevent data loss"}
 
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
@@ -329,19 +353,29 @@ class BackupEngine:
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
         cmd = [
-            "restic", "forget", "-r", repo, "--retry-lock", RETRY_LOCK,
-            "--keep-daily", str(keep_daily),
-            "--keep-weekly", str(keep_weekly),
-            "--keep-monthly", str(keep_monthly),
+            "restic",
+            "forget",
+            "-r",
+            repo,
+            "--retry-lock",
+            RETRY_LOCK,
+            "--keep-daily",
+            str(keep_daily),
+            "--keep-weekly",
+            str(keep_weekly),
+            "--keep-monthly",
+            str(keep_monthly),
         ]
         if prune:
             cmd.append("--prune")
         cmd.append("--json")
         result = await run_command(cmd, env=env, timeout=3600 * 4 if prune else 900)
 
-        return {"status": "success" if result.returncode == 0 else "failed",
-                "output": result.stdout[:500],
-                "error": result.stderr[:500] if result.returncode != 0 else None}
+        return {
+            "status": "success" if result.returncode == 0 else "failed",
+            "output": result.stdout[:500],
+            "error": result.stderr[:500] if result.returncode != 0 else None,
+        }
 
     async def current_hostname(self) -> str:
         """Host name recorded in snapshots (stable across container re-creates).
@@ -368,7 +402,8 @@ class BackupEngine:
 
         result = await run_command(
             ["restic", "snapshots", "-r", repo, "--json"],
-            env=env, timeout=120,
+            env=env,
+            timeout=120,
         )
         if result.returncode != 0:
             raise ResticError(result.stderr.strip()[:500] or f"restic exited with {result.returncode}")
@@ -389,8 +424,7 @@ class BackupEngine:
         except ResticError:
             return []
 
-    async def normalize_legacy_hostnames(self, target: dict, marker_path: str,
-                                         owned_snapshot_ids: set[str]) -> dict:
+    async def normalize_legacy_hostnames(self, target: dict, marker_path: str, owned_snapshot_ids: set[str]) -> dict:
         """Re-label this instance's snapshots recorded under a container ID.
 
         Older versions recorded the container hostname (its ID, which changes on
@@ -414,8 +448,10 @@ class BackupEngine:
             return snap_id in owned or snap_id[:8] in owned
 
         legacy = [
-            snap["id"] for snap in snapshots
-            if isinstance(snap, dict) and snap.get("id")
+            snap["id"]
+            for snap in snapshots
+            if isinstance(snap, dict)
+            and snap.get("id")
             and _CONTAINER_ID_HOST_RE.match(str(snap.get("hostname") or ""))
             and snap.get("hostname") != host
             and marker_path in (snap.get("paths") or [])
@@ -423,27 +459,42 @@ class BackupEngine:
         ]
         if not legacy:
             return {"status": "success", "rewritten": 0}
-        logger.info("Re-labelling %d of this instance's snapshots from container-ID host names to %s; "
-                    "the next retention pass then applies one policy to the merged history",
-                    len(legacy), host)
+        logger.info(
+            "Re-labelling %d of this instance's snapshots from container-ID host names to %s; "
+            "the next retention pass then applies one policy to the merged history",
+            len(legacy),
+            host,
+        )
 
         password = await self._get_password()
         env = self._get_restic_env(password)
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
         result = await run_command(
-            ["restic", "rewrite", "-r", self._repo_path(target), "--retry-lock", RETRY_LOCK,
-             "--new-host", host, "--forget", "--", *legacy],
-            env=env, timeout=3600,
+            [
+                "restic",
+                "rewrite",
+                "-r",
+                self._repo_path(target),
+                "--retry-lock",
+                RETRY_LOCK,
+                "--new-host",
+                host,
+                "--forget",
+                "--",
+                *legacy,
+            ],
+            env=env,
+            timeout=3600,
         )
         if result.returncode != 0:
             return {"status": "failed", "rewritten": 0, "error": result.stderr.strip()[:500]}
         logger.info("Re-labelled %d snapshots from container-ID host names to %s", len(legacy), host)
         return {"status": "success", "rewritten": len(legacy), "host": host}
 
-    async def restore(self, target: dict, snapshot_id: str,
-                      paths: list[str] | None = None,
-                      restore_to: str | None = None) -> dict:
+    async def restore(
+        self, target: dict, snapshot_id: str, paths: list[str] | None = None, restore_to: str | None = None
+    ) -> dict:
         """Restore files from a snapshot."""
         # Validate inputs to prevent injection
         snapshot_id = _validate_snapshot_id(snapshot_id)
@@ -492,7 +543,8 @@ class BackupEngine:
 
         result = await run_command(
             ["restic", "unlock", "-r", repo],
-            env=env, timeout=60,
+            env=env,
+            timeout=60,
         )
         return result.returncode == 0
 
@@ -507,7 +559,8 @@ class BackupEngine:
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
         result = await run_command(
             ["restic", "check", "-r", repo, "--json", "--retry-lock", RETRY_LOCK],
-            env=env, timeout=3600,
+            env=env,
+            timeout=3600,
         )
         return {
             "status": "success" if result.returncode == 0 else "failed",
@@ -538,7 +591,8 @@ class BackupEngine:
 
         result = await run_command(
             ["restic", "ls", snapshot_id, "-r", repo, "--json", path],
-            env=env, timeout=120,
+            env=env,
+            timeout=120,
         )
         if result.returncode != 0:
             if strict:
@@ -550,12 +604,14 @@ class BackupEngine:
             try:
                 data = json.loads(line)
                 if "name" in data:
-                    entries.append({
-                        "name": data.get("name", ""),
-                        "type": "directory" if data.get("type") == "dir" else "file",
-                        "size": data.get("size"),
-                        "modified": data.get("mtime"),
-                    })
+                    entries.append(
+                        {
+                            "name": data.get("name", ""),
+                            "type": "directory" if data.get("type") == "dir" else "file",
+                            "size": data.get("size"),
+                            "modified": data.get("mtime"),
+                        }
+                    )
             except json.JSONDecodeError:
                 continue
         return entries

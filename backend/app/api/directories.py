@@ -22,17 +22,48 @@ router = APIRouter(prefix="/directories", tags=["directories"], dependencies=[De
 
 # Directories that are almost always huge media/data stores — skip suggesting.
 SKIP_NAMES = {
-    "media", "movies", "tv", "downloads", "music", "audiobooks",
-    "transcode", "isos", "games", "torrents", "usenet",
-    "youtube", "podcasts", "videos", "recordings", "rips",
+    "media",
+    "movies",
+    "tv",
+    "downloads",
+    "music",
+    "audiobooks",
+    "transcode",
+    "isos",
+    "games",
+    "torrents",
+    "usenet",
+    "youtube",
+    "podcasts",
+    "videos",
+    "recordings",
+    "rips",
 }
 
 # File extensions that indicate re-downloadable media content.
 MEDIA_EXTENSIONS = {
-    ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".m4v", ".ts",  # video
-    ".mp3", ".flac", ".aac", ".ogg", ".wma", ".m4a", ".opus",       # audio
-    ".iso", ".img", ".bin", ".nrg",                                   # disk images
-    ".rar", ".r00", ".r01",                                           # split archives
+    ".mkv",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".m4v",
+    ".ts",  # video
+    ".mp3",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".wma",
+    ".m4a",
+    ".opus",  # audio
+    ".iso",
+    ".img",
+    ".bin",
+    ".nrg",  # disk images
+    ".rar",
+    ".r00",
+    ".r01",  # split archives
 }
 
 # Size threshold: directories under this are likely config/scripts worth backing up.
@@ -110,8 +141,17 @@ def _validate_directory_path(path: str) -> str:
 
     normalized = os.path.normpath(path)
     blocked_prefixes = (
-        "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot",
-        "/proc", "/sys", "/dev", "/var/run", "/root",
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/boot",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/var/run",
+        "/root",
     )
     for prefix in blocked_prefixes:
         if normalized == prefix or normalized.startswith(prefix + "/"):
@@ -156,7 +196,9 @@ async def add_directory(body: DirectoryCreate, db: aiosqlite.Connection = Depend
         (dir_id, body.path, body.label, json.dumps(body.exclude_patterns), int(body.enabled)),
     )
     await db.commit()
-    await log_activity(db, "directory", "created", f"Added watched directory '{body.label}'", {"dir_id": dir_id, "path": body.path})
+    await log_activity(
+        db, "directory", "created", f"Added watched directory '{body.label}'", {"dir_id": dir_id, "path": body.path}
+    )
     return {"id": dir_id, "path": body.path}
 
 
@@ -168,9 +210,7 @@ async def update_directory(dir_id: str, body: DirectoryCreate, db: aiosqlite.Con
 
     body.path = await asyncio.to_thread(_validate_directory_path, body.path)
 
-    cursor = await db.execute(
-        "SELECT id FROM watched_directories WHERE path = ? AND id != ?", (body.path, dir_id)
-    )
+    cursor = await db.execute("SELECT id FROM watched_directories WHERE path = ? AND id != ?", (body.path, dir_id))
     if await cursor.fetchone():
         raise HTTPException(409, f"Directory already watched: {body.path}")
 
@@ -238,14 +278,16 @@ async def scan_directories(db: aiosqlite.Connection = Depends(get_db)):
             if os.path.isdir(path):
                 size, count = _quick_size(path, max_files=5000)
                 size_cache[path] = (size, count)
-                directories.append({
-                    "path": path,
-                    "label": label,
-                    "size_bytes": size,
-                    "file_count": count,
-                    "priority": priority,
-                    "recommended_excludes": excludes,
-                })
+                directories.append(
+                    {
+                        "path": path,
+                        "label": label,
+                        "size_bytes": size,
+                        "file_count": count,
+                        "priority": priority,
+                        "recommended_excludes": excludes,
+                    }
+                )
                 seen_paths.add(path)
 
         # 2. Dynamically discover all top-level /mnt/user/ subdirectories.
@@ -268,16 +310,18 @@ async def scan_directories(db: aiosqlite.Connection = Depends(get_db)):
                         label, priority, excludes = info
                         cached = size_cache.get(full_path)
                         size, count = cached if cached is not None else _quick_size(full_path, max_files=5000)
-                        suggestions.append({
-                            "path": full_path,
-                            "label": label,
-                            "size_bytes": size,
-                            "file_count": count,
-                            "priority": priority,
-                            "recommended_excludes": excludes,
-                            "already_watched": full_path in watched_paths,
-                            "reason": "Well-known Unraid share",
-                        })
+                        suggestions.append(
+                            {
+                                "path": full_path,
+                                "label": label,
+                                "size_bytes": size,
+                                "file_count": count,
+                                "priority": priority,
+                                "recommended_excludes": excludes,
+                                "already_watched": full_path in watched_paths,
+                                "reason": "Well-known Unraid share",
+                            }
+                        )
                     continue
 
                 seen_paths.add(full_path)
@@ -309,39 +353,45 @@ async def scan_directories(db: aiosqlite.Connection = Depends(get_db)):
 
                 label = name.replace("-", " ").replace("_", " ").title()
 
-                suggestions.append({
-                    "path": full_path,
-                    "label": label,
-                    "size_bytes": size,
-                    "file_count": count,
-                    "priority": priority,
-                    "recommended_excludes": excludes,
-                    "already_watched": full_path in watched_paths,
-                    "reason": reason,
-                })
+                suggestions.append(
+                    {
+                        "path": full_path,
+                        "label": label,
+                        "size_bytes": size,
+                        "file_count": count,
+                        "priority": priority,
+                        "recommended_excludes": excludes,
+                        "already_watched": full_path in watched_paths,
+                        "reason": reason,
+                    }
+                )
 
         # 3. Also scan /boot-config if present (Unraid flash — small, critical).
         boot_config = "/boot-config"
         if os.path.isdir(boot_config) and boot_config not in seen_paths:
             size, count = _quick_size(boot_config, max_files=2000)
-            suggestions.append({
-                "path": boot_config,
-                "label": "Flash Config",
-                "size_bytes": size,
-                "file_count": count,
-                "priority": "critical",
-                "recommended_excludes": [],
-                "already_watched": boot_config in watched_paths,
-                "reason": "Unraid USB flash configuration",
-            })
+            suggestions.append(
+                {
+                    "path": boot_config,
+                    "label": "Flash Config",
+                    "size_bytes": size,
+                    "file_count": count,
+                    "priority": "critical",
+                    "recommended_excludes": [],
+                    "already_watched": boot_config in watched_paths,
+                    "reason": "Unraid USB flash configuration",
+                }
+            )
 
         # Sort suggestions: unwatched first, then by priority, then by name.
         priority_order = {"critical": 0, "recommended": 1, "optional": 2}
-        suggestions.sort(key=lambda s: (
-            s["already_watched"],
-            priority_order.get(s["priority"], 3),
-            s["path"],
-        ))
+        suggestions.sort(
+            key=lambda s: (
+                s["already_watched"],
+                priority_order.get(s["priority"], 3),
+                s["path"],
+            )
+        )
 
         return directories, suggestions
 

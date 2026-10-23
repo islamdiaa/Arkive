@@ -5,7 +5,6 @@ state transitions, cancellation, error categorization, lock management.
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,12 +12,11 @@ import pytest
 from app.core.config import ArkiveConfig
 from app.core.event_bus import EventBus
 from app.services.orchestrator import (
-    BackupOrchestrator,
-    LOCK_FILE,
-    categorize_error,
     ERROR_CATEGORIES,
+    LOCK_FILE,
+    BackupOrchestrator,
+    categorize_error,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,27 +66,30 @@ def _make_orchestrator(tmp_path) -> BackupOrchestrator:
 
 
 class TestCategorizeError:
-    @pytest.mark.parametrize("text,expected", [
-        ("401 Unauthorized from target", "auth_error"),
-        ("403 forbidden", "auth_error"),
-        ("token expired for user", "auth_error"),
-        ("Connection refused by server", "network_error"),
-        ("DNS resolution failed", "network_error"),
-        ("timeout waiting for response", "network_error"),
-        ("quota exceeded", "storage_full"),
-        ("no space left on device", "storage_full"),
-        ("disk quota reached", "storage_full"),
-        ("permission denied writing to /mnt/user", "permission_error"),
-        ("access denied to directory", "permission_error"),
-        ("container not found", "container_error"),
-        ("container is not running", "container_error"),
-        ("database disk image is malformed", "dump_error"),
-        ("integrity_check failed", "dump_error"),
-        ("corrupt data detected", "dump_error"),
-        ("repository is already locked by PID", "restic_error"),
-        ("unable to create lock in repo", "restic_error"),
-        ("Something completely unknown happened", "unknown"),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("401 Unauthorized from target", "auth_error"),
+            ("403 forbidden", "auth_error"),
+            ("token expired for user", "auth_error"),
+            ("Connection refused by server", "network_error"),
+            ("DNS resolution failed", "network_error"),
+            ("timeout waiting for response", "network_error"),
+            ("quota exceeded", "storage_full"),
+            ("no space left on device", "storage_full"),
+            ("disk quota reached", "storage_full"),
+            ("permission denied writing to /mnt/user", "permission_error"),
+            ("access denied to directory", "permission_error"),
+            ("container not found", "container_error"),
+            ("container is not running", "container_error"),
+            ("database disk image is malformed", "dump_error"),
+            ("integrity_check failed", "dump_error"),
+            ("corrupt data detected", "dump_error"),
+            ("repository is already locked by PID", "restic_error"),
+            ("unable to create lock in repo", "restic_error"),
+            ("Something completely unknown happened", "unknown"),
+        ],
+    )
     def test_categorization(self, text, expected):
         assert categorize_error(text) == expected
 
@@ -121,9 +122,11 @@ class TestLockManagement:
     def test_acquire_lock_creates_file(self, tmp_path):
         orch = _make_orchestrator(tmp_path)
         lock = tmp_path / "backup.lock"
-        with patch.object(type(LOCK_FILE), "exists", return_value=False), \
-             patch.object(type(LOCK_FILE), "parent", tmp_path), \
-             patch("app.services.orchestrator.LOCK_FILE", lock):
+        with (
+            patch.object(type(LOCK_FILE), "exists", return_value=False),
+            patch.object(type(LOCK_FILE), "parent", tmp_path),
+            patch("app.services.orchestrator.LOCK_FILE", lock),
+        ):
             result = orch._acquire_lock("run-1")
 
         assert result is True
@@ -135,10 +138,14 @@ class TestLockManagement:
     def test_acquire_lock_fails_when_locked(self, tmp_path):
         orch = _make_orchestrator(tmp_path)
         lock = tmp_path / "backup.lock"
-        lock.write_text(json.dumps({
-            "pid": os.getpid(),  # Our own PID (definitely alive)
-            "run_id": "old-run",
-        }))
+        lock.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),  # Our own PID (definitely alive)
+                    "run_id": "old-run",
+                }
+            )
+        )
 
         with patch("app.services.orchestrator.LOCK_FILE", lock):
             result = orch._acquire_lock("run-2")
@@ -199,6 +206,7 @@ class TestCancellation:
         orch = _make_orchestrator(tmp_path)
         orch._active_runs["r1"] = True
         from app.services.orchestrator import _CancelledError
+
         with pytest.raises(_CancelledError):
             orch._check_cancelled("r1")
 

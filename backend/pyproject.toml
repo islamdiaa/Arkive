@@ -23,6 +23,13 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# `ruff format` owns line length; long strings and URLs may exceed it.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests set environment variables before importing app modules and define
+# fake classes inside test functions.
+"tests/**" = ["E402", "N806"]
 
 [tool.mypy]
 python_version = "3.12"

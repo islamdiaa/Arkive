@@ -19,13 +19,29 @@ router = APIRouter(
 )
 
 _DRILL_COLUMNS = (
-    "id", "trigger", "status", "target_id", "target_name", "snapshot_id", "started_at",
-    "completed_at", "duration_seconds", "databases_tested", "databases_passed",
-    "databases_failed", "error_message",
+    "id",
+    "trigger",
+    "status",
+    "target_id",
+    "target_name",
+    "snapshot_id",
+    "started_at",
+    "completed_at",
+    "duration_seconds",
+    "databases_tested",
+    "databases_passed",
+    "databases_failed",
+    "error_message",
 )
 _RESULT_COLUMNS = (
-    "container_name", "db_type", "db_name", "dump_file", "dump_size_bytes", "status",
-    "detail", "duration_seconds",
+    "container_name",
+    "db_type",
+    "db_name",
+    "dump_file",
+    "dump_size_bytes",
+    "status",
+    "detail",
+    "duration_seconds",
 )
 _SELECT_DRILLS = """
     SELECT d.id, d.trigger, d.status, d.target_id, t.name AS target_name, d.snapshot_id,

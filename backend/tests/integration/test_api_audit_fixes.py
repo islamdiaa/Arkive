@@ -9,9 +9,10 @@ Covers:
 - GET /auth/session returns setup_completed_at after setup
 - Standard pagination shape on all list endpoints
 """
+
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,9 +54,7 @@ async def test_setup_stores_setup_completed_setting(client):
     resp = await client.get("/api/settings", headers=auth_headers(api_key))
     assert resp.status_code == 200
     settings_items = resp.json()["items"]
-    setup_completed = next(
-        (s for s in settings_items if s["key"] == "setup_completed"), None
-    )
+    setup_completed = next((s for s in settings_items if s["key"] == "setup_completed"), None)
     assert setup_completed is not None
     assert setup_completed["value"] == "true"
 
@@ -80,9 +79,7 @@ async def test_setup_stores_setup_completed_at_setting(client):
     resp = await client.get("/api/settings", headers=auth_headers(api_key))
     assert resp.status_code == 200
     settings_items = resp.json()["items"]
-    ts_setting = next(
-        (s for s in settings_items if s["key"] == "setup_completed_at"), None
-    )
+    ts_setting = next((s for s in settings_items if s["key"] == "setup_completed_at"), None)
     assert ts_setting is not None
     assert ts_setting["value"]  # Non-empty ISO timestamp
 
@@ -114,9 +111,7 @@ async def test_list_runs_filter_by_status(client):
     api_key = data["api_key"]
 
     # With no runs, should return empty list regardless of filter
-    resp = await client.get(
-        "/api/jobs/runs?status=success", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/jobs/runs?status=success", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -129,9 +124,7 @@ async def test_list_runs_filter_by_days(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.get(
-        "/api/jobs/runs?days=7", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/jobs/runs?days=7", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -144,9 +137,7 @@ async def test_list_runs_combined_filters(client):
     data = await do_setup(client)
     api_key = data["api_key"]
 
-    resp = await client.get(
-        "/api/jobs/runs?status=failed&days=30", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/jobs/runs?status=failed&days=30", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert "items" in body
@@ -163,15 +154,11 @@ async def test_list_runs_status_filter_with_run(client):
     job_id = resp.json()["items"][0]["id"]
 
     # Trigger a run (creates a 'running' row)
-    resp = await client.post(
-        f"/api/jobs/{job_id}/run", headers=auth_headers(api_key)
-    )
+    resp = await client.post(f"/api/jobs/{job_id}/run", headers=auth_headers(api_key))
     assert resp.status_code == 202
 
     # Filter by running status
-    resp = await client.get(
-        "/api/jobs/runs?status=running", headers=auth_headers(api_key)
-    )
+    resp = await client.get("/api/jobs/runs?status=running", headers=auth_headers(api_key))
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] >= 1

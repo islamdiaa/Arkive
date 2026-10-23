@@ -1,16 +1,11 @@
 """Phase 9: CLI tests with mock Docker — tests CLI commands that hit the API."""
 
 import json
-import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-import pytest_asyncio
-import httpx
+from click.testing import CliRunner
 
 from app.cli import cli
-from click.testing import CliRunner
 
 
 class TestCLIDiscover:
@@ -28,28 +23,79 @@ class TestCLIDiscover:
             "running_containers": 6,
             "stopped_containers": 0,
             "containers": [
-                {"name": "fake-postgres", "image": "postgres:16", "status": "running",
-                 "databases": [{"container_name": "fake-postgres", "db_type": "postgres",
-                               "db_name": "testdb", "host_path": None}],
-                 "profile": "postgres", "priority": "high", "ports": [], "mounts": []},
-                {"name": "fake-mariadb", "image": "mariadb:11", "status": "running",
-                 "databases": [{"container_name": "fake-mariadb", "db_type": "mariadb",
-                               "db_name": "appdb", "host_path": None}],
-                 "profile": "mariadb", "priority": "high", "ports": [], "mounts": []},
-                {"name": "fake-mongo", "image": "mongo:7", "status": "running",
-                 "databases": [{"container_name": "fake-mongo", "db_type": "mongodb",
-                               "db_name": "myapp", "host_path": None}],
-                 "profile": "mongodb", "priority": "high", "ports": [], "mounts": []},
-                {"name": "fake-redis", "image": "redis:7", "status": "running",
-                 "databases": [{"container_name": "fake-redis", "db_type": "redis",
-                               "db_name": "redis", "host_path": None}],
-                 "profile": "redis", "priority": "low", "ports": [], "mounts": []},
-                {"name": "fake-vaultwarden", "image": "vaultwarden/server:latest",
-                 "status": "running", "databases": [],
-                 "profile": "vaultwarden", "priority": "critical", "ports": [], "mounts": []},
-                {"name": "fake-adguard", "image": "adguard/adguardhome",
-                 "status": "running", "databases": [],
-                 "profile": "adguard", "priority": "medium", "ports": [], "mounts": []},
+                {
+                    "name": "fake-postgres",
+                    "image": "postgres:16",
+                    "status": "running",
+                    "databases": [
+                        {
+                            "container_name": "fake-postgres",
+                            "db_type": "postgres",
+                            "db_name": "testdb",
+                            "host_path": None,
+                        }
+                    ],
+                    "profile": "postgres",
+                    "priority": "high",
+                    "ports": [],
+                    "mounts": [],
+                },
+                {
+                    "name": "fake-mariadb",
+                    "image": "mariadb:11",
+                    "status": "running",
+                    "databases": [
+                        {"container_name": "fake-mariadb", "db_type": "mariadb", "db_name": "appdb", "host_path": None}
+                    ],
+                    "profile": "mariadb",
+                    "priority": "high",
+                    "ports": [],
+                    "mounts": [],
+                },
+                {
+                    "name": "fake-mongo",
+                    "image": "mongo:7",
+                    "status": "running",
+                    "databases": [
+                        {"container_name": "fake-mongo", "db_type": "mongodb", "db_name": "myapp", "host_path": None}
+                    ],
+                    "profile": "mongodb",
+                    "priority": "high",
+                    "ports": [],
+                    "mounts": [],
+                },
+                {
+                    "name": "fake-redis",
+                    "image": "redis:7",
+                    "status": "running",
+                    "databases": [
+                        {"container_name": "fake-redis", "db_type": "redis", "db_name": "redis", "host_path": None}
+                    ],
+                    "profile": "redis",
+                    "priority": "low",
+                    "ports": [],
+                    "mounts": [],
+                },
+                {
+                    "name": "fake-vaultwarden",
+                    "image": "vaultwarden/server:latest",
+                    "status": "running",
+                    "databases": [],
+                    "profile": "vaultwarden",
+                    "priority": "critical",
+                    "ports": [],
+                    "mounts": [],
+                },
+                {
+                    "name": "fake-adguard",
+                    "image": "adguard/adguardhome",
+                    "status": "running",
+                    "databases": [],
+                    "profile": "adguard",
+                    "priority": "medium",
+                    "ports": [],
+                    "mounts": [],
+                },
             ],
             "databases": [
                 {"container_name": "fake-postgres", "db_type": "postgres", "db_name": "testdb"},

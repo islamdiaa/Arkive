@@ -1,9 +1,7 @@
 """Tests for lock file PID check with proc_start_time."""
-import json
-import os
-import pytest
-from pathlib import Path
-from unittest.mock import patch, mock_open
+
+from unittest.mock import mock_open, patch
+
 from app.services.orchestrator import _get_proc_start_time
 
 

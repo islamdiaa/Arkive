@@ -20,7 +20,7 @@ import tempfile
 import time
 import uuid
 import zlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -50,10 +50,10 @@ MAX_RESTORE_TEST_BYTES = 256 * 1024 * 1024
 _SQL_TAIL_BYTES = 4096
 
 # Recency thresholds (hours since last successful backup)
-RECENCY_EXCELLENT = 24      # < 24h = 100%
-RECENCY_GOOD = 72           # < 72h = 80%
-RECENCY_ACCEPTABLE = 168    # < 7 days = 60%
-RECENCY_STALE = 336         # < 14 days = 30%
+RECENCY_EXCELLENT = 24  # < 24h = 100%
+RECENCY_GOOD = 72  # < 72h = 80%
+RECENCY_ACCEPTABLE = 168  # < 7 days = 60%
+RECENCY_STALE = 336  # < 14 days = 30%
 # > 14 days = 0%
 
 
@@ -96,10 +96,7 @@ class VerifyEngine:
 
     def is_backup_running(self) -> bool:
         """Check if a backup or restore is currently in progress."""
-        return (
-            self.lock_manager.is_backup_running()
-            or self.lock_manager.is_restore_running()
-        )
+        return self.lock_manager.is_backup_running() or self.lock_manager.is_restore_running()
 
     async def verify_all_targets(self, run_ids: dict[str, str] | None = None) -> dict:
         """Run verification against all enabled storage targets.
@@ -123,9 +120,7 @@ class VerifyEngine:
 
         async with aiosqlite.connect(self.config.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM storage_targets WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM storage_targets WHERE enabled = 1")
             targets = [dict(row) for row in await cursor.fetchall()]
 
         if not targets:
@@ -150,18 +145,21 @@ class VerifyEngine:
             except Exception as e:
                 logger.error(
                     "Verification failed for target %s: %s",
-                    target.get("name", target["id"]), e,
+                    target.get("name", target["id"]),
+                    e,
                 )
                 failed_run_id = run_ids.get(target["id"]) if run_ids else None
                 if failed_run_id:
                     await self._mark_runs({target["id"]: failed_run_id}, "failed", f"Verification error: {e}")
-                results.append({
-                    "target_id": target["id"],
-                    "target_name": target.get("name", ""),
-                    "status": "failed",
-                    "error": str(e),
-                    "trust_score": 0.0,
-                })
+                results.append(
+                    {
+                        "target_id": target["id"],
+                        "target_name": target.get("name", ""),
+                        "status": "failed",
+                        "error": str(e),
+                        "trust_score": 0.0,
+                    }
+                )
 
         overall_score = 0.0
         if results:
@@ -172,7 +170,7 @@ class VerifyEngine:
             "status": "completed",
             "targets": results,
             "overall_trust_score": overall_score,
-            "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "verified_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
     async def _mark_runs(self, run_ids: dict[str, str] | None, status: str, reason: str) -> None:
@@ -186,7 +184,7 @@ class VerifyEngine:
         ids = [rid for rid in run_ids.values() if rid]
         if not ids:
             return
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         placeholders = ", ".join("?" for _ in ids)  # nosec B608 - placeholders only
         try:
             async with aiosqlite.connect(self.config.db_path) as db:
@@ -249,7 +247,7 @@ class VerifyEngine:
         target_id = target.get("id", "")
         target_name = target.get("name", target_id)
         start_time = time.monotonic()
-        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         logger.info("Starting verification for target %s (%s)", target_id, target_name)
 
@@ -279,7 +277,9 @@ class VerifyEngine:
         recency_score = compute_recency_score(recency.get("hours_since_backup"))
 
         trust_score = compute_trust_score(
-            recency_score, file_integrity_score, db_integrity_score,
+            recency_score,
+            file_integrity_score,
+            db_integrity_score,
         )
 
         duration = round(time.monotonic() - start_time, 1)
@@ -305,7 +305,7 @@ class VerifyEngine:
             },
             "duration_seconds": duration,
             "started_at": started_at,
-            "verified_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "verified_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
         # Persist result (UPDATE if pre-existing row, INSERT otherwise)
@@ -315,7 +315,9 @@ class VerifyEngine:
 
         logger.info(
             "Verification complete for target %s: trust_score=%.1f duration=%.1fs",
-            target_name, trust_score, duration,
+            target_name,
+            trust_score,
+            duration,
         )
         return result
 
@@ -413,7 +415,8 @@ class VerifyEngine:
             if not restored_file:
                 logger.warning(
                     "Expected restored file %r but found: %s",
-                    expected_name, found_files or "(empty)",
+                    expected_name,
+                    found_files or "(empty)",
                 )
                 return {
                     "status": "failed",
@@ -570,7 +573,10 @@ class VerifyEngine:
         except (OSError, EOFError, zlib.error) as e:
             return {"file": name, "type": "sql", "status": "failed", "error": f"Corrupt gzip stream: {e}"}
         return cls._trailer_check(name, tail) or {
-            "file": name, "type": "sql", "status": "failed", "error": "Dump is truncated (no completion trailer)",
+            "file": name,
+            "type": "sql",
+            "status": "failed",
+            "error": "Dump is truncated (no completion trailer)",
         }
 
     @classmethod
@@ -626,7 +632,7 @@ class VerifyEngine:
                         "status": "failed",
                         "error": "Empty dump file",
                     }
-                with open(fpath, "r", errors="replace") as f:
+                with open(fpath, errors="replace") as f:
                     header = f.read(256)
                 sql_markers = ["--", "CREATE", "INSERT", "SET ", "BEGIN", "COPY"]
                 if any(marker in header.upper() for marker in sql_markers):
@@ -674,7 +680,7 @@ class VerifyEngine:
 
                 last_backup = row["completed_at"]
                 last_dt = datetime.fromisoformat(last_backup.replace("Z", "+00:00"))
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 hours = (now - last_dt).total_seconds() / 3600
                 return {
                     "hours_since_backup": round(hours, 1),

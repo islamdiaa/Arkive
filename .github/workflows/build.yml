@@ -35,17 +35,12 @@ jobs:
       - name: Install ruff
         run: pip install ruff==0.17.2
 
-      # Blocking: real defects (undefined names, unused imports/variables, syntax errors)
-      - name: Run ruff check (errors)
-        run: ruff check --select F,E9 backend/app
-
-      - name: Run ruff check (style, advisory)
-        run: ruff check backend/
-        continue-on-error: true
+      # Rules are configured in backend/pyproject.toml.
+      - name: Run ruff check
+        run: cd backend && ruff check .
 
       - name: Run ruff format check
-        run: ruff format --check backend/
-        continue-on-error: true
+        run: cd backend && ruff format --check .
 
   sast:
     runs-on: ubuntu-latest

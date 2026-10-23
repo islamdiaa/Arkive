@@ -4,13 +4,14 @@ API integration tests for backup job endpoints.
 Adapted from Arkive v2 for v3 flat route layout (app.api.jobs).
 Tests: job CRUD, run history, manual trigger, concurrency guard, pagination.
 """
+
 import json
 import os
 
 import pytest
 import pytest_asyncio
-from tests.conftest import build_test_client, do_setup, auth_headers
 
+from tests.conftest import auth_headers, build_test_client, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -87,13 +88,17 @@ async def test_get_nonexistent_job_returns_404(jobs_authed_client):
 
 async def test_create_job_with_valid_cron(jobs_authed_client):
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "Custom Job",
-        "type": "full",
-        "schedule": "0 6 * * *",
-        "targets": [],
-        "directories": [],
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Custom Job",
+            "type": "full",
+            "schedule": "0 6 * * *",
+            "targets": [],
+            "directories": [],
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 201
     data = resp.json()
@@ -104,11 +109,15 @@ async def test_create_job_with_valid_cron(jobs_authed_client):
 
 async def test_create_job_rejects_invalid_cron(jobs_authed_client):
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "Bad Cron Job",
-        "type": "full",
-        "schedule": "not a cron",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Bad Cron Job",
+            "type": "full",
+            "schedule": "not a cron",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 422
     assert "cron" in resp.json().get("detail", resp.json().get("message", "")).lower()
@@ -116,11 +125,15 @@ async def test_create_job_rejects_invalid_cron(jobs_authed_client):
 
 async def test_create_job_rejects_cron_with_wrong_field_count(jobs_authed_client):
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "Bad Cron",
-        "type": "full",
-        "schedule": "0 2 * *",  # Only 4 fields
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Bad Cron",
+            "type": "full",
+            "schedule": "0 2 * *",  # Only 4 fields
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 422
     assert "5 fields" in resp.json().get("detail", resp.json().get("message", ""))
@@ -129,11 +142,15 @@ async def test_create_job_rejects_cron_with_wrong_field_count(jobs_authed_client
 async def test_create_job_rejects_invalid_type(jobs_authed_client):
     """Job types must be one of: full, db_dump, flash."""
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "Bad Type",
-        "type": "incremental",
-        "schedule": "0 0 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Bad Type",
+            "type": "incremental",
+            "schedule": "0 0 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 400
     assert "invalid job type" in resp.json().get("detail", resp.json().get("message", "")).lower()
 
@@ -141,11 +158,15 @@ async def test_create_job_rejects_invalid_type(jobs_authed_client):
 async def test_create_db_dump_job(jobs_authed_client):
     """Should be able to create a db_dump type job."""
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "DB Only",
-        "type": "db_dump",
-        "schedule": "0 1 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "DB Only",
+            "type": "db_dump",
+            "schedule": "0 1 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     assert resp.json()["type"] == "db_dump"
 
@@ -153,11 +174,15 @@ async def test_create_db_dump_job(jobs_authed_client):
 async def test_create_flash_job(jobs_authed_client):
     """Should be able to create a flash type job."""
     client, api_key = jobs_authed_client
-    resp = await client.post("/api/jobs", json={
-        "name": "Flash Only",
-        "type": "flash",
-        "schedule": "0 4 * * 0",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "Flash Only",
+            "type": "flash",
+            "schedule": "0 4 * * 0",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 201
     assert resp.json()["type"] == "flash"
 
@@ -170,9 +195,13 @@ async def test_update_job(jobs_authed_client):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "name": "Renamed Job",
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "name": "Renamed Job",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert resp.json()["name"] == "Renamed Job"
 
@@ -182,9 +211,13 @@ async def test_update_job_schedule(jobs_authed_client):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "schedule": "30 4 * * *",
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "schedule": "30 4 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert resp.json()["schedule"] == "30 4 * * *"
 
@@ -195,18 +228,26 @@ async def test_update_job_enable_disable(jobs_authed_client):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    resp = await client.put(f"/api/jobs/{job_id}", json={
-        "enabled": False,
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        f"/api/jobs/{job_id}",
+        json={
+            "enabled": False,
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     assert resp.json()["enabled"] is False
 
 
 async def test_update_nonexistent_job_returns_404(jobs_authed_client):
     client, api_key = jobs_authed_client
-    resp = await client.put("/api/jobs/nonexistent", json={
-        "name": "Ghost",
-    }, headers=auth_headers(api_key))
+    resp = await client.put(
+        "/api/jobs/nonexistent",
+        json={
+            "name": "Ghost",
+        },
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 404
 
 
@@ -217,11 +258,15 @@ async def test_delete_job(jobs_authed_client):
     client, api_key = jobs_authed_client
 
     # Create a job to delete
-    create_resp = await client.post("/api/jobs", json={
-        "name": "To Delete",
-        "type": "full",
-        "schedule": "0 0 * * *",
-    }, headers=auth_headers(api_key))
+    create_resp = await client.post(
+        "/api/jobs",
+        json={
+            "name": "To Delete",
+            "type": "full",
+            "schedule": "0 0 * * *",
+        },
+        headers=auth_headers(api_key),
+    )
     job_id = create_resp.json()["id"]
 
     resp = await client.delete(f"/api/jobs/{job_id}", headers=auth_headers(api_key))
@@ -247,7 +292,8 @@ async def test_run_job_returns_202(jobs_authed_client):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import AsyncMock, patch
+
     with patch("app.api.jobs.get_orchestrator") as mock_get_orch:
         mock_orch = AsyncMock()
         mock_orch.run_pipeline = AsyncMock()
@@ -291,12 +337,16 @@ async def test_concurrent_backup_returns_409(jobs_authed_client, tmp_path):
     proc_start_time = _get_proc_start_time(pid)
     assert proc_start_time is not None
     with open(lock_file, "w") as f:
-        f.write(json.dumps({
-            "pid": pid,
-            "proc_start_time": proc_start_time,
-            "run_id": "fake_run",
-            "started_at": "2024-01-01T00:00:00Z",
-        }))
+        f.write(
+            json.dumps(
+                {
+                    "pid": pid,
+                    "proc_start_time": proc_start_time,
+                    "run_id": "fake_run",
+                    "started_at": "2024-01-01T00:00:00Z",
+                }
+            )
+        )
 
     resp = await client.post(f"/api/jobs/{job_id}/run", headers=auth_headers(api_key))
     assert resp.status_code == 409
@@ -314,13 +364,18 @@ async def test_run_job_removes_stale_backup_lock_and_starts(jobs_authed_client, 
     config_dir = os.environ.get("ARKIVE_CONFIG_DIR", str(tmp_path))
     lock_file = os.path.join(config_dir, "backup.lock")
     with open(lock_file, "w") as f:
-        f.write(json.dumps({
-            "pid": 999999,
-            "proc_start_time": "12345",
-            "run_id": "stale_run",
-        }))
+        f.write(
+            json.dumps(
+                {
+                    "pid": 999999,
+                    "proc_start_time": "12345",
+                    "run_id": "stale_run",
+                }
+            )
+        )
 
     from unittest.mock import AsyncMock, patch
+
     with patch("app.api.jobs.get_orchestrator") as mock_get_orch:
         mock_orch = AsyncMock()
         mock_orch.run_pipeline = AsyncMock()
@@ -365,7 +420,8 @@ async def test_get_run_detail(jobs_authed_client):
     resp = await client.get("/api/jobs", headers=auth_headers(api_key))
     job_id = resp.json()["items"][0]["id"]
 
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import AsyncMock, patch
+
     with patch("app.api.jobs.get_orchestrator") as mock_get_orch:
         mock_orch = AsyncMock()
         mock_orch.run_pipeline = AsyncMock()

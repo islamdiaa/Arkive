@@ -10,9 +10,22 @@ _REDACTED = "[REDACTED]"
 
 # Flags whose *next* argv element is a secret (``--password hunter2``).
 _SECRET_VALUE_FLAGS = {
-    "--password", "--pass", "--passwd", "--secret", "--token", "--api-key", "--apikey",
-    "--key", "--access-key", "--secret-key", "--client-secret", "--password-command",
-    "--sftp-pass", "--b2-key", "--s3-secret-access-key", "--s3-access-key-id",
+    "--password",
+    "--pass",
+    "--passwd",
+    "--secret",
+    "--token",
+    "--api-key",
+    "--apikey",
+    "--key",
+    "--access-key",
+    "--secret-key",
+    "--client-secret",
+    "--password-command",
+    "--sftp-pass",
+    "--b2-key",
+    "--s3-secret-access-key",
+    "--s3-access-key-id",
     "-p",
 }
 
@@ -93,37 +106,37 @@ def redact_credentials(text: str) -> str:
 
     # MySQL/MariaDB patterns
     # MYSQL_PWD=... or MYSQL_PASSWORD=... environment variable
-    text = re.sub(r'(MYSQL_P(?:WD|ASSWORD))=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(MYSQL_P(?:WD|ASSWORD))=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
     # MARIADB_PASSWORD=... environment variable
-    text = re.sub(r'(MARIADB_PASSWORD)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(MARIADB_PASSWORD)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
     # --password=value command-line arg (must be before -p pattern to avoid partial match)
-    text = re.sub(r'(--password=)([^\s\'\"]+)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(--password=)([^\s\'\"]+)", r"\1[REDACTED]", text, flags=re.IGNORECASE)
     # --password value command-line arg (space-separated) (must be before -p pattern)
-    text = re.sub(r'(--password)\s+([^\-\s][^\s]*)', r'\1 [REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(--password)\s+([^\-\s][^\s]*)", r"\1 [REDACTED]", text, flags=re.IGNORECASE)
     # -pVALUE (no space) — MySQL/MariaDB short password flag.
     # Case-sensitive: matches -p (password) but NOT -P (port).
     # (?!-) prevents matching --password (already handled above).
     # False positives on rare flags like -print are acceptable (overly cautious, not a leak).
-    text = re.sub(r'(?<!\-)(-p)(?!-)([^\s\-][^\s]*)', r'\1[REDACTED]', text)
+    text = re.sub(r"(?<!\-)(-p)(?!-)([^\s\-][^\s]*)", r"\1[REDACTED]", text)
 
     # MongoDB patterns
     # MONGO_INITDB_ROOT_PASSWORD=... environment variable
-    text = re.sub(r'(MONGO_INITDB_ROOT_PASSWORD)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(MONGO_INITDB_ROOT_PASSWORD)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
 
     # PostgreSQL patterns
     # POSTGRES_PASSWORD=... or PGPASSWORD=... environment variable
-    text = re.sub(r'((?:POSTGRES_)?PASSWORD)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
-    text = re.sub(r'(PGPASSWORD)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"((?:POSTGRES_)?PASSWORD)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(PGPASSWORD)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
 
     # Generic patterns
     # DB_PASSWORD=... or similar (e.g., DB_USER_PASSWORD)
-    text = re.sub(r'(DB[_\w]*PASSWORD)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(DB[_\w]*PASSWORD)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
     # password=... or passwd=...
-    text = re.sub(r'(password|passwd)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(password|passwd)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
     # secret=... or api_key=...
-    text = re.sub(r'(secret|api_key|apikey|token)=([^\s\'\"]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(secret|api_key|apikey|token)=([^\s\'\"]+)", r"\1=[REDACTED]", text, flags=re.IGNORECASE)
 
     # Authorization headers (e.g., "Authorization: Bearer ...")
-    text = re.sub(r'(Authorization:\s+(?:Bearer|Basic)\s+)([^\s\'\"]+)', r'\1[REDACTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r"(Authorization:\s+(?:Bearer|Basic)\s+)([^\s\'\"]+)", r"\1[REDACTED]", text, flags=re.IGNORECASE)
 
     return text

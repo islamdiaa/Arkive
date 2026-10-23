@@ -9,7 +9,6 @@ import pytest
 
 from app.api.directories import MEDIA_EXTENSIONS, SKIP_NAMES, _is_media_dominated
 
-
 # ---------------------------------------------------------------------------
 # Media-dominated detection
 # ---------------------------------------------------------------------------
@@ -98,19 +97,47 @@ class TestMediaDominated:
 class TestSkipNames:
     """Tests for the SKIP_NAMES set used to filter obvious media directories."""
 
-    @pytest.mark.parametrize("name", [
-        "media", "movies", "tv", "downloads", "music", "audiobooks",
-        "transcode", "isos", "games", "torrents", "usenet",
-        "youtube", "podcasts", "videos", "recordings", "rips",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "media",
+            "movies",
+            "tv",
+            "downloads",
+            "music",
+            "audiobooks",
+            "transcode",
+            "isos",
+            "games",
+            "torrents",
+            "usenet",
+            "youtube",
+            "podcasts",
+            "videos",
+            "recordings",
+            "rips",
+        ],
+    )
     def test_known_media_names_skipped(self, name):
         """All known media directory names should be in the skip set."""
         assert name in SKIP_NAMES
 
-    @pytest.mark.parametrize("name", [
-        "appdata", "scripts", "backups", "configs", "docker",
-        "system", "domains", "cron", "ssl", "nginx", "photos",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "appdata",
+            "scripts",
+            "backups",
+            "configs",
+            "docker",
+            "system",
+            "domains",
+            "cron",
+            "ssl",
+            "nginx",
+            "photos",
+        ],
+    )
     def test_config_names_not_skipped(self, name):
         """Config/script/personal directory names should NOT be in the skip set."""
         assert name not in SKIP_NAMES

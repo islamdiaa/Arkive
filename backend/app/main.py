@@ -7,10 +7,9 @@ import os
 import shutil
 import socket
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from app.core.security import KeyfileError, decrypt_config, verify_keyfile
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -19,20 +18,22 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app import __version__
+from app.api.restore import cleanup_stale_restore_lock
 from app.api.router import api_router
 from app.core.config import ArkiveConfig
 from app.core.database import flush_wal, init_db, run_migrations
 from app.core.event_bus import EventBus
 from app.core.exceptions import register_exception_handlers
 from app.core.platform import Platform, detect_platform
+from app.core.security import KeyfileError, decrypt_config, verify_keyfile
 from app.services.backup_engine import BackupEngine
 from app.services.cloud_manager import CloudManager
 from app.services.db_dumper import DBDumper
 from app.services.discovery import DiscoveryEngine
+from app.services.discovery_persistence import persist_discovery_results
 from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
 from app.services.host_identity import resolve_hostname
-from app.services.discovery_persistence import persist_discovery_results
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
 from app.services.restore_drill import RestoreDrillEngine
@@ -40,7 +41,6 @@ from app.services.restore_plan import RestorePlanGenerator
 from app.services.scheduler import ArkiveScheduler
 from app.services.verify_engine import VerifyEngine
 from app.utils.log_config import setup_logging
-from app.api.restore import cleanup_stale_restore_lock
 
 logger = logging.getLogger("arkive.main")
 
@@ -126,6 +126,7 @@ async def lifespan(app: FastAPI):
 
     # Store platform in settings
     import aiosqlite
+
     async with aiosqlite.connect(config.db_path) as db:
         await db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES ('platform', ?)",
@@ -148,7 +149,7 @@ async def lifespan(app: FastAPI):
             await db.execute(
                 "UPDATE job_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
                 "completed_at = ? WHERE status = 'running'",
-                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+                (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),),
             )
             await db.commit()
             logger.warning("Cleaned %d stale job runs from previous shutdown", len(stale_runs))
@@ -159,7 +160,7 @@ async def lifespan(app: FastAPI):
             await db.execute(
                 "UPDATE verification_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
                 "completed_at = ? WHERE status = 'running'",
-                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+                (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),),
             )
             await db.commit()
             logger.warning("Cleaned %d stale verification runs from previous shutdown", len(stale_verifications))
@@ -170,7 +171,7 @@ async def lifespan(app: FastAPI):
             await db.execute(
                 "UPDATE restore_runs SET status = 'failed', error_message = 'Interrupted by server restart', "
                 "completed_at = ? WHERE status = 'running'",
-                (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),)
+                (datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),),
             )
             await db.execute(
                 """INSERT INTO activity_log (type, action, message, details, severity)
@@ -230,8 +231,11 @@ async def lifespan(app: FastAPI):
     # Restore drills: a crash mid-drill leaves a 'running' row, scratch files
     # and possibly a throwaway DB container behind — clean all of them up.
     restore_drill = RestoreDrillEngine(
-        config, backup_engine=backup_engine, docker_client=docker_client,
-        notifier=notifier, event_bus=event_bus,
+        config,
+        backup_engine=backup_engine,
+        docker_client=docker_client,
+        notifier=notifier,
+        event_bus=event_bus,
     )
     await restore_drill.recover_after_restart()
     if docker_client is not None:
@@ -239,7 +243,8 @@ async def lifespan(app: FastAPI):
         app.state.drill_sweep = asyncio.create_task(restore_drill.remove_leftover_containers())
 
     scheduler = ArkiveScheduler(
-        orchestrator, config,
+        orchestrator,
+        config,
         discovery=discovery,
         backup_engine=backup_engine,
         cloud_manager=cloud_manager,
@@ -338,11 +343,11 @@ async def lifespan(app: FastAPI):
         logger.debug("Shutdown notification failed (non-critical): %s", e)
 
     # Wait for active backup to complete (up to 5 minutes, warn every 30s)
-    if hasattr(orchestrator, '_active_runs') and orchestrator._active_runs:
+    if hasattr(orchestrator, "_active_runs") and orchestrator._active_runs:
         logger.info("Waiting for active backup to complete (max 5 min)...")
         waited = 0
         while waited < 300:
-            if not (hasattr(orchestrator, '_active_runs') and orchestrator._active_runs):
+            if not (hasattr(orchestrator, "_active_runs") and orchestrator._active_runs):
                 logger.info("Active backup completed during shutdown wait")
                 break
             await asyncio.sleep(1)
@@ -350,7 +355,8 @@ async def lifespan(app: FastAPI):
             if waited % 30 == 0:
                 logger.warning(
                     "Still waiting for active backup to finish (%d/%d seconds)...",
-                    waited, 300,
+                    waited,
+                    300,
                 )
         else:
             logger.warning("Backup still running after 5 min, forcing shutdown")
@@ -392,6 +398,7 @@ class SPAStaticFiles(StaticFiles):
             path = scope.get("path", "")
             if self._should_passthrough(path):
                 from starlette.responses import Response
+
                 response = Response(status_code=404)
                 await response(scope, receive, send)
                 return
@@ -496,10 +503,7 @@ class _ServerHeaderASGI:
 
         async def _send(message):
             if message["type"] == "http.response.start":
-                headers = [
-                    (k, v) for k, v in message.get("headers", [])
-                    if k.lower() != b"server"
-                ]
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"server"]
                 headers.append((b"server", b"Arkive"))
                 message = {**message, "headers": headers}
             await send(message)

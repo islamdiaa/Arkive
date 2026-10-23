@@ -1,7 +1,9 @@
 """Tests for the backup engine (restic wrapper) — 8 test cases."""
-import pytest
+
 import json
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 class TestBackupEngine:
@@ -41,10 +43,16 @@ class TestBackupEngine:
     def test_restic_forget_with_retention_policy(self):
         """Forget command should apply retention policy."""
         cmd = [
-            "restic", "forget", "--repo", "rclone:b2:arkive",
-            "--keep-daily", "7",
-            "--keep-weekly", "4",
-            "--keep-monthly", "6",
+            "restic",
+            "forget",
+            "--repo",
+            "rclone:b2:arkive",
+            "--keep-daily",
+            "7",
+            "--keep-weekly",
+            "4",
+            "--keep-monthly",
+            "6",
             "--prune",
         ]
         assert "--keep-daily" in cmd
@@ -54,16 +62,18 @@ class TestBackupEngine:
 
     def test_restic_snapshots_json_parsing(self):
         """Should parse restic snapshots JSON output correctly."""
-        raw_output = json.dumps([
-            {
-                "id": "abc123def456",
-                "short_id": "abc123de",
-                "time": "2026-02-25T07:00:00.000Z",
-                "hostname": "arkive",
-                "paths": ["/config/dumps"],
-                "tags": ["daily"],
-            }
-        ])
+        raw_output = json.dumps(
+            [
+                {
+                    "id": "abc123def456",
+                    "short_id": "abc123de",
+                    "time": "2026-02-25T07:00:00.000Z",
+                    "hostname": "arkive",
+                    "paths": ["/config/dumps"],
+                    "tags": ["daily"],
+                }
+            ]
+        )
         snapshots = json.loads(raw_output)
         assert len(snapshots) == 1
         assert snapshots[0]["short_id"] == "abc123de"
@@ -105,16 +115,18 @@ class TestBackupEngine:
 
         result = MagicMock()
         result.returncode = 0
-        result.stdout = json.dumps([
-            {
-                "id": "abc123",
-                "short_id": "abc123",
-                "summary": {
-                    "data_added_packed": 12345,
-                    "total_bytes_processed": 99999,
-                },
-            }
-        ])
+        result.stdout = json.dumps(
+            [
+                {
+                    "id": "abc123",
+                    "short_id": "abc123",
+                    "summary": {
+                        "data_added_packed": 12345,
+                        "total_bytes_processed": 99999,
+                    },
+                }
+            ]
+        )
 
         monkeypatch.setattr("app.services.backup_engine.run_command", AsyncMock(return_value=result))
 
@@ -141,13 +153,15 @@ class TestBackupEngine:
             captured_cmd[:] = cmd
             result = MagicMock()
             result.returncode = 0
-            result.stdout = json.dumps({
-                "message_type": "summary",
-                "snapshot_id": "abc123",
-                "total_bytes_processed": 42,
-                "files_new": 1,
-                "files_changed": 0,
-            })
+            result.stdout = json.dumps(
+                {
+                    "message_type": "summary",
+                    "snapshot_id": "abc123",
+                    "total_bytes_processed": 42,
+                    "files_new": 1,
+                    "files_changed": 0,
+                }
+            )
             result.stderr = ""
             return result
 

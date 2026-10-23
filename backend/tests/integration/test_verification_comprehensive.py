@@ -17,18 +17,16 @@ Items 6, 7 are covered in tests/integration/test_api_verification.py.
 This file adds coverage for items 9, 10, and strengthens cross-cutting areas.
 """
 
-import json
 import os
 import re
 import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
 
 from tests.conftest import auth_headers, do_setup
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,9 +55,15 @@ async def _get_db_path(client):
     return str(app.state.config.db_path)
 
 
-async def _insert_verification_run(db_path, run_id, target_id, status="passed",
-                                    trust_score=85, started_at="2026-03-15T10:00:00Z",
-                                    completed_at="2026-03-15T10:05:00Z"):
+async def _insert_verification_run(
+    db_path,
+    run_id,
+    target_id,
+    status="passed",
+    trust_score=85,
+    started_at="2026-03-15T10:00:00Z",
+    completed_at="2026-03-15T10:05:00Z",
+):
     """Insert a verification_runs row for testing."""
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
@@ -91,8 +95,9 @@ class TestVerificationNotification:
         config.dump_dir = tmp_path / "dumps"
         config.restore_dir = tmp_path / "restores"
 
-        from app.core.database import SCHEMA_SQL, MIGRATIONS
+        from app.core.database import MIGRATIONS, SCHEMA_SQL
         from app.core.security import _load_fernet_from_dir, _reset_fernet
+
         _reset_fernet()
         _load_fernet_from_dir(str(tmp_path))
 
@@ -101,8 +106,7 @@ class TestVerificationNotification:
         for version in sorted(MIGRATIONS):
             for sql in MIGRATIONS[version]:
                 conn.execute(sql)
-        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-                     (max(MIGRATIONS),))
+        conn.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (max(MIGRATIONS),))
         conn.commit()
         conn.close()
         return config
@@ -117,59 +121,68 @@ class TestVerificationNotification:
     def mock_verify_engine_failed(self):
         """VerifyEngine that returns a failed target result."""
         ve = MagicMock()
-        ve.verify_all_targets = AsyncMock(return_value={
-            "status": "completed",
-            "overall_trust_score": 25.0,
-            "targets": [
-                {
-                    "target_id": "t1",
-                    "target_name": "Local Backup",
-                    "status": "failed",
-                    "trust_score": 25.0,
-                    "error": "restic check failed",
-                },
-            ],
-        })
+        ve.verify_all_targets = AsyncMock(
+            return_value={
+                "status": "completed",
+                "overall_trust_score": 25.0,
+                "targets": [
+                    {
+                        "target_id": "t1",
+                        "target_name": "Local Backup",
+                        "status": "failed",
+                        "trust_score": 25.0,
+                        "error": "restic check failed",
+                    },
+                ],
+            }
+        )
         return ve
 
     @pytest.fixture
     def mock_verify_engine_success(self):
         """VerifyEngine that returns a successful result."""
         ve = MagicMock()
-        ve.verify_all_targets = AsyncMock(return_value={
-            "status": "completed",
-            "overall_trust_score": 95.0,
-            "targets": [
-                {
-                    "target_id": "t1",
-                    "target_name": "Local Backup",
-                    "status": "completed",
-                    "trust_score": 95.0,
-                },
-            ],
-        })
+        ve.verify_all_targets = AsyncMock(
+            return_value={
+                "status": "completed",
+                "overall_trust_score": 95.0,
+                "targets": [
+                    {
+                        "target_id": "t1",
+                        "target_name": "Local Backup",
+                        "status": "completed",
+                        "trust_score": 95.0,
+                    },
+                ],
+            }
+        )
         return ve
 
     @pytest.fixture
     def mock_verify_engine_low_score(self):
         """VerifyEngine that returns a low trust score (below 50)."""
         ve = MagicMock()
-        ve.verify_all_targets = AsyncMock(return_value={
-            "status": "completed",
-            "overall_trust_score": 35.0,
-            "targets": [
-                {
-                    "target_id": "t1",
-                    "target_name": "B2 Cloud",
-                    "status": "completed",
-                    "trust_score": 35.0,
-                },
-            ],
-        })
+        ve.verify_all_targets = AsyncMock(
+            return_value={
+                "status": "completed",
+                "overall_trust_score": 35.0,
+                "targets": [
+                    {
+                        "target_id": "t1",
+                        "target_name": "B2 Cloud",
+                        "status": "completed",
+                        "trust_score": 35.0,
+                    },
+                ],
+            }
+        )
         return ve
 
     async def test_notification_sent_on_failed_target(
-        self, mock_config, mock_notifier, mock_verify_engine_failed,
+        self,
+        mock_config,
+        mock_notifier,
+        mock_verify_engine_failed,
     ):
         """Notification is sent when a target verification fails."""
         from app.services.scheduler import ArkiveScheduler
@@ -189,7 +202,10 @@ class TestVerificationNotification:
         assert "Local Backup" in call_args[0][2]
 
     async def test_notification_not_sent_on_success(
-        self, mock_config, mock_notifier, mock_verify_engine_success,
+        self,
+        mock_config,
+        mock_notifier,
+        mock_verify_engine_success,
     ):
         """No notification is sent when all targets pass verification."""
         from app.services.scheduler import ArkiveScheduler
@@ -206,7 +222,10 @@ class TestVerificationNotification:
         mock_notifier.send.assert_not_awaited()
 
     async def test_notification_sent_on_low_trust_score(
-        self, mock_config, mock_notifier, mock_verify_engine_low_score,
+        self,
+        mock_config,
+        mock_notifier,
+        mock_verify_engine_low_score,
     ):
         """Notification is sent when trust score is below 50."""
         from app.services.scheduler import ArkiveScheduler
@@ -226,7 +245,9 @@ class TestVerificationNotification:
         assert "B2 Cloud" in call_args[0][2]
 
     async def test_notification_skipped_without_notifier(
-        self, mock_config, mock_verify_engine_failed,
+        self,
+        mock_config,
+        mock_verify_engine_failed,
     ):
         """No crash when notifier is None and verification fails."""
         from app.services.scheduler import ArkiveScheduler
@@ -242,7 +263,9 @@ class TestVerificationNotification:
         await sched._run_integrity_verify()
 
     async def test_notification_error_does_not_crash_scheduler(
-        self, mock_config, mock_verify_engine_failed,
+        self,
+        mock_config,
+        mock_verify_engine_failed,
     ):
         """Notification send failure does not crash the scheduler job."""
         from app.services.scheduler import ArkiveScheduler
@@ -261,7 +284,10 @@ class TestVerificationNotification:
         await sched._run_integrity_verify()
 
     async def test_notification_includes_trust_score(
-        self, mock_config, mock_notifier, mock_verify_engine_failed,
+        self,
+        mock_config,
+        mock_notifier,
+        mock_verify_engine_failed,
     ):
         """Notification body includes the trust score value."""
         from app.services.scheduler import ArkiveScheduler
@@ -292,7 +318,7 @@ def _parse_demo_status_keys() -> set[str]:
 
     content = MOCK_TS_PATH.read_text()
 
-    start_match = re.search(r'const DEMO_STATUS\s*=\s*\{', content)
+    start_match = re.search(r"const DEMO_STATUS\s*=\s*\{", content)
     if not start_match:
         pytest.fail("Could not find DEMO_STATUS in mock.ts")
 
@@ -300,9 +326,9 @@ def _parse_demo_status_keys() -> set[str]:
     depth = 0
     block_end = brace_start
     for i in range(brace_start, len(content)):
-        if content[i] == '{':
+        if content[i] == "{":
             depth += 1
-        elif content[i] == '}':
+        elif content[i] == "}":
             depth -= 1
             if depth == 0:
                 block_end = i
@@ -310,17 +336,17 @@ def _parse_demo_status_keys() -> set[str]:
     else:
         pytest.fail("Could not find closing brace for DEMO_STATUS")
 
-    block = content[brace_start + 1:block_end]
+    block = content[brace_start + 1 : block_end]
 
     keys = set()
     current_depth = 0
-    for line in block.split('\n'):
+    for line in block.split("\n"):
         stripped = line.strip()
         if current_depth == 0:
-            m = re.match(r'(\w+)\s*:', stripped)
+            m = re.match(r"(\w+)\s*:", stripped)
             if m:
                 keys.add(m.group(1))
-        current_depth += stripped.count('{') - stripped.count('}')
+        current_depth += stripped.count("{") - stripped.count("}")
 
     return keys
 
@@ -331,20 +357,23 @@ class TestMockTsVerificationContract:
     def test_demo_status_has_trust_score(self):
         """DEMO_STATUS must include trust_score field."""
         keys = _parse_demo_status_keys()
-        assert "trust_score" in keys, \
+        assert "trust_score" in keys, (
             "DEMO_STATUS missing trust_score -- dashboard trust badge won't render in demo mode"
+        )
 
     def test_demo_status_has_last_verified_at(self):
         """DEMO_STATUS must include last_verified_at field."""
         keys = _parse_demo_status_keys()
-        assert "last_verified_at" in keys, \
+        assert "last_verified_at" in keys, (
             "DEMO_STATUS missing last_verified_at -- verification timing won't show in demo mode"
+        )
 
     def test_demo_status_has_verification_status(self):
         """DEMO_STATUS must include verification_status object."""
         keys = _parse_demo_status_keys()
-        assert "verification_status" in keys, \
+        assert "verification_status" in keys, (
             "DEMO_STATUS missing verification_status -- verification widget won't render in demo mode"
+        )
 
     def test_verification_status_has_required_subfields(self):
         """verification_status in mock must have trust_score, verification_passing, last_verified_at."""
@@ -353,7 +382,7 @@ class TestMockTsVerificationContract:
             pytest.skip("mock.ts not found")
 
         # Find verification_status block
-        match = re.search(r'verification_status\s*:\s*\{([^}]+)\}', content)
+        match = re.search(r"verification_status\s*:\s*\{([^}]+)\}", content)
         assert match, "verification_status object not found in mock.ts"
 
         block = match.group(1)
@@ -382,9 +411,8 @@ class TestMockTsVerificationContract:
         assert idx != -1, "Cannot find /verification route handler in mock"
 
         # Check the surrounding block for trust_score
-        handler_block = content[idx:idx + 500]
-        assert "trust_score" in handler_block, \
-            "Mock /verification handler does not return trust_score"
+        handler_block = content[idx : idx + 500]
+        assert "trust_score" in handler_block, "Mock /verification handler does not return trust_score"
 
     def test_mock_has_verification_run_route(self):
         """Mock must handle POST /verification/run route."""
@@ -469,9 +497,7 @@ class TestApiVerificationContract:
         data = await do_setup(client)
         api_key = data["api_key"]
 
-        resp = await client.get(
-            "/api/verification", headers=auth_headers(api_key)
-        )
+        resp = await client.get("/api/verification", headers=auth_headers(api_key))
         assert resp.status_code == 200
         body = resp.json()
         assert "trust_score" in body
@@ -484,14 +510,14 @@ class TestApiVerificationContract:
         api_key = data["api_key"]
         await _create_target(client, api_key, tmp_path)
 
-        from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+
         _engine = _MagicMock()
         _engine.is_backup_running = _MagicMock(return_value=False)
         _engine.verify_all_targets = _AsyncMock(return_value={"status": "completed", "targets": []})
         client._transport.app.state.verify_engine = _engine
-        resp = await client.post(
-            "/api/verification/run", headers=auth_headers(api_key)
-        )
+        resp = await client.post("/api/verification/run", headers=auth_headers(api_key))
         assert resp.status_code == 200
         body = resp.json()
         assert "status" in body
@@ -508,7 +534,11 @@ class TestApiVerificationContract:
         db_path = await _get_db_path(client)
 
         await _insert_verification_run(
-            db_path, "vr-fail", target_id, "failed", 20,
+            db_path,
+            "vr-fail",
+            target_id,
+            "failed",
+            20,
         )
 
         resp = await client.get("/api/status", headers=auth_headers(api_key))

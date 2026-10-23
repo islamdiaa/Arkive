@@ -5,7 +5,6 @@ import tarfile
 
 import pytest
 
-from app.core.config import ArkiveConfig
 from app.core.platform import Platform
 from app.services.flash_backup import FlashBackup
 
@@ -53,8 +52,8 @@ class TestFlashBackup:
 
     async def test_flash_backup_retention(self, tmp_config, fake_boot_config):
         """Create more backups than retention limit, verify old ones cleaned up."""
-        from unittest.mock import patch
         from datetime import datetime
+        from unittest.mock import patch
 
         tmp_config.boot_config_path = fake_boot_config
         tmp_config.flash_retention = 3

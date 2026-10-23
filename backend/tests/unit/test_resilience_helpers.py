@@ -12,8 +12,8 @@ import pytest
 
 from app.utils.subprocess_runner import CommandResult
 
-
 # --- ResilientDockerClient ---------------------------------------------------
+
 
 class TestResilientDockerClient:
     def test_connects_lazily_and_proxies_attributes(self):
@@ -60,9 +60,11 @@ class TestResilientDockerClient:
 
 # --- hostname resolution -------------------------------------------------------
 
+
 class TestResolveHostname:
     def setup_method(self):
         from app.services.host_identity import reset_hostname_cache
+
         reset_hostname_cache()
 
     teardown_method = setup_method
@@ -102,11 +104,13 @@ class TestResolveHostname:
 
 # --- JSON logging -----------------------------------------------------------------
 
+
 def test_json_formatter_escapes_and_uses_utc():
     from app.utils.log_config import JsonFormatter
 
-    record = logging.LogRecord("arkive.test", logging.WARNING, __file__, 1,
-                               'Execution of job "Health Check" skipped: %s', ("x\ny",), None)
+    record = logging.LogRecord(
+        "arkive.test", logging.WARNING, __file__, 1, 'Execution of job "Health Check" skipped: %s', ("x\ny",), None
+    )
     record.created = 0  # 1970-01-01T00:00:00Z
     line = JsonFormatter().format(record)
     payload = json.loads(line)
@@ -118,13 +122,17 @@ def test_json_formatter_escapes_and_uses_utc():
 
 # --- mounts ---------------------------------------------------------------------------
 
-MOUNTINFO = """\
+MOUNTINFO = (
+    """\
 600 500 0:50 / / rw,relatime - overlay overlay rw,lowerdir=/x
 601 600 0:51 /appdata/arkive /config rw,relatime - fuse.shfs shfs rw
 602 600 0:51 /appdata/arkive/local-backup /data rw,relatime - fuse.shfs shfs rw
-603 600 8:1 /docker/volumes/""" + "a" * 64 + """/_data /cache rw,relatime - btrfs /dev/loop2 rw
+603 600 8:1 /docker/volumes/"""
+    + "a" * 64
+    + """/_data /cache rw,relatime - btrfs /dev/loop2 rw
 604 600 0:51 / /mnt/user rw,relatime - fuse.shfs shfs rw
 """
+)
 
 
 class TestEphemeralPaths:
@@ -158,6 +166,7 @@ class TestEphemeralPaths:
 
 # --- restic backup exit codes --------------------------------------------------------
 
+
 class TestResticExitCodes:
     @pytest.fixture
     def engine(self, tmp_path):
@@ -173,12 +182,16 @@ class TestResticExitCodes:
 
     @pytest.mark.asyncio
     async def test_exit_code_3_is_partial_with_snapshot(self, engine):
-        stdout = "\n".join([
-            json.dumps({"message_type": "error", "error": {"message": "permission denied"}, "item": "/data/x"}),
-            json.dumps({"message_type": "summary", "snapshot_id": "deadbeef", "total_bytes_processed": 42}),
-        ])
-        with patch("app.services.backup_engine.run_command",
-                   AsyncMock(return_value=CommandResult(3, stdout, "warning", 1, "restic"))) as run:
+        stdout = "\n".join(
+            [
+                json.dumps({"message_type": "error", "error": {"message": "permission denied"}, "item": "/data/x"}),
+                json.dumps({"message_type": "summary", "snapshot_id": "deadbeef", "total_bytes_processed": 42}),
+            ]
+        )
+        with patch(
+            "app.services.backup_engine.run_command",
+            AsyncMock(return_value=CommandResult(3, stdout, "warning", 1, "restic")),
+        ) as run:
             result = await engine.backup({"type": "local", "config": {"path": "/data"}}, ["/config/dumps"])
 
         assert result["status"] == "partial"
@@ -190,8 +203,9 @@ class TestResticExitCodes:
 
     @pytest.mark.asyncio
     async def test_forget_without_prune(self, engine):
-        with patch("app.services.backup_engine.run_command",
-                   AsyncMock(return_value=CommandResult(0, "[]", "", 1, "restic"))) as run:
+        with patch(
+            "app.services.backup_engine.run_command", AsyncMock(return_value=CommandResult(0, "[]", "", 1, "restic"))
+        ) as run:
             await engine.forget({"type": "local", "config": {"path": "/data"}}, prune=False)
             assert "--prune" not in run.await_args.args[0]
             await engine.forget({"type": "local", "config": {"path": "/data"}})
@@ -199,6 +213,7 @@ class TestResticExitCodes:
 
 
 # --- scheduler coordination ------------------------------------------------------------
+
 
 class TestSchedulerCoordination:
     def _scheduler(self, tmp_path, **kwargs):
@@ -238,8 +253,9 @@ class TestSchedulerCoordination:
         import asyncio
 
         verify = MagicMock()
-        verify.verify_all_targets = AsyncMock(return_value={"status": "completed", "overall_trust_score": 100,
-                                                            "targets": []})
+        verify.verify_all_targets = AsyncMock(
+            return_value={"status": "completed", "overall_trust_score": 100, "targets": []}
+        )
         sched, orchestrator = self._scheduler(tmp_path, verify_engine=verify)
         assert orchestrator.lock_manager.acquire_backup_lock("backup-run")
 
@@ -247,8 +263,10 @@ class TestSchedulerCoordination:
             await asyncio.sleep(0.1)
             orchestrator.lock_manager.release_backup_lock()
 
-        with patch("app.services.scheduler.log_activity", AsyncMock()), \
-             patch("app.services.scheduler.aiosqlite.connect") as connect:
+        with (
+            patch("app.services.scheduler.log_activity", AsyncMock()),
+            patch("app.services.scheduler.aiosqlite.connect") as connect,
+        ):
             connect.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
             connect.return_value.__aexit__ = AsyncMock(return_value=False)
             await asyncio.gather(release(), sched._run_integrity_verify())
@@ -273,6 +291,7 @@ class TestSchedulerCoordination:
 
 
 # --- migration 4 ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_migration_4_drops_health_check_noise(tmp_path):
@@ -299,6 +318,7 @@ async def test_migration_4_drops_health_check_noise(tmp_path):
 
 
 # --- verify engine gzip SQL dump check ----------------------------------------------------
+
 
 class TestGzipSqlDumpCheck:
     def _write(self, path: Path, data: bytes):

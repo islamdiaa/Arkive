@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import do_setup
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +43,25 @@ class TestSetupEndpoint:
     async def test_setup_rejects_duplicate(self, client):
         """Setup must reject a second setup attempt (409)."""
         await do_setup(client)
-        resp = await client.post("/api/auth/setup", json={
-            "encryption_password": "test-pw-2",
-            "run_first_backup": False,
-        })
+        resp = await client.post(
+            "/api/auth/setup",
+            json={
+                "encryption_password": "test-pw-2",
+                "run_first_backup": False,
+            },
+        )
         assert resp.status_code == 409
         logger.info("Duplicate setup correctly rejected with 409")
 
     async def test_setup_requires_encryption_password(self, client):
         """Setup without encryption_password should fail (422)."""
-        resp = await client.post("/api/auth/setup", json={
-            "encryption_password": "",
-            "run_first_backup": False,
-        })
+        resp = await client.post(
+            "/api/auth/setup",
+            json={
+                "encryption_password": "",
+                "run_first_backup": False,
+            },
+        )
         assert resp.status_code == 422
         logger.info("Empty encryption_password correctly rejected with 422")
 
@@ -90,10 +96,13 @@ class TestSetupRateLimiting:
         # to test rate limiting before setup is complete
         responses = []
         for i in range(10):
-            resp = await client.post("/api/auth/setup", json={
-                "encryption_password": f"test-{i}",
-                "run_first_backup": False,
-            })
+            resp = await client.post(
+                "/api/auth/setup",
+                json={
+                    "encryption_password": f"test-{i}",
+                    "run_first_backup": False,
+                },
+            )
             responses.append(resp.status_code)
 
         # All should be 409 (already set up) or 429 (rate limited)

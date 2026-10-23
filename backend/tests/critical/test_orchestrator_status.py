@@ -8,9 +8,7 @@ Validates that the orchestrator correctly classifies backup outcomes:
 - Manual lock conflicts = failed
 """
 
-import json
 import logging
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -46,9 +44,13 @@ def _make_orchestrator(config, event_bus=None):
 
     backup_engine = AsyncMock()
     backup_engine.init_repo = AsyncMock(return_value=True)
-    backup_engine.backup = AsyncMock(return_value={
-        "status": "success", "snapshot_id": "snap-1", "total_bytes_processed": 1024,
-    })
+    backup_engine.backup = AsyncMock(
+        return_value={
+            "status": "success",
+            "snapshot_id": "snap-1",
+            "total_bytes_processed": 1024,
+        }
+    )
     backup_engine.forget = AsyncMock()
     backup_engine.snapshots = AsyncMock(return_value=[])
 
@@ -63,10 +65,14 @@ def _make_orchestrator(config, event_bus=None):
     flash.backup = AsyncMock(return_value=MagicMock(status="skipped", size_bytes=0, error=None))
 
     orchestrator = BackupOrchestrator(
-        discovery=None, db_dumper=None,
-        flash_backup=flash, backup_engine=backup_engine,
-        cloud_manager=None, notifier=notifier,
-        event_bus=event_bus, config=config,
+        discovery=None,
+        db_dumper=None,
+        flash_backup=flash,
+        backup_engine=backup_engine,
+        cloud_manager=None,
+        notifier=notifier,
+        event_bus=event_bus,
+        config=config,
     )
     orchestrator._self_backup = AsyncMock()
     return orchestrator
@@ -96,8 +102,10 @@ class TestOrchestratorStatusClassification:
         backup_lock = tmp_path / "backup.lock"
         backup_lock.write_text('{"pid":123}')
 
-        with patch.object(orch_mod, "LOCK_FILE", backup_lock), \
-             patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"):
+        with (
+            patch.object(orch_mod, "LOCK_FILE", backup_lock),
+            patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"),
+        ):
             result = await orchestrator.run_backup("job-1", trigger="scheduled", run_id="sched-1", lock_wait_seconds=0)
 
         assert result["status"] == "conflict"
@@ -120,8 +128,10 @@ class TestOrchestratorStatusClassification:
         backup_lock = tmp_path / "backup.lock"
         backup_lock.write_text('{"pid":123}')
 
-        with patch.object(orch_mod, "LOCK_FILE", backup_lock), \
-             patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"):
+        with (
+            patch.object(orch_mod, "LOCK_FILE", backup_lock),
+            patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"),
+        ):
             result = await orchestrator.run_backup("job-1", trigger="manual", run_id="manual-1")
 
         assert result["status"] == "conflict"
@@ -144,8 +154,10 @@ class TestOrchestratorStatusClassification:
         restore_lock = tmp_path / "restore.lock"
         restore_lock.write_text('{"pid":123,"proc_start_time":"abc"}')
 
-        with patch.object(orch_mod, "LOCK_FILE", tmp_path / "backup.lock"), \
-             patch.object(orch_mod, "RESTORE_LOCK_FILE", restore_lock):
+        with (
+            patch.object(orch_mod, "LOCK_FILE", tmp_path / "backup.lock"),
+            patch.object(orch_mod, "RESTORE_LOCK_FILE", restore_lock),
+        ):
             result = await orchestrator.run_backup("job-1", trigger="manual", run_id="restore-block-1")
 
         assert result["status"] == "conflict"
@@ -164,8 +176,10 @@ class TestOrchestratorStatusClassification:
         backup_lock = tmp_path / "backup.lock"
         backup_lock.write_text('{"pid":123}')
 
-        with patch.object(orch_mod, "LOCK_FILE", backup_lock), \
-             patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"):
+        with (
+            patch.object(orch_mod, "LOCK_FILE", backup_lock),
+            patch.object(orch_mod, "RESTORE_LOCK_FILE", tmp_path / "restore.lock"),
+        ):
             await orchestrator.run_backup("job-1", trigger="scheduled", run_id="event-test-1", lock_wait_seconds=0)
 
         assert event_bus.publish.called
@@ -175,5 +189,4 @@ class TestOrchestratorStatusClassification:
         assert event_name == "backup:cancelled"
         assert event_data["status"] == "skipped"
         assert "error_category" in event_data
-        logger.info("Conflict event published: %s with status=%s",
-                    event_name, event_data["status"])
+        logger.info("Conflict event published: %s with status=%s", event_name, event_data["status"])

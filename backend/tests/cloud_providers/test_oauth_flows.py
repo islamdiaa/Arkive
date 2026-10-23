@@ -16,10 +16,10 @@ import pytest
 import app.api.targets as targets_mod
 from app.core.security import decrypt_config
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_auth_url(url: str) -> tuple[str, dict[str, list[str]]]:
     """Split an authorization URL into base + parsed query parameters."""
@@ -74,11 +74,14 @@ class TestOAuthStartDropbox:
     """POST /api/targets/oauth/start for Dropbox provider."""
 
     async def test_returns_authorization_url_with_correct_params(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "test-dropbox-client-id",
-            "client_secret": "test-dropbox-secret",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "test-dropbox-client-id",
+                "client_secret": "test-dropbox-secret",
+            },
+        )
         assert resp.status_code == 200, resp.text
         data = resp.json()
 
@@ -95,10 +98,13 @@ class TestOAuthStartDropbox:
         assert params["state"] == [data["state"]]
 
     async def test_state_token_is_stored(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "test-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "test-client",
+            },
+        )
         assert resp.status_code == 200
         state = resp.json()["state"]
 
@@ -110,20 +116,26 @@ class TestOAuthStartDropbox:
         assert "_created_ts" in pending
 
     async def test_default_redirect_uri(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "test-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "test-client",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["redirect_uri"] == "http://localhost:8200/oauth/callback"
 
     async def test_custom_redirect_uri(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "test-client",
-            "redirect_uri": "https://my.app/callback",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "test-client",
+                "redirect_uri": "https://my.app/callback",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["redirect_uri"] == "https://my.app/callback"
@@ -131,17 +143,23 @@ class TestOAuthStartDropbox:
         assert params["redirect_uri"] == ["https://my.app/callback"]
 
     async def test_unsupported_provider_returns_400(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "onedrive",
-            "client_id": "x",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "onedrive",
+                "client_id": "x",
+            },
+        )
         assert resp.status_code == 400
 
     async def test_missing_client_id_returns_400(self, provider_client):
         """No client_id in request body and none in DB settings."""
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+            },
+        )
         assert resp.status_code == 400
         msg = _get_error_message(resp).lower()
         assert "client_id" in msg
@@ -156,11 +174,14 @@ class TestOAuthStartGoogleDrive:
     """POST /api/targets/oauth/start for Google Drive (gdrive) provider."""
 
     async def test_returns_google_authorization_url(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "gdrive",
-            "client_id": "123456.apps.googleusercontent.com",
-            "client_secret": "goog-secret",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "gdrive",
+                "client_id": "123456.apps.googleusercontent.com",
+                "client_secret": "goog-secret",
+            },
+        )
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["provider"] == "gdrive"
@@ -171,19 +192,25 @@ class TestOAuthStartGoogleDrive:
         assert params["response_type"] == ["code"]
 
     async def test_includes_google_specific_scopes(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "gdrive",
-            "client_id": "goog-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "gdrive",
+                "client_id": "goog-client",
+            },
+        )
         assert resp.status_code == 200
         _, params = _parse_auth_url(resp.json()["authorization_url"])
         assert params["scope"] == ["https://www.googleapis.com/auth/drive.file"]
 
     async def test_includes_access_type_offline_and_prompt_consent(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "gdrive",
-            "client_id": "goog-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "gdrive",
+                "client_id": "goog-client",
+            },
+        )
         assert resp.status_code == 200
         _, params = _parse_auth_url(resp.json()["authorization_url"])
         assert params["access_type"] == ["offline"]
@@ -191,10 +218,13 @@ class TestOAuthStartGoogleDrive:
 
     async def test_dropbox_url_does_not_have_gdrive_params(self, provider_client):
         """Verify Dropbox requests do NOT carry scope/access_type/prompt."""
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "db-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "db-client",
+            },
+        )
         assert resp.status_code == 200
         _, params = _parse_auth_url(resp.json()["authorization_url"])
         assert "scope" not in params
@@ -220,10 +250,13 @@ class TestOAuthStateLimits:
                 "_created_ts": time.time(),
             }
 
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "overflow-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "overflow-client",
+            },
+        )
         assert resp.status_code == 429
         msg = _get_error_message(resp).lower()
         assert "too many" in msg
@@ -240,10 +273,13 @@ class TestOAuthStateLimits:
             }
 
         # This should succeed because expired states get cleaned
-        resp = await provider_client.post("/api/targets/oauth/start", json={
-            "provider": "dropbox",
-            "client_id": "fresh-client",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/start",
+            json={
+                "provider": "dropbox",
+                "client_id": "fresh-client",
+            },
+        )
         assert resp.status_code == 200
         # Expired entries should have been removed
         assert len(targets_mod._oauth_pending) == 1
@@ -290,11 +326,14 @@ class TestOAuthComplete:
     """POST /api/targets/oauth/complete -- token exchange + target creation."""
 
     async def test_invalid_state_returns_400(self, provider_client):
-        resp = await provider_client.post("/api/targets/oauth/complete", json={
-            "provider": "dropbox",
-            "code": "auth-code-123",
-            "state": "nonexistent-state-token",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "dropbox",
+                "code": "auth-code-123",
+                "state": "nonexistent-state-token",
+            },
+        )
         assert resp.status_code == 400
         msg = _get_error_message(resp).lower()
         assert "invalid" in msg or "expired" in msg
@@ -313,11 +352,14 @@ class TestOAuthComplete:
         # Simulate the state having been cleaned up before complete is called
         del targets_mod._oauth_pending["stale-state"]
 
-        resp = await provider_client.post("/api/targets/oauth/complete", json={
-            "provider": "dropbox",
-            "code": "auth-code",
-            "state": "stale-state",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "dropbox",
+                "code": "auth-code",
+                "state": "stale-state",
+            },
+        )
         assert resp.status_code == 400
 
     async def test_provider_mismatch_returns_400(self, provider_client):
@@ -330,11 +372,14 @@ class TestOAuthComplete:
             "_created_ts": time.time(),
         }
 
-        resp = await provider_client.post("/api/targets/oauth/complete", json={
-            "provider": "gdrive",
-            "code": "auth-code",
-            "state": "mismatch-state",
-        })
+        resp = await provider_client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "gdrive",
+                "code": "auth-code",
+                "state": "mismatch-state",
+            },
+        )
         assert resp.status_code == 400
         msg = _get_error_message(resp).lower()
         assert "dropbox" in msg
@@ -360,12 +405,15 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "dropbox",
-                "code": "auth-code-from-dropbox",
-                "state": state,
-                "name": "My Dropbox Backup",
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "dropbox",
+                    "code": "auth-code-from-dropbox",
+                    "state": state,
+                    "name": "My Dropbox Backup",
+                },
+            )
 
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -406,13 +454,16 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "gdrive",
-                "code": "auth-code-from-google",
-                "state": state,
-                "client_id": "goog-client-id",
-                "client_secret": "goog-client-secret",
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "gdrive",
+                    "code": "auth-code-from-google",
+                    "state": state,
+                    "client_id": "goog-client-id",
+                    "client_secret": "goog-client-secret",
+                },
+            )
 
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -443,23 +494,25 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "dropbox",
-                "code": "code",
-                "state": state,
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "dropbox",
+                    "code": "code",
+                    "state": state,
+                },
+            )
 
         assert resp.status_code == 200
         target_id = resp.json()["id"]
 
         # Read the raw DB row to check encryption
         import aiosqlite
+
         db_path = provider_client._tmp_path / "arkive.db"
         async with aiosqlite.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT config FROM storage_targets WHERE id = ?", (target_id,)
-            )
+            cursor = await db.execute("SELECT config FROM storage_targets WHERE id = ?", (target_id,))
             row = await cursor.fetchone()
 
         raw_config = row["config"]
@@ -485,11 +538,14 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "dropbox",
-                "code": "bad-code",
-                "state": state,
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "dropbox",
+                    "code": "bad-code",
+                    "state": state,
+                },
+            )
 
         assert resp.status_code == 502
         msg = _get_error_message(resp).lower()
@@ -509,18 +565,19 @@ class TestOAuthComplete:
         }
 
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(
-            side_effect=httpx.RequestError("Connection refused")
-        )
+        mock_client.post = AsyncMock(side_effect=httpx.RequestError("Connection refused"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "dropbox",
-                "code": "code",
-                "state": state,
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "dropbox",
+                    "code": "code",
+                    "state": state,
+                },
+            )
 
         assert resp.status_code == 502
         msg = _get_error_message(resp).lower()
@@ -542,11 +599,14 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "dropbox",
-                "code": "code",
-                "state": state,
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "dropbox",
+                    "code": "code",
+                    "state": state,
+                },
+            )
 
         assert resp.status_code == 200
         name = resp.json()["name"]
@@ -571,25 +631,27 @@ class TestOAuthComplete:
         mock_client = _mock_httpx_client(mock_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            resp = await provider_client.post("/api/targets/oauth/complete", json={
-                "provider": "gdrive",
-                "code": "google-code",
-                "state": state,
-                "client_id": "goog-cid",
-                "client_secret": "goog-csec",
-            })
+            resp = await provider_client.post(
+                "/api/targets/oauth/complete",
+                json={
+                    "provider": "gdrive",
+                    "code": "google-code",
+                    "state": state,
+                    "client_id": "goog-cid",
+                    "client_secret": "goog-csec",
+                },
+            )
 
         assert resp.status_code == 200
         target_id = resp.json()["id"]
 
         # Read DB and decrypt to verify client_id / client_secret are stored
         import aiosqlite
+
         db_path = provider_client._tmp_path / "arkive.db"
         async with aiosqlite.connect(str(db_path)) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT config FROM storage_targets WHERE id = ?", (target_id,)
-            )
+            cursor = await db.execute("SELECT config FROM storage_targets WHERE id = ?", (target_id,))
             row = await cursor.fetchone()
 
         decrypted = decrypt_config(row["config"], str(provider_client._tmp_path))

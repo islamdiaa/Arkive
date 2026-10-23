@@ -7,7 +7,7 @@ for the backup and restore lock files used by orchestrator.py and restore.py.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ logger = logging.getLogger("arkive.lock_manager")
 
 class LockFileData(BaseModel):
     """Validated schema for lock file JSON content."""
+
     pid: StrictInt
     proc_start_time: str = ""
     started_at: str = ""
@@ -32,7 +33,7 @@ def _get_proc_start_time(pid: int) -> str | None:
     Returns None if the process doesn't exist or /proc is unavailable.
     """
     try:
-        with open(f"/proc/{pid}/stat", "r") as f:
+        with open(f"/proc/{pid}/stat") as f:
             fields = f.read().split(")")[-1].split()
             # Field 22 in stat is starttime (0-indexed from after the comm field)
             # After splitting on ")", fields[0] is state, fields[19] is starttime
@@ -78,7 +79,9 @@ def _is_process_alive(lock_data: LockFileData) -> bool:
     # PID recycled or dead
     logger.warning(
         "Lock PID %s recycled (start %s -> %s), treating as stale",
-        pid, stored_start, current_start,
+        pid,
+        stored_start,
+        current_start,
     )
     return False
 
@@ -166,7 +169,7 @@ class BackupLockManager:
         # Build lock payload
         lock_payload: dict[str, Any] = {
             "pid": os.getpid(),
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "proc_start_time": _get_proc_start_time(os.getpid()) or "",
         }
         if run_id:

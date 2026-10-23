@@ -4,9 +4,6 @@ Tests that validate the type checking logic prevents bypassing lock detection
 with malformed JSON types.
 """
 
-import json
-import pytest
-
 
 def validate_lock_types(lock_data: dict) -> tuple[bool, str | None]:
     """Validate lock file types. Returns (is_valid, error_msg)."""

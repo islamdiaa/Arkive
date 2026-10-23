@@ -12,8 +12,6 @@ Validates the full subscriber lifecycle:
 import asyncio
 import logging
 
-import pytest
-
 from app.core.event_bus import EventBus, SubscriberHandle
 
 logger = logging.getLogger(__name__)
@@ -193,8 +191,7 @@ class TestSubscriberCleanup:
             h.cleanup()
 
         assert len(bus._subscribers) == 2
-        logger.info("Subscriber count correct after partial cleanup: %d",
-                    len(bus._subscribers))
+        logger.info("Subscriber count correct after partial cleanup: %d", len(bus._subscribers))
 
     def test_all_subscribers_cleaned_up(self):
         """After cleaning up all, subscriber list should be empty."""

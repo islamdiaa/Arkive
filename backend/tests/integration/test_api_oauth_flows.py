@@ -8,10 +8,11 @@ Note: The app uses a custom exception handler that wraps HTTPException into
 {"error": ..., "message": ..., "details": {}} — so we check resp.json()["message"]
 rather than resp.json()["detail"].
 """
-import os
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
@@ -30,6 +31,7 @@ async def setup_auth(client):
 def _clear_oauth_pending():
     """Clear the module-level OAuth pending state between tests."""
     from app.api.targets import _oauth_pending
+
     _oauth_pending.clear()
 
 
@@ -75,11 +77,15 @@ async def test_oauth_start_dropbox_returns_auth_url(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_dropbox_client_id",
-        "client_secret": "test_dropbox_secret",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_dropbox_client_id",
+            "client_secret": "test_dropbox_secret",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -96,10 +102,13 @@ async def test_oauth_start_dropbox_requires_auth(client):
     _clear_oauth_pending()
     await do_setup(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_id",
-    })
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_id",
+        },
+    )
 
     assert resp.status_code == 401
 
@@ -109,15 +118,23 @@ async def test_oauth_start_dropbox_generates_unique_state(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp1 = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_client_id",
-    }, headers=auth_headers(api_key))
+    resp1 = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_client_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
-    resp2 = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_client_id",
-    }, headers=auth_headers(api_key))
+    resp2 = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_client_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp1.status_code == 200
     assert resp2.status_code == 200
@@ -137,11 +154,15 @@ async def test_oauth_complete_dropbox_creates_target(client):
     api_key = await setup_auth(client)
 
     # Step 1: Start the OAuth flow to get a valid state token
-    start_resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_client_id",
-        "client_secret": "test_client_secret",
-    }, headers=auth_headers(api_key))
+    start_resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_client_id",
+            "client_secret": "test_client_secret",
+        },
+        headers=auth_headers(api_key),
+    )
     assert start_resp.status_code == 200
     state = start_resp.json()["state"]
 
@@ -149,12 +170,16 @@ async def test_oauth_complete_dropbox_creates_target(client):
     mock_client = _build_mock_httpx_client(_mock_token_response())
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        complete_resp = await client.post("/api/targets/oauth/complete", json={
-            "provider": "dropbox",
-            "code": "valid_auth_code_123",
-            "state": state,
-            "name": "My Dropbox",
-        }, headers=auth_headers(api_key))
+        complete_resp = await client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "dropbox",
+                "code": "valid_auth_code_123",
+                "state": state,
+                "name": "My Dropbox",
+            },
+            headers=auth_headers(api_key),
+        )
 
     assert complete_resp.status_code == 200
     data = complete_resp.json()
@@ -170,11 +195,15 @@ async def test_oauth_complete_dropbox_invalid_state(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/complete", json={
-        "provider": "dropbox",
-        "code": "some_code",
-        "state": "totally_invalid_state_token",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/complete",
+        json={
+            "provider": "dropbox",
+            "code": "some_code",
+            "state": "totally_invalid_state_token",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 400
     message = resp.json()["message"].lower()
@@ -187,22 +216,30 @@ async def test_oauth_complete_dropbox_invalid_code(client):
     api_key = await setup_auth(client)
 
     # Start OAuth flow first
-    start_resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_client_id",
-        "client_secret": "test_client_secret",
-    }, headers=auth_headers(api_key))
+    start_resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_client_id",
+            "client_secret": "test_client_secret",
+        },
+        headers=auth_headers(api_key),
+    )
     state = start_resp.json()["state"]
 
     # Mock a failed token exchange (400 response from provider)
     mock_client = _build_mock_httpx_client(_mock_failed_token_response())
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        complete_resp = await client.post("/api/targets/oauth/complete", json={
-            "provider": "dropbox",
-            "code": "bad_code",
-            "state": state,
-        }, headers=auth_headers(api_key))
+        complete_resp = await client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "dropbox",
+                "code": "bad_code",
+                "state": state,
+            },
+            headers=auth_headers(api_key),
+        )
 
     # The endpoint returns 502 when the upstream token exchange fails
     assert complete_resp.status_code == 502
@@ -221,11 +258,15 @@ async def test_oauth_start_gdrive_returns_auth_url(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_gdrive_client_id",
-        "client_secret": "test_gdrive_secret",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_gdrive_client_id",
+            "client_secret": "test_gdrive_secret",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -241,10 +282,13 @@ async def test_oauth_start_gdrive_requires_auth(client):
     _clear_oauth_pending()
     await do_setup(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_id",
-    })
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_id",
+        },
+    )
 
     assert resp.status_code == 401
 
@@ -254,10 +298,14 @@ async def test_oauth_start_gdrive_includes_scope(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_gdrive_client_id",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_gdrive_client_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 200
     auth_url = resp.json()["authorization_url"]
@@ -269,15 +317,23 @@ async def test_oauth_start_gdrive_generates_unique_state(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp1 = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_client_id",
-    }, headers=auth_headers(api_key))
+    resp1 = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_client_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
-    resp2 = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_client_id",
-    }, headers=auth_headers(api_key))
+    resp2 = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_client_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp1.status_code == 200
     assert resp2.status_code == 200
@@ -295,11 +351,15 @@ async def test_oauth_complete_gdrive_creates_target(client):
     api_key = await setup_auth(client)
 
     # Start the OAuth flow
-    start_resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_gdrive_client",
-        "client_secret": "test_gdrive_secret",
-    }, headers=auth_headers(api_key))
+    start_resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_gdrive_client",
+            "client_secret": "test_gdrive_secret",
+        },
+        headers=auth_headers(api_key),
+    )
     assert start_resp.status_code == 200
     state = start_resp.json()["state"]
 
@@ -307,12 +367,16 @@ async def test_oauth_complete_gdrive_creates_target(client):
     mock_client = _build_mock_httpx_client(_mock_token_response())
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        complete_resp = await client.post("/api/targets/oauth/complete", json={
-            "provider": "gdrive",
-            "code": "valid_gdrive_code",
-            "state": state,
-            "name": "My Google Drive",
-        }, headers=auth_headers(api_key))
+        complete_resp = await client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "gdrive",
+                "code": "valid_gdrive_code",
+                "state": state,
+                "name": "My Google Drive",
+            },
+            headers=auth_headers(api_key),
+        )
 
     assert complete_resp.status_code == 200
     data = complete_resp.json()
@@ -327,11 +391,15 @@ async def test_oauth_complete_gdrive_invalid_state(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/complete", json={
-        "provider": "gdrive",
-        "code": "some_code",
-        "state": "invalid_gdrive_state_xyz",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/complete",
+        json={
+            "provider": "gdrive",
+            "code": "some_code",
+            "state": "invalid_gdrive_state_xyz",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 400
     message = resp.json()["message"].lower()
@@ -344,22 +412,30 @@ async def test_oauth_complete_gdrive_invalid_code(client):
     api_key = await setup_auth(client)
 
     # Start OAuth
-    start_resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "gdrive",
-        "client_id": "test_client_id",
-        "client_secret": "test_secret",
-    }, headers=auth_headers(api_key))
+    start_resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "gdrive",
+            "client_id": "test_client_id",
+            "client_secret": "test_secret",
+        },
+        headers=auth_headers(api_key),
+    )
     state = start_resp.json()["state"]
 
     # Mock failed token exchange
     mock_client = _build_mock_httpx_client(_mock_failed_token_response())
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        complete_resp = await client.post("/api/targets/oauth/complete", json={
-            "provider": "gdrive",
-            "code": "bad_code",
-            "state": state,
-        }, headers=auth_headers(api_key))
+        complete_resp = await client.post(
+            "/api/targets/oauth/complete",
+            json={
+                "provider": "gdrive",
+                "code": "bad_code",
+                "state": state,
+            },
+            headers=auth_headers(api_key),
+        )
 
     # The endpoint returns 502 when the upstream token exchange fails
     assert complete_resp.status_code == 502
@@ -377,10 +453,14 @@ async def test_oauth_start_invalid_provider(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "s3",
-        "client_id": "test_id",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "s3",
+            "client_id": "test_id",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 400
     message = resp.json()["message"].lower()
@@ -393,20 +473,28 @@ async def test_oauth_complete_provider_mismatch(client):
     api_key = await setup_auth(client)
 
     # Start OAuth for dropbox
-    start_resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-        "client_id": "test_client_id",
-        "client_secret": "test_secret",
-    }, headers=auth_headers(api_key))
+    start_resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+            "client_id": "test_client_id",
+            "client_secret": "test_secret",
+        },
+        headers=auth_headers(api_key),
+    )
     assert start_resp.status_code == 200
     state = start_resp.json()["state"]
 
     # Try to complete as gdrive
-    complete_resp = await client.post("/api/targets/oauth/complete", json={
-        "provider": "gdrive",
-        "code": "some_code",
-        "state": state,
-    }, headers=auth_headers(api_key))
+    complete_resp = await client.post(
+        "/api/targets/oauth/complete",
+        json={
+            "provider": "gdrive",
+            "code": "some_code",
+            "state": state,
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert complete_resp.status_code == 400
     message = complete_resp.json()["message"].lower()
@@ -418,9 +506,13 @@ async def test_oauth_start_requires_client_id(client):
     _clear_oauth_pending()
     api_key = await setup_auth(client)
 
-    resp = await client.post("/api/targets/oauth/start", json={
-        "provider": "dropbox",
-    }, headers=auth_headers(api_key))
+    resp = await client.post(
+        "/api/targets/oauth/start",
+        json={
+            "provider": "dropbox",
+        },
+        headers=auth_headers(api_key),
+    )
 
     assert resp.status_code == 400
     message = resp.json()["message"].lower()

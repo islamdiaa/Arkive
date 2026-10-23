@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from tests.conftest import do_setup, auth_headers
+from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,9 +22,7 @@ pytestmark = pytest.mark.asyncio
 async def test_scan_returns_suggestions_key(client):
     """POST /api/directories/scan should include a 'suggestions' list."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "suggestions" in body
@@ -37,9 +35,7 @@ async def test_scan_returns_suggestions_key(client):
 async def test_scan_get_alias_returns_suggestions(client):
     """GET /api/directories/scan should also return suggestions."""
     data = await do_setup(client)
-    resp = await client.get(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.get("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert "suggestions" in body
@@ -63,9 +59,7 @@ async def test_scan_suggestion_has_required_fields(client, tmp_path):
     # Monkeypatch the user_shares_root inside the endpoint.
     # Since scan_directories reads /mnt/user directly, we test the real
     # endpoint and check that any returned suggestion has the right shape.
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
 
@@ -107,9 +101,7 @@ async def test_scan_marks_watched_directories(client, tmp_path):
     # if it happens to be under /mnt/user. Since we're in a test env,
     # the scan may not find our tmp_path. Instead, verify the endpoint
     # doesn't crash and returns a valid response.
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["suggestions"], list)
@@ -145,9 +137,7 @@ async def test_add_directory_from_suggestion(client, tmp_path):
     assert body["path"] == dir_path
 
     # Verify it appears in the list with the right excludes.
-    list_resp = await client.get(
-        "/api/directories", headers=auth_headers(data["api_key"])
-    )
+    list_resp = await client.get("/api/directories", headers=auth_headers(data["api_key"]))
     dirs = list_resp.json()["directories"]
     added = [d for d in dirs if d["path"] == dir_path]
     assert len(added) == 1
@@ -170,9 +160,7 @@ async def test_add_suggestion_then_rescan_excludes_it(client, tmp_path):
     )
 
     # Rescan — the path shouldn't appear as unwatched in suggestions.
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     suggestions = resp.json()["suggestions"]
     for s in suggestions:
@@ -188,9 +176,7 @@ async def test_add_suggestion_then_rescan_excludes_it(client, tmp_path):
 async def test_scan_includes_size_bytes(client):
     """Suggestions should include size_bytes for estimating backup cost."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     for suggestion in resp.json()["suggestions"]:
         assert "size_bytes" in suggestion
@@ -201,9 +187,7 @@ async def test_scan_includes_size_bytes(client):
 async def test_scan_includes_file_count(client):
     """Suggestions should include file_count for understanding directory scope."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     for suggestion in resp.json()["suggestions"]:
         assert "file_count" in suggestion
@@ -219,9 +203,7 @@ async def test_scan_includes_file_count(client):
 async def test_scan_suggestions_sorted_by_priority(client):
     """Suggestions should be sorted: unwatched first, then by priority."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     suggestions = resp.json()["suggestions"]
 
@@ -233,9 +215,7 @@ async def test_scan_suggestions_sorted_by_priority(client):
         a, b = suggestions[i], suggestions[i + 1]
         a_key = (a["already_watched"], priority_order.get(a["priority"], 3))
         b_key = (b["already_watched"], priority_order.get(b["priority"], 3))
-        assert a_key <= b_key, (
-            f"Suggestions not sorted: {a['path']} ({a_key}) should come before {b['path']} ({b_key})"
-        )
+        assert a_key <= b_key, f"Suggestions not sorted: {a['path']} ({a_key}) should come before {b['path']} ({b_key})"
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +226,7 @@ async def test_scan_suggestions_sorted_by_priority(client):
 async def test_scan_does_not_crash_without_mnt_user(client):
     """Scan should gracefully handle missing /mnt/user (non-Unraid systems)."""
     data = await do_setup(client)
-    resp = await client.post(
-        "/api/directories/scan", headers=auth_headers(data["api_key"])
-    )
+    resp = await client.post("/api/directories/scan", headers=auth_headers(data["api_key"]))
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["suggestions"], list)

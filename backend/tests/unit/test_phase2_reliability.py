@@ -8,10 +8,7 @@ Covers:
 5. DB connection reuse verification
 """
 
-import asyncio
 import logging
-import os
-import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -21,8 +18,7 @@ import aiosqlite
 import pytest
 
 from app.core.context import CorrelationFilter, current_run_id
-from app.core.event_bus import EventBus, SubscriberHandle
-
+from app.core.event_bus import EventBus
 
 # ---------------------------------------------------------------------------
 # 1. Discovery Persistence Transaction
@@ -133,8 +129,13 @@ class TestCorrelationIDs:
     def test_correlation_filter_injects_run_id(self):
         f = CorrelationFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="test message", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test message",
+            args=(),
+            exc_info=None,
         )
 
         token = current_run_id.set("abc-42")
@@ -147,8 +148,13 @@ class TestCorrelationIDs:
     def test_correlation_filter_uses_dash_when_no_run(self):
         f = CorrelationFilter()
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="test message", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test message",
+            args=(),
+            exc_info=None,
         )
         f.filter(record)
         assert record.run_id == "-"
@@ -175,16 +181,21 @@ class TestCorrelationIDs:
         event_bus.publish = AsyncMock()
 
         orch = BackupOrchestrator(
-            discovery=None, db_dumper=None,
-            flash_backup=MagicMock(), backup_engine=MagicMock(),
-            cloud_manager=MagicMock(), notifier=MagicMock(),
-            event_bus=event_bus, config=config,
+            discovery=None,
+            db_dumper=None,
+            flash_backup=MagicMock(),
+            backup_engine=MagicMock(),
+            cloud_manager=MagicMock(),
+            notifier=MagicMock(),
+            event_bus=event_bus,
+            config=config,
         )
         orch.lock_manager = lock_mgr
 
         # Use a real temp DB but capture the run_id when the job query runs
         with tempfile.TemporaryDirectory() as tmp:
             from app.core.database import init_db
+
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
 
@@ -205,7 +216,7 @@ class TestCorrelationIDs:
                     return await self._real.__aexit__(*args)
 
             with patch("app.services.orchestrator.aiosqlite.connect", side_effect=CapturingConnect):
-                result = await orch.run_backup("job1", run_id="test-run-77")
+                await orch.run_backup("job1", run_id="test-run-77")
 
         # The run_id should have been set during the run
         assert "test-run-77" in captured_run_ids
@@ -247,6 +258,7 @@ class TestSubprocessProcessGroups:
     def test_kill_process_group_handles_process_lookup_error(self):
         """_kill_process_group silently handles ProcessLookupError."""
         from app.utils.subprocess_runner import _kill_process_group
+
         # PID that almost certainly doesn't exist
         _kill_process_group(999999999)  # Should not raise
 
@@ -299,7 +311,9 @@ class TestDBConnectionReuse:
 
         backup_engine = MagicMock()
         backup_engine.init_repo = AsyncMock()
-        backup_engine.backup = AsyncMock(return_value={"status": "success", "total_bytes_processed": 100, "snapshot_id": "snap1"})
+        backup_engine.backup = AsyncMock(
+            return_value={"status": "success", "total_bytes_processed": 100, "snapshot_id": "snap1"}
+        )
         backup_engine.forget = AsyncMock()
         backup_engine.snapshots = AsyncMock(return_value=[])
 
@@ -307,10 +321,14 @@ class TestDBConnectionReuse:
         notifier.send = AsyncMock()
 
         orch = BackupOrchestrator(
-            discovery=None, db_dumper=None,
-            flash_backup=MagicMock(), backup_engine=backup_engine,
-            cloud_manager=MagicMock(), notifier=notifier,
-            event_bus=event_bus, config=config,
+            discovery=None,
+            db_dumper=None,
+            flash_backup=MagicMock(),
+            backup_engine=backup_engine,
+            cloud_manager=MagicMock(),
+            notifier=notifier,
+            event_bus=event_bus,
+            config=config,
         )
         orch.lock_manager = lock_mgr
 
@@ -333,14 +351,13 @@ class TestDBConnectionReuse:
         # We need a real DB to test this
         with tempfile.TemporaryDirectory() as tmp:
             from app.core.database import init_db
+
             db_path = Path(tmp) / "test.db"
             await init_db(db_path)
 
             # Insert a job and two targets
             async with aiosqlite.connect(db_path) as db:
-                await db.execute(
-                    "INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')"
-                )
+                await db.execute("INSERT INTO backup_jobs (id, name, schedule) VALUES ('j1', 'Test', '0 2 * * *')")
                 await db.execute(
                     "INSERT INTO storage_targets (id, name, type, config, enabled) VALUES ('t1', 'Target1', 'local', '{}', 1)"
                 )
@@ -352,7 +369,7 @@ class TestDBConnectionReuse:
             config.db_path = str(db_path)
 
             with patch("app.services.orchestrator.aiosqlite.connect", side_effect=CountingConnect):
-                result = await orch.run_backup("j1", run_id="test-conn")
+                await orch.run_backup("j1", run_id="test-conn")
 
             # Before the connection-reuse fix, 2 targets would open:
             #   1 (job) + 1 (run record) + 1 (disk settings) +

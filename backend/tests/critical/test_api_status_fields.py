@@ -61,8 +61,7 @@ async def test_status_targets_sub_fields(client):
     assert not missing, f"Missing targets sub-fields: {missing}"
     assert isinstance(targets["total"], int)
     assert isinstance(targets["healthy"], int)
-    logger.info("targets sub-fields verified: total=%d, healthy=%d",
-                targets["total"], targets["healthy"])
+    logger.info("targets sub-fields verified: total=%d, healthy=%d", targets["total"], targets["healthy"])
 
 
 async def test_status_databases_sub_fields(client):
@@ -75,8 +74,7 @@ async def test_status_databases_sub_fields(client):
     assert not missing, f"Missing databases sub-fields: {missing}"
     assert isinstance(databases["total"], int)
     assert isinstance(databases["healthy"], int)
-    logger.info("databases sub-fields verified: total=%d, healthy=%d",
-                databases["total"], databases["healthy"])
+    logger.info("databases sub-fields verified: total=%d, healthy=%d", databases["total"], databases["healthy"])
 
 
 async def test_status_storage_sub_fields(client):
@@ -112,8 +110,9 @@ async def test_status_total_snapshots_is_int(client):
     resp = await client.get("/api/status")
     body = resp.json()
 
-    assert isinstance(body["total_snapshots"], int), \
+    assert isinstance(body["total_snapshots"], int), (
         f"total_snapshots should be int, got {type(body['total_snapshots']).__name__}"
+    )
     logger.info("total_snapshots=%d (int verified)", body["total_snapshots"])
 
 
