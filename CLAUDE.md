@@ -27,19 +27,9 @@ This repo is now the clean public repository:
 
 ## Current Repo State
 
-Branch:
-- `main`
-
-Recent important commits:
-- `554ed4c` `fix: return total_snapshots from status endpoint`
-- `5df66a6` `fix: replace personal hostname in test fixtures`
-- `344684f` `feat: smart directory discovery with one-click add`
-- `4f5eb86` `fix: avoid bandit SQL warning in conflict status update`
-- `e925cd3` `fix: skip scheduled backup collisions`
-- `94ffc86` `fix: persist discovery refresh and normalize target config`
-- `07b120c` `fix: render activity type badges without fallback icons`
-- `a631d10` `fix: resolve postgres companion containers in discovery`
-- `ecc28d5` `fix: harden first-boot bootstrap and improve schedule UX`
+Branch: `main` (v0.4.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
+work" releases landed together in PR #52; sections 12 and 13 below describe
+them. Use `git log` for the commit history.
 
 Public-repo cleanup already happened:
 - hosted/paid product surface was removed
@@ -446,32 +436,31 @@ Important product observations that remain worth remembering:
 
 ## CI and Test Notes
 
-Backend CI is intentionally split:
-- core lane: `pytest -m "not slow and not live"`
-- heavy lane: `pytest -m "slow and not live"`
+CI (`.github/workflows/build.yml`) runs on every PR:
+- `lint`: blocking `ruff check --select F,E9`; full ruff lint/format is advisory
+- `test-backend-core`: `pytest -m "not slow and not live" -n auto`
+- `test-backend-heavy`: `pytest -m "slow and not live" -n auto` (Docker fakes, providers)
+- `test-critical`, `test-frontend` (svelte-check + build), `test-components` (Vitest)
+- `frontend-e2e`: the Playwright suite via `frontend/scripts/e2e.sh`
+- `sast`: bandit
+- `build`: multi-arch image; pushed to Docker Hub only from `main` and tags
+
+CI runners are not root and run pytest under xdist: tests must not depend on
+the effective uid, on test order, or on files in the working directory (the
+suite fails if a test creates files named after a mocked config path; rerun
+with `ARKIVE_TRACE_MOCK_ARTIFACTS=1` and without `-n` to find it).
 
 Marker logic and supporting config live in:
 - `backend/tests/conftest.py`
 - `backend/pyproject.toml`
 
-Recent CI issue fixed:
-- Bandit flagged a string-built SQL update in `orchestrator.py`
-- fixed in `4f5eb86` by parameterizing the query
-
-Relevant recurring commands:
-- backend core:
-  - `cd backend && .venv/bin/python -m pytest -m "not slow and not live" -q`
-- backend heavy:
-  - `cd backend && .venv/bin/python -m pytest -m "slow and not live" -q`
-- Bandit:
-  - `cd backend && .venv/bin/bandit -r app -ll`
-- frontend checks:
-  - `cd frontend && npm run check`
-  - `cd frontend && npm run build`
-
-Performance note:
-- a meaningful optimization pass was already done on the backend suite by reusing safe shared test harnesses in high-cost modules
-- if runtime regresses again, benchmark the core lane first before changing fixture scope blindly
+Local commands (or the `make` targets: `test`, `test-slow`, `frontend-check`,
+`test-e2e`, `lint`):
+- backend core: `cd backend && python -m pytest -m "not slow and not live" -n auto`
+- backend heavy: `cd backend && python -m pytest -m "slow and not live" -n auto`
+- bandit: `cd backend && bandit -r app -ll`
+- frontend: `cd frontend && npm run check && npx vitest run && npm run build`
+- end-to-end: `frontend/scripts/e2e.sh --docker`
 
 ## Agent Guidance
 
@@ -530,7 +519,7 @@ Do not commit:
 - host access details
 - internal-only troubleshooting notes
 - private infrastructure identifiers unless they are already generic test fixtures
-- real server hostnames (e.g., "AdamTower" was found and replaced with "test-server" — do not reintroduce)
+- real server hostnames (one was once found in test fixtures and replaced with `test-server`; never name it, or any other real host, anywhere in the repo — including in this file)
 - real IP addresses of the developer's infrastructure
 - seedbox credentials or private tracker details
 
@@ -574,19 +563,16 @@ If picking this repo up cold:
 
 ## Last Known Intent
 
-At the time this handoff was updated:
-- public repo cleanup was complete
-- smart directory discovery feature was merged (PR #26)
-- personal hostname "AdamTower" was cleaned from all test fixtures
-- security scan confirmed: no credentials, private keys, or personal data remain in the repo
-- the app had live-validated fixes for:
-  - hostname reporting
-  - stale degraded dashboard state
-  - scheduled backup collision semantics
-  - Postgres companion discovery
-  - activity feed badge rendering
-  - first-boot bootstrap stability
-  - smart directory discovery and one-click add
-  - snapshot count display on dashboard (was returning 0 due to missing field in status API)
+At the time this handoff was updated (v0.4.0):
+- v0.3.0/v0.4.0 were merged (PR #52) after two rounds of adversarial review;
+  the invariants that came out of it are listed at the end of section 13
+- the long-running production install that motivated section 12 runs v0.4.0
+  and dumps all of its databases again
+- open follow-ups: Tailwind CSS 4 migration (#53); making the full ruff
+  lint/format check blocking needs a repo-wide reformat first
+- earlier live-validated fixes (hostname reporting, dashboard/discovery
+  consistency, scheduled collisions, Postgres companion discovery, activity
+  badges, first-boot stability, directory discovery, snapshot counts) still
+  apply
 
 If something in one of those areas looks broken again, start by checking for a regression against those fixes rather than assuming a new unrelated problem.
