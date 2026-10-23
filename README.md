@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>Open-source backup and disaster recovery for Unraid servers.</strong><br />
-  Discover Docker workloads, capture application-aware database dumps, encrypt every snapshot,
-  and restore with confidence.
+  Discovers your Docker apps and their databases, takes consistent database dumps,
+  encrypts every snapshot with restic, and proves the backups restore.
 </p>
 
 <p align="center">
@@ -15,383 +15,245 @@
 
 ---
 
-## About Arkive
+## Why Arkive
 
-Most backup tools make you configure every container, database, and directory by hand. Arkive does not.
+Copying `appdata` while databases are running produces backups that may not restore. Arkive finds the databases behind your containers, dumps each one with its native tool, and snapshots the dumps together with your files. Then it keeps checking that backups are still happening and that they actually restore. It doesn't assume a scheduled job worked.
 
-Arkive is an open-source backup and recovery system built for Unraid. It auto-discovers Docker containers and their databases, creates application-aware dumps, stores encrypted restic snapshots, and supports cloud or local storage targets from a single interface.
-
-## Status
-
-Arkive is under active development. Core backup, snapshot, restore, and cloud-target workflows are implemented, with unit, integration, and end-to-end coverage in the repository.
-
----
+Arkive is under active development. Backup, snapshot, restore, cloud targets and verification are implemented and covered by unit, integration and end-to-end tests.
 
 ## Features
 
-### Core Backup Engine
-- **Zero-config container discovery** — Detects database containers by image, scans app bind mounts for SQLite files, and uses built-in profiles for common apps (Immich, Paperless-ngx, Vaultwarden, Plex, Authelia, the *arr stack, and more)
-- **Application-aware database dumps** — PostgreSQL, MariaDB/MySQL, MongoDB, SQLite, Redis, InfluxDB with per-engine integrity verification
-- **Encrypted, deduplicated backups** — Powered by [restic](https://restic.net/) with AES-256-CTR encryption and content-defined chunking
-- **Multi-target cloud sync** — Backblaze B2, AWS S3, SFTP, or local storage via [rclone](https://rclone.org/)
-- **Flash drive backup** — Backs up your Unraid USB flash configuration automatically
+**Backup**
+- **Automatic discovery.** Finds database containers by image, scans app bind mounts for SQLite files, and ships profiles for common apps (Immich, Paperless-ngx, Vaultwarden, Plex, Authelia, Sonarr/Radarr, …).
+- **Application-consistent dumps.** PostgreSQL (every database in the cluster, plus roles), MariaDB/MySQL, MongoDB, SQLite and Redis. Truncated or corrupt dumps are detected and never replace the last good one.
+- **Encrypted, deduplicated snapshots.** Powered by [restic](https://restic.net/). Each snapshot holds the database dumps, the Unraid flash config and your watched directories, so any one snapshot is a complete restore point.
+- **Storage targets.** Local disk, Backblaze B2, S3-compatible storage (AWS, MinIO, …), Wasabi, SFTP, Google Drive and Dropbox, via [rclone](https://rclone.org/). Use several at once.
+- **Schedules and retention.** Cron schedules (no system cron needed), keep-daily/weekly/monthly retention, and weekly pruning. A job that fires while another backup runs waits for it.
 
-### Operations & Reliability
-- **Flexible scheduling** — Cron-based schedules with APScheduler (no system cron dependency). Job types choose what gets refreshed before each snapshot: **Full** (database dumps + flash archive), **Database Dump**, or **Flash Backup**. Every snapshot covers the dump directory plus watched directories, so each one is a complete restore point. Scheduled jobs that fire while another backup is running wait for it instead of being skipped.
-- **Retention policies** — Configurable keep-daily, keep-weekly, keep-monthly; weekly prune
-- **No silent successes** — A run that misses anything (a database, a watched path, a target, unreadable files) is reported as `partial` with the reason, never as `success`
-- **Overdue-backup watchdog** — Every 15 minutes Arkive checks that each job produced a good backup within its schedule window; an overdue job turns the dashboard red and sends a `backup.stale` alert
-- **Heartbeat (dead man's switch)** — Point Arkive at an Uptime Kuma push monitor or healthchecks.io check; it pings while all backups are healthy, so you're alerted when Arkive itself is down too
-- **Notifications** — Discord, Slack, ntfy, Telegram, email, Gotify, Pushover and webhooks via Apprise, for backup failures, incomplete or overdue backups, failed verification or restore drills, and unreachable targets
-- **Activity log** — Full audit trail of every backup run, discovery, and configuration change
+**Knowing it works**
+- **No silent successes.** A run that misses anything (a database, a path, a target, unreadable files) is reported as `partial`, with the reason.
+- **Overdue-backup watchdog.** If a job hasn't produced a good backup within its schedule window, the dashboard turns red and you get an alert.
+- **Heartbeat.** Point Arkive at an Uptime Kuma push monitor or a healthchecks.io check. Arkive pings it only while every job is healthy, so you're also alerted when Arkive itself is down.
+- **Restore drills.** Every week, Arkive restores recent database dumps from the latest snapshot and loads each into a temporary, network-isolated copy of its own database image.
+- **Repository checks.** A weekly `restic check`, a test restore of a random file, and a trust score on the dashboard.
+- **Notifications** through Apprise: Discord, Slack, ntfy, Telegram, email, Gotify, Pushover, Uptime Kuma and webhooks.
 
-### Restore & Recovery
-- **Automated restore drills** — Weekly, Arkive restores recent database dumps from the latest snapshot and loads them into a temporary, network-isolated copy of each database's own container image, proving the backups actually restore
-- **Recovery kit** — A one-time export of the encryption password, every repository location and restore steps, so your backups stay readable if the server itself is lost; the dashboard reminds you until you confirm you've stored it
-- **One-click restore plan** — Downloadable PDF with step-by-step disaster recovery instructions tailored to your configuration
-- **Granular restore** — Browse snapshots, select specific files or databases to restore
-- **Snapshot browser** — Explore all restic snapshots across storage targets with filtering
+**Restore**
+- **Recovery kit.** A one-time export of the encryption password, every repository location and step-by-step restore instructions, so your backups stay usable if the server is lost.
+- **Snapshot browser and granular restore** of individual files and dumps.
+- **Restore plan.** A downloadable PDF tailored to your setup.
 
-### Interface
-- **Beautiful dark-mode dashboard** — Real-time backup progress, system health, discovered containers, storage usage
-- **6-step setup wizard** — Guided onboarding: encryption, storage, schedules, directories, notifications
-- **Full settings management** — General, security, storage targets, jobs, schedule, directories, notifications
-- **API-first design** — Complete REST API with OpenAPI documentation at `/docs`
+**Interface**
+- A dashboard with live backup progress, health and storage use, in light and dark themes.
+- A six-step setup wizard: encryption password, container discovery, storage, schedules, directories, done.
+- A REST API with OpenAPI docs at `/docs`, and a CLI.
 
 ---
 
-## Quick Start
+## Quick start
 
-### Production Deployment
+### Unraid
 
-Arkive is designed to run as a long-lived container on your Unraid server or another Docker host. For production, use the published Docker Hub image (`islamdiaa/arkive`) and persist `/config` on durable storage.
+Add the template from `https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts app data read-only and keeps Arkive's own state in `/mnt/user/appdata/arkive`.
 
-### Docker Compose (recommended)
+### Docker Compose
 
 ```yaml
 services:
   arkive:
     image: islamdiaa/arkive:latest
     container_name: arkive
-    # On Unraid, run as root for flash backup and app-owned SQLite host reads.
+    # On Unraid, run as root so flash backup and app-owned SQLite files are readable.
     user: "0:0"
     ports:
       - "8200:8200"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /mnt/user/appdata/arkive:/config
+      - /mnt/user/appdata/arkive/cache:/cache
       - /mnt/user/appdata:/mnt/user/appdata:ro
       - /boot/config:/boot-config:ro
       # Destination for a local storage target (must be a host path)
       - /mnt/user/backups:/mnt/user/backups
-      - /mnt/user/appdata/arkive/cache:/cache
     environment:
       - TZ=America/New_York
     restart: unless-stopped
 ```
 
-```bash
-docker compose up -d
-```
-
-### Docker Run
+### Docker run
 
 ```bash
-docker run -d \
-  --name arkive \
-  --restart unless-stopped \
-  --user 0:0 \
-  -p 8200:8200 \
-  -e TZ=America/New_York \
+docker run -d --name arkive --restart unless-stopped --user 0:0 \
+  -p 8200:8200 -e TZ=America/New_York \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v /mnt/user/appdata/arkive:/config \
+  -v /mnt/user/appdata/arkive/cache:/cache \
   -v /mnt/user/appdata:/mnt/user/appdata:ro \
   -v /boot/config:/boot-config:ro \
   -v /mnt/user/backups:/mnt/user/backups \
-  -v /mnt/user/appdata/arkive/cache:/cache \
   islamdiaa/arkive:latest
 ```
 
-### First Boot
+### First boot
 
-Open `http://your-server:8200`. On a new install, Arkive opens the setup wizard, where you configure:
+Open `http://your-server:8200` and follow the setup wizard. It asks for an encryption password, discovers your containers, sets up a storage target and schedules, and lets you add extra directories.
 
-- encryption password
-- storage targets
-- backup schedules
-- optional extra directories
-- notifications
+Afterwards:
+1. **Save the recovery kit** (Settings → Recovery kit) somewhere other than the server. Without the encryption password, no snapshot can be opened.
+2. **Add a notification channel** (Settings → Notifications) so failures reach you.
+3. **Add an off-site target.** A local target on the same array doesn't protect against losing the server.
 
-After setup is complete, the browser UI may redirect to `/login` and ask for the admin API key once to create a browser session.
-
-Ensure the host path mounted at `/config` is writable by the container runtime before first boot. If you add explicit `/data` or `/cache` mounts, make those writable too.
-
-On Unraid, run Arkive as `root` for full coverage. Flash backup (`/boot/config`) and some app-owned SQLite files are not readable to non-root UIDs, so use `user: "0:0"` in Compose or `--user 0:0` with `docker run`.
-
-After deployment, you can run the homeserver smoke test in [docs/homeserver-smoke-test.md](docs/homeserver-smoke-test.md).
+The browser may then ask for the admin API key once, to create a session.
 
 ### Upgrading
 
-To upgrade a production deployment:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-or, if you use `docker run`, pull the new image and recreate the container while keeping the same `/config` volume.
-
-### Unraid Community Applications
-
-Search for **Arkive** in the [Community Applications](https://unraid.net/community/apps) store, or install manually:
-
-```
-https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml
-```
+Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
 
 ---
 
-## How It Works
+## How it works
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Arkive Pipeline                       │
-│                                                         │
-│  1. DISCOVER     Docker socket → detect containers      │
-│                  Match against built-in app profiles    │
-│                                                         │
-│  2. DUMP         Application-aware database dumps       │
-│                  pg_dump, mysqldump, mongodump, etc.    │
-│                                                         │
-│  3. SNAPSHOT     restic backup → encrypted, deduped     │
-│                  AES-256-CTR + content-defined chunks   │
-│                                                         │
-│  4. SYNC         rclone → B2, S3, SFTP, local           │
-│                  Multi-target with parallel uploads      │
-│                                                         │
-│  5. RETAIN       Configurable retention policies         │
-│                  keep-daily, weekly, monthly             │
-│                                                         │
-│  6. NOTIFY       Discord, Slack, ntfy                    │
-│                  Per-event filtering + throttling        │
-└─────────────────────────────────────────────────────────┘
+ DISCOVER   Docker socket -> containers, their databases, app profiles
+ DUMP       pg_dump / mysqldump / mongodump / SQLite .backup / redis BGSAVE
+ SNAPSHOT   restic: encrypted, deduplicated (dumps + flash + watched dirs)
+ UPLOAD     each storage target in turn (local, or rclone for cloud/SFTP)
+ RETAIN     keep-daily / weekly / monthly, weekly prune
+ VERIFY     overdue watchdog, weekly restic check, restore drills
+ NOTIFY     Apprise channels, plus an optional heartbeat URL
 ```
 
----
+## Supported databases
 
-## Supported Databases
+| Engine | How it is dumped | Example apps |
+|--------|------------------|--------------|
+| PostgreSQL | `pg_dump` for every database in the cluster, plus `pg_dumpall --globals-only` (roles) | Immich, Nextcloud, Gitea, Authentik |
+| MariaDB / MySQL | `mysqldump --single-transaction` | WordPress, BookStack, Firefly III |
+| MongoDB | `mongodump` | UniFi Controller, Rocket.Chat |
+| SQLite | online `.backup`, then `PRAGMA integrity_check` | Vaultwarden, Home Assistant, Plex |
+| Redis | `BGSAVE` + `dump.rdb` | Authelia, Outline |
 
-| Engine | Dump Method | Streaming | Profile Examples |
-|--------|-------------|-----------|------------------|
-| PostgreSQL | `pg_dump` per database + `pg_dumpall --globals-only` (roles) | Yes | Nextcloud, Immich, Gitea, Authentik |
-| MariaDB / MySQL | `mysqldump --single-transaction` | Yes | WordPress, Bookstack, Firefly III |
-| MongoDB | `mongodump` | Yes | Unifi Controller, Rocket.Chat |
-| SQLite | Online `.backup` | No | Vaultwarden, Home Assistant, Paperless |
-| Redis | `BGSAVE` + dump.rdb | No | Authelia, Outline |
-
-Every database in a PostgreSQL cluster is dumped, not just the one named in the container's environment. SQL dumps must end with the tool's completion trailer, or they count as failed.
-
-SQL dumps are stored uncompressed by default (**Settings → Dump compression**). restic compresses the repository itself, and an uncompressed dump deduplicates against the previous one, so a large database only adds its changes to each snapshot. A gzip stream changes completely whenever the data changes. Choose gzip if the local dump folder's size matters more than repository growth.
-
-The dump folder also holds `arkive-dumps-manifest.json`, which records which dump file belongs to which container and database. It is included in every snapshot.
+SQL dumps must end with the tool's completion trailer, or they count as failed. They are stored uncompressed by default (**Settings → Dump compression**). restic compresses the repository, and an uncompressed dump deduplicates against the previous one, so a large database adds only its changes to each snapshot. Choose gzip if the local dump folder's size matters more. `arkive-dumps-manifest.json`, included in every snapshot, records which dump file belongs to which container and database.
 
 ---
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TZ` | `UTC` | Timezone for schedules and logs |
-| `ARKIVE_CONFIG_DIR` | `/config` | Path to config directory (SQLite DB, logs) |
-| `ARKIVE_DEV_MODE` | `0` | Set to `1` to skip Docker/binary validation |
-| `ARKIVE_ALLOW_NEW_KEYFILE` | `0` | Set to `1` to start even though `/config/.keyfile` is missing or doesn't match the database (see below) |
-
-### The keyfile and your recovery kit
-
-Secrets in Arkive's database are encrypted with `/config/.keyfile`. These include the restic encryption password and storage credentials. If the keyfile is missing or doesn't match the database, Arkive refuses to start instead of silently generating a new key, because a new key would strand every stored secret. Restore the original keyfile, or set `ARKIVE_ALLOW_NEW_KEYFILE=1` to start fresh and re-enter your secrets.
-
-The keyfile lives on the same disk as everything else. Open **Settings → Recovery kit** once after setup and store the kit somewhere other than the server, such as a password manager or a printed copy. It contains:
-- the encryption password
-- every repository location, including host paths for local repositories
-- steps to restore with Arkive or with plain restic
-
-Without the password, no snapshot can be opened. The dashboard keeps reminding you until you confirm you've saved the kit.
-
-### Monitoring
-
-Arkive alerts on overdue backups itself, but it can't tell you when it isn't running. For that, add a heartbeat:
-
-1. In Uptime Kuma, create a **Push** monitor with a heartbeat interval of 30–60 minutes. A healthchecks.io check works too.
-2. Paste its URL into **Settings → Monitoring → Heartbeat URL** and send a test ping.
-
-Every 15 minutes, while every job is healthy (nothing overdue, no job whose last run failed), Arkive pings that URL. If Arkive stops, or backups start failing or go overdue, the pings stop and your monitor alerts.
-
-A job counts as overdue when its last good backup is older than the longest gap in its schedule plus a grace period: 25%, at least 2 hours. A daily job is overdue after about 30 hours. Override this with **Stale backup hours**.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TZ` | `UTC` | Time zone for schedules and logs |
+| `ARKIVE_CONFIG_DIR` | `/config` | Database, logs, dumps and restores |
+| `ARKIVE_LOG_LEVEL` | `INFO` | Log level (logs are JSON) |
+| `ARKIVE_TRUSTED_PROXIES` | (none) | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is trusted |
+| `ARKIVE_CORS_ORIGINS` | localhost dev origins | Comma-separated extra origins allowed to call the API |
+| `ARKIVE_ALLOW_NEW_KEYFILE` | `0` | Start even if `/config/.keyfile` is missing or doesn't match the database (see below) |
+| `ARKIVE_DEV_MODE` | `0` | Development only: skip the Docker socket and binary checks |
 
 ### Volumes
 
-| Mount | Purpose | Required |
-|-------|---------|----------|
-| `/var/run/docker.sock:/var/run/docker.sock:ro` | Container discovery | Yes |
-| `/config` | Database, logs, dumps | Yes |
-| `/cache` | restic metadata cache | Recommended |
-| `/mnt/user/backups` (or any host path) | Destination for a local storage target | If you use a local target |
-| `/mnt/user/appdata:/mnt/user/appdata:ro` | App data to back up | Recommended |
-| `/boot/config:/boot-config:ro` | Unraid flash config backup | Optional |
+| Mount | Purpose | Mode |
+|-------|---------|------|
+| `/var/run/docker.sock` | Container discovery and dumps | read-only |
+| `/config` | Arkive's database, logs, dumps, restores | read-write, required |
+| `/cache` | restic metadata cache | read-write, recommended |
+| A local target path, e.g. `/mnt/user/backups` | Destination of a local storage target | read-write |
+| `/mnt/user/appdata` (and anything else to protect) | Data to back up | read-only |
+| `/boot/config` → `/boot-config` | Unraid flash config backup | read-only |
 
-Mount any additional host paths you plan to protect as read-only volumes. The quick-start example only mounts `/mnt/user/appdata`. Arkive only needs write access to `/config`, `/cache` and the local target path. Restores always land in `/config/restores`, and you copy the files into place from there, so the data being backed up never needs to be writable by Arkive.
+Arkive only writes to `/config`, `/cache` and local target paths. Restores always land in `/config/restores`, and you copy the files into place from there, so the data you protect can stay mounted read-only.
 
-A local storage target must point at a path that is mapped to the host. Arkive refuses local target paths that live inside the container's own filesystem or an anonymous Docker volume, because those are deleted when the container is re-created (for example on an image update). A local target on the same array is also not off-site protection; add a cloud or SFTP target for real disaster recovery.
+A local target must be a path mapped to the host. Arkive refuses targets inside the container's own filesystem or an anonymous volume, because those are deleted when the container is re-created.
 
-For Unraid, full host coverage assumes the container runs as `root`. Running as a non-root UID is still supported, but expect `partial` backups when flash backup or host SQLite reads are denied.
+On Unraid, run as `root`. The flash config and some app-owned SQLite files aren't readable by other users, and backups will be `partial` without root.
 
-### API Authentication
+### Encryption key and recovery kit
 
-Browser UI authentication uses an `HttpOnly` session cookie created during setup or by `POST /api/auth/login`. CLI clients and external integrations continue to use the `X-API-Key` header. `GET /api/status` is intentionally public for health checks.
+Secrets in Arkive's database (the restic password, storage credentials) are encrypted with `/config/.keyfile`. If that file is missing or doesn't match the database, Arkive refuses to start rather than silently creating a new key that would strand every stored secret. Restore the original keyfile, or set `ARKIVE_ALLOW_NEW_KEYFILE=1` to start fresh and re-enter your secrets.
+
+The keyfile lives on the same disk as everything else, so save the **recovery kit** (Settings → Recovery kit) somewhere other than the server. The dashboard reminds you until you confirm you have.
+
+### Monitoring
+
+A job is **overdue** when its last good backup is older than the longest gap in its schedule plus 25% (at least 2 hours). For a daily job, that's about 30 hours. Override this with **Settings → Monitoring → Stale backup hours**.
+
+For a **heartbeat**:
+1. Create an Uptime Kuma *Push* monitor (heartbeat interval 30–60 minutes) or a healthchecks.io check.
+2. Paste its URL into **Settings → Monitoring** and send a test ping.
+
+Arkive pings it every 15 minutes while all jobs are healthy. If Arkive stops, or backups fail or go overdue, the pings stop and your monitor alerts.
+
+### API
+
+The browser UI uses an `HttpOnly` session cookie. Scripts and the CLI use the `X-API-Key` header:
 
 ```bash
 curl -H "X-API-Key: ark_your_key_here" http://localhost:8200/api/jobs
 ```
 
-Full API documentation is available at `http://your-server:8200/docs` (OpenAPI/Swagger).
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Backend** | Python 3.12, FastAPI, SQLite (WAL mode), APScheduler |
-| **Frontend** | SvelteKit 2.x, Svelte 5, Tailwind CSS |
-| **Backup** | restic (encrypted, deduplicated), rclone (cloud sync) |
-| **Container** | Docker multi-stage build (Node + Python), root runtime recommended on Unraid for host access |
-| **CI/CD** | GitHub Actions, multi-arch (amd64 + arm64), Docker Hub |
-| **Security** | AES-256-CTR encryption, SHA-256 hashed API keys, Fernet-encrypted secrets |
-| **Testing** | pytest (unit + integration), Playwright (E2E), Vitest (component) |
+`GET /api/status` answers without authentication, but only with a minimal health payload (for Docker health checks); the full status requires a key or session.
 
 ---
 
 ## Development
 
-The commands below are for local development only. They are not required for a normal production deployment.
-
-### Prerequisites
-
-- Python 3.12+ with `pip`
-- Node.js 20+ with `npm`
-- Docker (for container discovery features)
-
-### Setup
+Requires Python 3.12, Node.js 22 and Docker.
 
 ```bash
-# Clone the repository
-git clone https://github.com/kemetlabs/Arkive.git
-cd Arkive
+git clone https://github.com/kemetlabs/Arkive.git && cd Arkive
 
 # Backend
 cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd ../frontend
-npm install
-```
-
-### Running Locally
-
-```bash
-# Terminal 1: Backend
-cd backend
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt -e ".[dev]"
 ARKIVE_DEV_MODE=1 ARKIVE_CONFIG_DIR=/tmp/arkive-dev \
-  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8200 --reload
+  python -m uvicorn app.main:app --host 127.0.0.1 --port 8200 --reload
 
-# Terminal 2: Frontend
-cd frontend
-npm run dev
+# Frontend (second terminal): http://localhost:5173, proxies /api to :8200
+cd frontend && npm ci && npm run dev
 ```
 
-Open `http://localhost:5173` — the frontend proxies API requests to port 8200.
-
-### Testing
+Tests:
 
 ```bash
-# Backend unit + integration tests
-cd backend && .venv/bin/python -m pytest tests/ -q --tb=short
+cd backend
+python -m pytest -m "not slow and not live" -n auto   # core lane
+python -m pytest -m "slow and not live" -n auto       # Docker/provider integration
+ruff check --select F,E9 app && bandit -r app -ll
 
-# Frontend type checking
-cd frontend && npx svelte-check
-
-# E2E tests (starts backend automatically)
-cd frontend && npx playwright test
-
-# Single E2E spec
-npx playwright test tests/e2e/dashboard.spec.ts
+cd ../frontend
+npm run check && npx vitest run && npm run build
+scripts/e2e.sh --docker                               # Playwright suite in Docker
 ```
 
-### Project Structure
-
 ```
-arkive/
-├── backend/                  Python 3.12 + FastAPI
-│   ├── app/
-│   │   ├── api/              REST API routes
-│   │   ├── core/             Security, config, dependencies
-│   │   ├── models/           Pydantic request/response models
-│   │   ├── services/         Business logic (orchestrator, scheduler, etc.)
-│   │   └── main.py           Application entrypoint
-│   └── tests/                pytest unit + integration tests
-├── frontend/                 SvelteKit 2.x + Tailwind
-│   ├── src/
-│   │   ├── lib/              Components, stores, utilities
-│   │   └── routes/           SvelteKit file-based routing
-│   └── tests/e2e/            Playwright E2E tests
-├── profiles/                 YAML container profiles
-├── Dockerfile                Multi-stage build (Node + Python)
-├── docker-compose.yml        Production deployment
-└── docs/                     Documentation + screenshots
+backend/      FastAPI app (api/, core/, models/, services/) and pytest suites
+frontend/     SvelteKit 2 + Svelte 5 + Tailwind; Vitest and Playwright tests
+profiles/     YAML app profiles used by discovery
+docs/         Deployment notes (homeserver smoke test)
+CLAUDE.md     Architecture notes and invariants for contributors and coding agents
 ```
-
----
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feat/amazing-feature`)
-3. Run the test suite (`pytest` + `npx playwright test`)
-4. Commit your changes
-5. Open a Pull Request
-
----
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Run the backend and frontend checks above before opening a pull request.
 
 ## Roadmap
 
-- [x] Automated backup verification (restore drills)
+- [x] Automated restore verification (restore drills)
+- [ ] Tailwind CSS 4 ([#53](https://github.com/kemetlabs/Arkive/issues/53))
 - [ ] Prometheus metrics endpoint (`/api/metrics`)
-- [ ] Multi-user RBAC with role-based access
-- [ ] Database migration framework
-- [ ] Scheduled email digest reports
-
-See [docs/homeserver-smoke-test.md](docs/homeserver-smoke-test.md) for additional deployment validation guidance.
+- [ ] Multi-user access with roles
+- [ ] Scheduled email digest
 
 ## Security
 
-Please do not commit credentials, internal infrastructure details, or production configuration to the repository.
-
-If you discover a security vulnerability, do not open a public issue. Use GitHub Security Advisories or contact the maintainers privately.
-
----
+Please report vulnerabilities privately through GitHub Security Advisories, not public issues. Don't commit credentials, infrastructure details or production configuration.
 
 ## License
 
 [MIT](LICENSE)
-
----
 
 <p align="center">
   <sub>Built for the Unraid community. Backups should be automatic, encrypted, and boring.</sub>
