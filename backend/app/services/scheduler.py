@@ -17,6 +17,7 @@ from app.services.freshness import describe_stale_job, evaluate_freshness, ping_
 from app.services.lock_manager import BackupLockManager
 from app.services.retention import read_retention_settings
 from app.services.settings_store import DEFAULTS, get_bool_setting, get_setting
+from app.utils.cron import crontab_trigger
 
 logger = logging.getLogger("arkive.scheduler")
 
@@ -696,13 +697,13 @@ class ArkiveScheduler:
                 logger.info("Removed system job: Restore Drill")
             return
         try:
-            trigger = CronTrigger.from_crontab(schedule)
+            trigger = crontab_trigger(schedule)
         except ValueError:
             logger.error(
                 "Invalid restore_drill_schedule %r; using default %r", schedule, DEFAULTS["restore_drill_schedule"]
             )
             schedule = DEFAULTS["restore_drill_schedule"]
-            trigger = CronTrigger.from_crontab(schedule)
+            trigger = crontab_trigger(schedule)
         # Remove first: before start() replace_existing doesn't dedupe the pending queue.
         if self.scheduler.get_job(SYSTEM_JOB_RESTORE_DRILL):
             self.scheduler.remove_job(SYSTEM_JOB_RESTORE_DRILL)
@@ -814,7 +815,7 @@ class ArkiveScheduler:
         job_id = job["id"]
         schedule = job["schedule"]
         try:
-            trigger = CronTrigger.from_crontab(schedule)
+            trigger = crontab_trigger(schedule)
             apscheduler_id = f"backup_{job_id}"
             self.scheduler.add_job(
                 self._run_job,
@@ -841,7 +842,7 @@ class ArkiveScheduler:
         """Update a job's schedule."""
         apscheduler_id = self._job_map.get(job_id)
         if apscheduler_id and self.scheduler.get_job(apscheduler_id):
-            trigger = CronTrigger.from_crontab(schedule)
+            trigger = crontab_trigger(schedule)
             self.scheduler.reschedule_job(apscheduler_id, trigger=trigger)
             logger.info("Rescheduled job %s to %s", job_id, schedule)
         else:

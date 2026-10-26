@@ -141,3 +141,17 @@ async def test_real_wal_database_copied_with_mode_ro_keeps_wal_rows(tmp_path):
     writer.close()
     assert error is None
     assert sqlite3.connect(out).execute("select count(*) from t").fetchone()[0] == 500
+
+
+async def test_exclusive_lock_gets_an_accurate_message(tmp_path):
+    """Apps like Dropbox hold an exclusive lock; read-write access wouldn't help."""
+    db = tmp_path / "app.db"
+    db.write_bytes(b"x")
+    (tmp_path / "app.db-wal").write_bytes(b"pending changes")
+
+    async def locked(source):
+        return _result(1, "Error: in prepare, database is locked (5)")
+
+    result, error = await _dumper(tmp_path)._sqlite_readonly_backup(str(db), str(tmp_path / "copy.partial"), locked)
+    assert result is None
+    assert "exclusive lock" in error and "Exclude it on the Databases page" in error

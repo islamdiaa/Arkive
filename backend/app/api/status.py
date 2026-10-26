@@ -14,6 +14,8 @@ from app import __version__
 from app.core.dependencies import get_db, request_has_valid_credentials
 from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
+from app.services.db_exclusions import excluded_identities
+from app.services.db_exclusions import identity as db_identity
 from app.services.freshness import evaluate_freshness
 from app.services.host_identity import resolve_hostname
 
@@ -196,6 +198,7 @@ async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         return 0, 0, False
 
+    excluded = await excluded_identities(db)
     discovered_keys: set[tuple[str, str, str]] = set()
     for row in rows:
         raw = row["databases"] if isinstance(row, aiosqlite.Row) else row[0]
@@ -210,7 +213,7 @@ async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
             container_name = str(entry.get("container_name") or "").strip()
             db_name = str(entry.get("db_name") or "").strip()
             db_type = str(entry.get("db_type") or "").strip()
-            if container_name and db_name and db_type:
+            if container_name and db_name and db_type and db_identity(entry) not in excluded:
                 discovered_keys.add((container_name, db_name, db_type))
 
     total_databases = len(discovered_keys)

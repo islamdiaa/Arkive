@@ -122,6 +122,20 @@ const realApi = {
 	listDatabases: () => request<any>('/databases'),
 	dumpDatabase: (container: string, dbName: string) =>
 		request<any>(`/databases/${container}/${dbName}/dump`, { method: 'POST' }),
+	setDatabaseExcluded: (
+		db: { container_name: string; db_type: string; db_name: string; host_path?: string | null },
+		excluded: boolean,
+	) =>
+		request<any>('/databases/exclusions', {
+			method: 'PUT',
+			body: JSON.stringify({
+				container_name: db.container_name,
+				db_type: db.db_type,
+				db_name: db.db_name,
+				host_path: db.host_path ?? null,
+				excluded,
+			}),
+		}),
 	listDirectories: () => request<any>('/directories'),
 	addDirectory: (data: any) => request<any>('/directories', { method: 'POST', body: JSON.stringify(data) }),
 	updateDirectory: (id: string, data: any) => request<any>(`/directories/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

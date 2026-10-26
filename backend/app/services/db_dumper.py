@@ -1241,6 +1241,13 @@ class DBDumper:
 
         wal = f"{host_path}-wal"
         if os.path.exists(wal) and os.path.getsize(wal) > 0:
+            if "locked" in ro_error.lower():
+                return None, (
+                    "cannot copy consistently: the app holds an exclusive lock on this database while it "
+                    "runs, so no reader can see its pending changes (read-write access would not help). "
+                    "Exclude it on the Databases page if the app can rebuild it, or stop the app before "
+                    "backups."
+                )
             return None, (
                 "cannot copy consistently: the database has uncheckpointed write-ahead-log changes "
                 f"but could not be opened read-only ({ro_error or 'no error text'}). Give Arkive "

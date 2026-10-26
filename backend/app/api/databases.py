@@ -4,8 +4,11 @@ import json
 
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
+from app.core.activity import log_activity
 from app.core.dependencies import get_db, get_db_dumper, require_auth
+from app.services.db_exclusions import excluded_identities, identity, set_excluded
 from app.services.lock_manager import BackupLockManager
 
 router = APIRouter(prefix="/databases", tags=["databases"], dependencies=[Depends(require_auth)])
@@ -31,6 +34,10 @@ async def list_databases(
                 d["container_name"] = d.get("container_name", row["name"])
                 all_dbs.append(d)
 
+    excluded = await excluded_identities(db)
+    for d in all_dbs:
+        d["excluded"] = identity(d) in excluded
+
     total = len(all_dbs)
     paginated = all_dbs[offset : offset + limit]
     return {
@@ -41,6 +48,36 @@ async def list_databases(
         "offset": offset,
         "has_more": offset + limit < total,
     }
+
+
+class ExclusionUpdate(BaseModel):
+    container_name: str
+    db_type: str
+    db_name: str
+    host_path: str | None = None
+    excluded: bool
+
+
+@router.put("/exclusions")
+async def update_exclusion(body: ExclusionUpdate, db: aiosqlite.Connection = Depends(get_db)):
+    """Exclude a discovered database from backups, or include it again."""
+    cursor = await db.execute("SELECT databases FROM discovered_containers WHERE name = ?", (body.container_name,))
+    row = await cursor.fetchone()
+    known = json.loads(row["databases"]) if row and row["databases"] else []
+    target = body.model_dump(exclude={"excluded"})
+    if not any(isinstance(d, dict) and identity(d) == identity(target) for d in known):
+        raise HTTPException(404, f"Database {body.db_name} not found in {body.container_name}")
+
+    entries = await set_excluded(db, target, body.excluded)
+    label = f"{body.container_name}/{body.db_name}"
+    await log_activity(
+        db,
+        "database",
+        "excluded" if body.excluded else "included",
+        f"{label} {'excluded from' if body.excluded else 'included in'} backups",
+        target,
+    )
+    return {"excluded": body.excluded, "database": target, "exclusions": entries}
 
 
 @router.post("/{container_name}/{db_name}/dump")

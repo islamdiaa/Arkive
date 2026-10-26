@@ -14,6 +14,28 @@
 	let loading = true;
 	let error = '';
 	let dumpingDb = '';
+	let togglingDb = '';
+
+	const keyOf = (db: any) => `${db.container_name}:${db.db_name}:${db.host_path ?? ''}`;
+	$: excludedCount = databases.filter((db) => db.excluded).length;
+
+	async function toggleExcluded(db: any) {
+		const exclude = !db.excluded;
+		togglingDb = keyOf(db);
+		try {
+			await api.setDatabaseExcluded(db, exclude);
+			databases = databases.map((d) => (keyOf(d) === keyOf(db) ? { ...d, excluded: exclude } : d));
+			addToast({
+				type: 'success',
+				message: exclude
+					? `${db.db_name} is excluded from backups; its old dumps age out after 7 days`
+					: `${db.db_name} will be backed up again from the next run`,
+			});
+		} catch (e: any) {
+			addToast({ type: 'error', message: e.message || 'Could not update the database' });
+		}
+		togglingDb = '';
+	}
 
 	onMount(async () => {
 		try {
@@ -80,7 +102,9 @@
 	{/if}
 
 	<div class="flex items-center justify-between">
-		<p class="text-sm text-text-secondary">{databases.length} databases discovered across containers</p>
+		<p class="text-sm text-text-secondary">
+			{databases.length} databases discovered across containers{#if excludedCount}, {excludedCount} excluded from backups{/if}
+		</p>
 		<button on:click={rescan} class="btn-secondary text-sm">Re-scan</button>
 	</div>
 
@@ -99,19 +123,36 @@
 	{:else}
 		<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
 			{#each databases as db}
-				<div class="card hover:border-border-strong transition-colors cursor-default">
+				<div class="card hover:border-border-strong transition-colors cursor-default" class:opacity-60={db.excluded}>
 					<div class="flex items-center justify-between mb-3">
 						<div class="flex items-center gap-2">
 							<Database class="w-4 h-4 text-text-secondary" strokeWidth={1.5} />
 							<span class="badge {dbTypeColors[db.db_type] || 'bg-neutral-bg text-neutral'}">{db.db_type}</span>
+							{#if db.excluded}
+								<span class="badge bg-neutral-bg text-neutral" data-testid="excluded-badge">Excluded</span>
+							{/if}
 						</div>
-						<button
-							on:click={() => dumpDb(db)}
-							disabled={dumpingDb === `${db.container_name}:${db.db_name}`}
-							class="text-xs text-primary hover:text-primary-hover disabled:opacity-50 transition-colors"
-						>
-							{dumpingDb === `${db.container_name}:${db.db_name}` ? 'Dumping…' : 'Dump Now'}
-						</button>
+						<div class="flex items-center gap-3">
+							{#if !db.excluded}
+								<button
+									on:click={() => dumpDb(db)}
+									disabled={dumpingDb === `${db.container_name}:${db.db_name}`}
+									class="text-xs text-primary hover:text-primary-hover disabled:opacity-50 transition-colors"
+								>
+									{dumpingDb === `${db.container_name}:${db.db_name}` ? 'Dumping…' : 'Dump Now'}
+								</button>
+							{/if}
+							<button
+								on:click={() => toggleExcluded(db)}
+								disabled={togglingDb === keyOf(db)}
+								title={db.excluded
+									? 'Back up this database again'
+									: 'Stop backing up this database (e.g. a cache the app rebuilds)'}
+								class="text-xs text-text-secondary hover:text-text disabled:opacity-50 transition-colors"
+							>
+								{db.excluded ? 'Include' : 'Exclude'}
+							</button>
+						</div>
 					</div>
 					<p class="text-sm font-medium text-text">{db.db_name}</p>
 					<p class="text-xs text-text-secondary mt-1">{db.container_name}</p>

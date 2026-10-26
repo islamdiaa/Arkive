@@ -1309,7 +1309,7 @@ async def test_scheduler_registers_and_reloads_drill_job(tmp_path):
     await sched.reload_restore_drill_job()
     job = sched.scheduler.get_job(SYSTEM_JOB_RESTORE_DRILL)
     assert job is not None
-    assert "day_of_week='0'" in str(job.trigger) and "hour='7'" in str(job.trigger)
+    assert "day_of_week='sun'" in str(job.trigger) and "hour='7'" in str(job.trigger)
 
     async with aiosqlite.connect(cfg.db_path) as db:
         await db.execute("INSERT INTO settings (key, value) VALUES ('restore_drill_schedule', '30 2 * * 3')")

@@ -189,12 +189,12 @@ const DEMO_TARGETS = {
 
 const DEMO_DATABASES = {
   databases: [
-    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null },
-    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null },
-    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null },
-    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null },
-    { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null },
-    { container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db' },
+    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null, excluded: false },
+    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null, excluded: false },
+    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null, excluded: false },
+    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null, excluded: false },
+    { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null, excluded: false },
+    { container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db', excluded: false },
   ],
 };
 
@@ -599,6 +599,14 @@ export const mockApi = {
   listContainers: async () => { await delay(); return DEMO_CONTAINERS; },
 
   listDatabases: async () => { await delay(); return DEMO_DATABASES; },
+  setDatabaseExcluded: async (db: any, excluded: boolean) => {
+    await delay();
+    const entry = DEMO_DATABASES.databases.find(
+      (d) => d.container_name === db.container_name && d.db_name === db.db_name,
+    );
+    if (entry) entry.excluded = excluded;
+    return { excluded, database: db, exclusions: DEMO_DATABASES.databases.filter((d) => d.excluded) };
+  },
   dumpDatabase: async (container: string, dbName: string) => { await delay(1000); return { container_name: container, db_name: dbName, db_type: 'postgres', dump_size_bytes: 52428800, integrity_check: 'ok', dump_path: `/config/dumps/${dbName}.sql`, duration_seconds: 2, status: 'success', error: null }; },
 
   listDirectories: async () => { await delay(); return DEMO_DIRECTORIES; },
