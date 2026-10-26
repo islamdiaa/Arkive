@@ -310,8 +310,8 @@ class TestSQLiteInjection:
         assert result.status == "success"
 
     @pytest.mark.asyncio
-    async def test_readonly_sqlite_retries_with_immutable_uri(self, tmp_path):
-        """Read-only mounted SQLite files should retry with immutable URI mode."""
+    async def test_readonly_sqlite_retries_with_readonly_uri(self, tmp_path):
+        """Read-only mounted SQLite files are retried with a read-only URI."""
         import shlex
 
         dumper = _make_dumper(tmp_path)
@@ -349,7 +349,9 @@ class TestSQLiteInjection:
 
         assert result.status == "success"
         assert calls[0][1] == "/data/logs.db"
-        assert calls[1][1] == "file:/data/logs.db?mode=ro&immutable=1"
+        # A consistent read-only open (reads the WAL, shares locks) is tried
+        # before immutable mode, which ignores the WAL.
+        assert calls[1][1] == "file:/data/logs.db?mode=ro"
 
     @pytest.mark.asyncio
     async def test_path_with_spaces_is_quoted(self, tmp_path):

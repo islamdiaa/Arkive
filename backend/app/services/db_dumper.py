@@ -620,6 +620,21 @@ def cleanup_dump_dir(
     return removed
 
 
+def _sqlite_backup_ok(result, copy_path: str) -> bool:
+    """sqlite3 can exit 0 while printing "Error: unable to open database file"."""
+    if result.returncode != 0 or "error" in (result.stderr or "").lower():
+        return False
+    return os.path.exists(copy_path) and os.path.getsize(copy_path) > 0
+
+
+def _file_state(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
 @dataclass
 class DumpResult:
     container_name: str
@@ -1201,6 +1216,52 @@ class DBDumper:
         result.kind = "globals"
         return result
 
+    # Attempts at an immutable copy before giving up on a file that keeps changing.
+    sqlite_immutable_attempts = 3
+
+    async def _sqlite_readonly_backup(self, host_path: str, partial: str, run_backup):
+        """Copy a SQLite file that can only be opened read-only.
+
+        ``mode=ro`` is consistent: it reads the write-ahead log and takes shared
+        locks through the app's ``-shm`` file, which exists while the app has the
+        database open. Without a ``-shm`` it can't open a WAL database at all,
+        and the only option is ``immutable=1``, which ignores the WAL and takes
+        no locks. That is only safe when the WAL holds nothing (the app closed
+        the database and everything was checkpointed into the main file) and the
+        file doesn't change during the copy — otherwise recent writes (possibly
+        all of them) would be silently missing from a copy that still passes
+        ``integrity_check``.
+
+        Returns ``(result, None)`` on success or ``(None, error)``.
+        """
+        result = await run_backup(f"file:{host_path}?mode=ro")
+        if _sqlite_backup_ok(result, partial):
+            return result, None
+        ro_error = (result.stderr or result.stdout or "").strip()
+
+        wal = f"{host_path}-wal"
+        if os.path.exists(wal) and os.path.getsize(wal) > 0:
+            return None, (
+                "cannot copy consistently: the database has uncheckpointed write-ahead-log changes "
+                f"but could not be opened read-only ({ro_error or 'no error text'}). Give Arkive "
+                "read-write access to this app's data, or the next run retries once the app is idle."
+            )
+
+        for _ in range(self.sqlite_immutable_attempts):
+            before = _file_state(host_path)
+            result = await run_backup(f"file:{host_path}?mode=ro&immutable=1")
+            if not _sqlite_backup_ok(result, partial):
+                return None, (result.stderr or result.stdout or ro_error or "sqlite3 .backup failed").strip()
+            after = _file_state(host_path)
+            wal_now = os.path.exists(wal) and os.path.getsize(wal) > 0
+            if before == after and not wal_now:
+                return result, None
+            logger.info("SQLite file %s changed during an immutable copy; retrying", host_path)
+        return None, (
+            "cannot copy consistently: the database kept changing while it was copied without locks "
+            "(read-only mount). Give Arkive read-write access to this app's data, or the next run retries."
+        )
+
     async def _dump_sqlite(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump SQLite using HOST sqlite3 binary on bind-mounted path.
 
@@ -1239,21 +1300,11 @@ class DBDumper:
                 return await run_command(["sqlite3", source, f".backup {shlex.quote(partial)}"])
 
             result = await _run_backup(host_path)
-            backup_error = (result.stderr or result.stdout or "").strip()
-
-            # Some live SQLite files mounted read-only into Arkive can fail to open
-            # unless we tell SQLite to treat the source as immutable.
-            if ("unable to open database file" in backup_error.lower()) or result.returncode != 0:
-                immutable_source = f"file:{host_path}?mode=ro&immutable=1"
-                retry = await _run_backup(immutable_source)
-                retry_error = (retry.stderr or retry.stdout or "").strip()
-                if retry.returncode == 0 and os.path.exists(partial) and os.path.getsize(partial) > 0:
-                    result = retry
-                else:
-                    return failed(retry_error or backup_error, "failed", dump_path)
-
-            if result.returncode != 0:
-                return failed(result.stderr, "failed", dump_path)
+            if not _sqlite_backup_ok(result, partial):
+                # Typical on a read-only mount: SQLite can't open the file read-write.
+                result, error = await self._sqlite_readonly_backup(host_path, partial, _run_backup)
+                if result is None:
+                    return failed(error, "failed", dump_path)
 
             # .backup preserves the source's WAL journal mode; switch the copy to a
             # rollback journal so it is a single self-contained file and opening it
