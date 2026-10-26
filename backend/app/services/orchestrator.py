@@ -27,6 +27,8 @@ from app.services.db_dumper import (
     dump_prefix,
     legacy_dump_prefix,
 )
+from app.services.db_exclusions import excluded_identities
+from app.services.db_exclusions import identity as db_identity
 from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.flash_backup import FlashBackup
@@ -465,6 +467,7 @@ class BackupOrchestrator:
             await self._update_progress(run_id, "discovering")
             containers = []
             all_databases = []
+            excluded_dbs: list = []
             discovery_ok = False
             if include_databases:
                 if self.discovery:
@@ -482,6 +485,11 @@ class BackupOrchestrator:
                         all_databases = DBDumper.dedupe(all_databases)
                         async with aiosqlite.connect(self.config.db_path) as db:
                             await persist_discovery_results(db, containers)
+                            excluded_keys = await excluded_identities(db)
+                        # Excluded on the Databases page: never dumped, not
+                        # protected from dump cleanup, recorded as skipped.
+                        excluded_dbs = [d for d in all_databases if db_identity(d) in excluded_keys]
+                        all_databases = [d for d in all_databases if db_identity(d) not in excluded_keys]
                 else:
                     # Only possible in dev mode — production refuses to start
                     # without the Docker socket.
@@ -495,7 +503,7 @@ class BackupOrchestrator:
                     )
                     await db.commit()
                 await self._record_discovery_outcome(run_id, True)
-                if not all_databases:
+                if not all_databases and not excluded_dbs:
                     previous = await self._previous_database_count(job_id, run_id)
                     if previous:
                         warnings.append(f"no databases discovered (a recent run found {previous})")
@@ -529,8 +537,21 @@ class BackupOrchestrator:
             # Step 4: Dump databases
             dump_results = []
             skipped_dbs: list[str] = []
-            if include_databases and all_databases and self.db_dumper:
+            if include_databases and (all_databases or excluded_dbs) and self.db_dumper:
                 await self._update_progress(run_id, "dumping_databases")
+                for d in excluded_dbs:
+                    dump_results.append(
+                        DumpResult(
+                            container_name=d.container_name,
+                            db_type=d.db_type,
+                            db_name=d.db_name,
+                            dump_path="",
+                            dump_size_bytes=0,
+                            integrity_check="skipped",
+                            status="skipped",
+                            error="Excluded from backups on the Databases page",
+                        )
+                    )
                 # Exec-based dumps need a running container. Stopped containers
                 # are skipped (their on-disk data is static) rather than failed.
                 container_status = {c.name: c.status for c in containers}

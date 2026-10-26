@@ -182,4 +182,31 @@ test.describe('Databases Page', () => {
       .or(page.getByText('appdb'));
     await expect(dbEntry.first()).toBeVisible();
   });
+
+  test('a database can be excluded from backups and included again', async ({ page }) => {
+    const requests: Array<{ excluded: boolean; db_name: string }> = [];
+    await page.route('**/api/databases/exclusions', async (route, request) => {
+      const body = request.postDataJSON();
+      requests.push(body);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ excluded: body.excluded, database: body, exclusions: [] }),
+      });
+    });
+    await page.goto('/databases', { waitUntil: 'networkidle' });
+
+    const card = page.locator('.card').filter({ hasText: 'nextcloud' });
+    await card.getByRole('button', { name: 'Exclude' }).click();
+    await expect(card.getByTestId('excluded-badge')).toBeVisible();
+    await expect(card.getByRole('button', { name: /dump now/i })).toHaveCount(0);
+    await expect(page.getByText(/1 excluded from backups/)).toBeVisible();
+
+    await card.getByRole('button', { name: 'Include' }).click();
+    await expect(card.getByTestId('excluded-badge')).toHaveCount(0);
+    expect(requests.map((r) => [r.db_name, r.excluded])).toEqual([
+      ['nextcloud', true],
+      ['nextcloud', false],
+    ]);
+  });
 });

@@ -225,12 +225,26 @@ async def update_directory(dir_id: str, body: DirectoryCreate, db: aiosqlite.Con
 
 @router.delete("/{dir_id}")
 async def remove_directory(dir_id: str, db: aiosqlite.Connection = Depends(get_db)):
-    cursor = await db.execute("SELECT id FROM watched_directories WHERE id = ?", (dir_id,))
-    if not await cursor.fetchone():
+    cursor = await db.execute("SELECT id, path FROM watched_directories WHERE id = ?", (dir_id,))
+    row = await cursor.fetchone()
+    if not row:
         raise HTTPException(404, "Directory not found")
+    path = row["path"]
     await db.execute("DELETE FROM watched_directories WHERE id = ?", (dir_id,))
+    # Jobs reference watched directories by id (or path); drop the stale entry.
+    cursor = await db.execute("SELECT id, directories FROM backup_jobs")
+    for job_id, raw in await cursor.fetchall():
+        try:
+            entries = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries if e not in (dir_id, path)]
+        if kept != entries:
+            await db.execute("UPDATE backup_jobs SET directories = ? WHERE id = ?", (json.dumps(kept), job_id))
     await db.commit()
-    await log_activity(db, "directory", "deleted", f"Removed directory {dir_id}", {"dir_id": dir_id})
+    await log_activity(db, "directory", "deleted", f"Removed directory {path}", {"dir_id": dir_id, "path": path})
     return {"status": "deleted"}
 
 
