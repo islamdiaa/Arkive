@@ -6,8 +6,8 @@
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/kemetlabs/Arkive/issues</Support>
-  <Project>https://github.com/kemetlabs/Arkive</Project>
+  <Support>https://github.com/islamdiaa/Arkive/issues</Support>
+  <Project>https://github.com/islamdiaa/Arkive</Project>
   <Overview>
     Open-source backup and disaster recovery for Unraid servers. Arkive discovers Docker containers, captures application-aware database dumps, backs up flash config, and stores encrypted snapshots in local or remote storage.
 
@@ -16,14 +16,15 @@
     - Application-aware database dumps with integrity verification
     - Encrypted, deduplicated backups via restic
     - Multi-target cloud sync (B2, S3, SFTP, local)
-    - One-click restore plan PDF
+    - Overdue-backup watchdog, heartbeat monitoring and weekly restore drills
+    - Recovery kit and one-click restore plan PDF
     - Discord/Slack/ntfy notifications
     - Web UI and API for setup, monitoring, backup, and restore
   </Overview>
   <Category>Backup: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8200]</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/kemetlabs/Arkive/main/frontend/static/icons/logo.svg</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/islamdiaa/Arkive/main/frontend/static/icons/logo.svg</Icon>
   <ExtraParams>--restart unless-stopped --user 0:0</ExtraParams>
   <PostArgs/>
   <Requires>Docker socket access and root runtime for full Unraid flash/SQLite coverage</Requires>

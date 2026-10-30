@@ -23,7 +23,7 @@ Primary product behavior:
   - Python CLI
 
 This repo is now the clean public repository:
-- `https://github.com/kemetlabs/Arkive`
+- `https://github.com/islamdiaa/Arkive`
 
 ## Current Repo State
 
@@ -406,6 +406,36 @@ cases; the fixes are now invariants:
 - **Errors are not empty results.** Use `BackupEngine.list_snapshots()` (raises
   `ResticError`) wherever "no snapshots" would lead to a skip or a deletion.
 
+### 14. Release hardening (v0.4.0 release)
+
+Before the first public v0.4.0 release, a dependency/image scan and an
+adversarial security review found:
+- **restic option injection.** The snapshot browser passed a user-supplied path
+  straight to `restic ls`; `--password-command=...` runs a command, and Arkive
+  holds the Docker socket. User-supplied values now go after `--` or as
+  `--flag=value`, and `_validate_path` / snapshot-ID validation reject a leading
+  `-` and control characters.
+- **Open API before setup.** `require_auth` used to let every request through
+  until an API key existed. Now only the setup wizard's scans
+  (`_SETUP_ROUTES` in `core/dependencies.py`) are open; everything else, SSE
+  included, returns 401. Setup claims `api_key_hash` with a plain `INSERT`, so
+  concurrent setup requests can't both win.
+- **Vulnerable dependencies** (cryptography, weasyprint, jinja2,
+  python-multipart, apprise, pydantic-settings, zod) and old restic/rclone
+  binaries built with a vulnerable Go toolchain. The release workflow's Trivy
+  step fails on fixable HIGH/CRITICAL findings, so scan the image locally
+  before tagging.
+- **Light theme.** `.light` in `frontend/src/app.css` only overrode the legacy
+  tokens, so most panels stayed dark under dark text. Every token in `:root`
+  needs a light value.
+
+Rules that follow from this:
+- never put a user-supplied value in a restic/rclone argv position where it can
+  be parsed as an option
+- a new route the setup wizard needs before setup goes in `_SETUP_ROUTES`;
+  don't reopen the bootstrap bypass
+- run `pip-audit`, `npm audit` and Trivy on the image before a release tag
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -568,7 +598,9 @@ At the time this handoff was updated (v0.4.0):
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
-- open follow-up: Tailwind CSS 4 migration (#53)
+- section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
+- open follow-up: Tailwind CSS 4 migration (#53); remaining low-severity npm
+  advisories need SvelteKit 3 (build-time only)
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still

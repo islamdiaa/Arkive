@@ -192,3 +192,9 @@ class TestAutoescape:
         result = tmpl.render(val="<script>evil()</script>")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
+
+
+def test_install_step_uses_the_published_image():
+    # The image is published to Docker Hub only; a ghcr.io reference can't be pulled.
+    assert "islamdiaa/arkive:latest" in RESTORE_PLAN_TEMPLATE
+    assert "ghcr.io/islamdiaa" not in RESTORE_PLAN_TEMPLATE

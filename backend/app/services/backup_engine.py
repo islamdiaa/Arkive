@@ -69,8 +69,9 @@ def _is_transient_error(stderr: str) -> bool:
     return any(pattern in lower for pattern in _TRANSIENT_PATTERNS)
 
 
-# Restic snapshot IDs are hex strings (8 or 64 chars), or "latest"
-_SNAPSHOT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# Restic snapshot IDs are hex strings (8 or 64 chars), or "latest". A leading
+# "-" would be read as a restic option.
+_SNAPSHOT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 # Path validation: block traversal sequences
 _PATH_TRAVERSAL_RE = re.compile(r"(^|/)\.\.(/|$)")
 
@@ -83,9 +84,16 @@ def _validate_snapshot_id(snapshot_id: str) -> str:
 
 
 def _validate_path(path: str) -> str:
-    """Validate path argument to prevent traversal attacks."""
+    """Validate a path argument: no traversal, nothing restic could parse as an option.
+
+    Callers still pass paths after ``--`` or as ``--flag=value``; rejecting a
+    leading "-" is a second line of defence (``--password-command=...`` runs a
+    command).
+    """
     if _PATH_TRAVERSAL_RE.search(path):
         raise ValueError(f"Path traversal not allowed: {path!r}")
+    if path.startswith("-") or any(ord(c) < 32 for c in path):
+        raise ValueError(f"Invalid path: {path!r}")
     return path
 
 
@@ -517,11 +525,10 @@ class BackupEngine:
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
-        cmd = ["restic", "restore", snapshot_id, "-r", repo]
-        cmd.extend(["--target", restore_to])
+        cmd = ["restic", "restore", "-r", repo, f"--target={restore_to}"]
         if paths:
-            for p in paths:
-                cmd.extend(["--include", p])
+            cmd.extend(f"--include={p}" for p in paths)
+        cmd.extend(["--", snapshot_id])
 
         result = await run_command(cmd, env=env, timeout=3600)
         return {
@@ -590,7 +597,7 @@ class BackupEngine:
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
 
         result = await run_command(
-            ["restic", "ls", snapshot_id, "-r", repo, "--json", path],
+            ["restic", "ls", "-r", repo, "--json", "--", snapshot_id, path],
             env=env,
             timeout=120,
         )

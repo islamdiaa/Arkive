@@ -9,6 +9,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.services.discovery import DiscoveryEngine
+from tests.conftest import auth_headers, seed_api_key
 from tests.fakes.fake_docker import create_fake_docker_client
 
 
@@ -76,7 +77,8 @@ async def discovery_client(tmp_path):
         test_app.state.platform = "unraid"
 
         transport = ASGITransport(app=test_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        api_key = await seed_api_key(config_dir / "arkive.db")
+        async with AsyncClient(transport=transport, base_url="http://test", headers=auth_headers(api_key)) as ac:
             yield ac
 
     deps_mod._failed_attempts.clear()

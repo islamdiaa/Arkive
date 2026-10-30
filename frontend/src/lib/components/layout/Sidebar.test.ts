@@ -7,6 +7,7 @@ import { writable } from 'svelte/store';
 // but the Sidebar component imports from $app/stores which is aliased in vitest config.
 
 import Sidebar from './Sidebar.svelte';
+import { systemStatus } from '$lib/stores/app';
 
 describe('Sidebar', () => {
 	beforeEach(() => {
@@ -59,9 +60,17 @@ describe('Sidebar', () => {
 		expect(activityLink).toHaveAttribute('href', '/activity');
 	});
 
-	it('renders version number', () => {
+	it('renders the server version from /api/status', () => {
+		systemStatus.set({ version: '0.4.0' });
 		render(Sidebar);
-		expect(screen.getByText('v0.1.0')).toBeInTheDocument();
+		expect(screen.getByText('v0.4.0')).toBeInTheDocument();
+		systemStatus.set(null);
+	});
+
+	it('renders no version before status has loaded', () => {
+		systemStatus.set(null);
+		render(Sidebar);
+		expect(screen.queryByText(/^v\d/)).not.toBeInTheDocument();
 	});
 
 	it('renders Community badge', () => {

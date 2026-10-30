@@ -15,7 +15,7 @@ const DEMO_LAST_DRILL = {
 };
 
 const DEMO_STATUS = {
-  version: '0.1.0',
+  version: '0.4.0',
   uptime_seconds: 86400,
   setup_completed: true,
   platform: 'unraid',

@@ -1,7 +1,7 @@
 # Web framework
 fastapi==0.161.1
 uvicorn[standard]==0.34.0
-python-multipart==0.0.22
+python-multipart==0.0.32
 sse-starlette==2.2.1
 
 # Database
@@ -15,7 +15,7 @@ apscheduler==3.11.3
 croniter==6.2.4
 
 # Notifications (90+ services)
-apprise==1.9.8
+apprise==1.13.1
 
 # HTTP client
 httpx==0.28.1
@@ -23,18 +23,18 @@ httpx==0.28.1
 # Config
 pyyaml==6.0.3
 pydantic==2.10.4
-pydantic-settings==2.13.1
+pydantic-settings==2.16.2
 
 # Security
-cryptography==44.0.0
+cryptography==50.0.2
 
 # CLI
 click==8.1.8
 
 # PDF generation (restore plan)
-weasyprint==62.3
-pydyf==0.11.0  # pinned: 0.12.x breaks weasyprint 62.x stream.transform()
-jinja2==3.1.5
+weasyprint==70.0
+pydyf==0.13.0
+jinja2==3.1.6
 
 # Utilities
 python-dateutil==2.9.0.post0

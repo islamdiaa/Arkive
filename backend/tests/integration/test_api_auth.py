@@ -7,8 +7,10 @@ Tests: setup flow, session check, API key regeneration, auth failures, rate limi
 
 from unittest.mock import AsyncMock, MagicMock
 
+import aiosqlite
 import pytest
 
+from app.core.dependencies import get_config
 from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
@@ -128,17 +130,14 @@ async def test_setup_with_target_ids(client, tmp_path):
 
     os.makedirs(target_path, exist_ok=True)
 
-    # Do setup in setup-mode (no auth needed)
-    resp = await client.post(
-        "/api/targets",
-        json={
-            "name": "Local",
-            "type": "local",
-            "config": {"path": target_path},
-        },
-    )
-    assert resp.status_code == 201
-    target_id = resp.json()["id"]
+    # A target left over from before setup (the API is closed until setup completes)
+    target_id = "pre-existing-target"
+    async with aiosqlite.connect(get_config().db_path) as conn:
+        await conn.execute(
+            "INSERT INTO storage_targets (id, name, type, enabled, config) VALUES (?, 'Local', 'local', 1, '{}')",
+            (target_id,),
+        )
+        await conn.commit()
 
     # Now run setup with target_ids
     data = await do_setup(client, target_ids=[target_id])
@@ -158,15 +157,12 @@ async def test_setup_with_directory_ids(client, tmp_path):
 
     os.makedirs(watch_dir, exist_ok=True)
 
-    resp = await client.post(
-        "/api/directories",
-        json={
-            "path": watch_dir,
-            "label": "Appdata",
-        },
-    )
-    assert resp.status_code == 201
-    dir_id = resp.json()["id"]
+    dir_id = "pre-existing-dir"
+    async with aiosqlite.connect(get_config().db_path) as conn:
+        await conn.execute(
+            "INSERT INTO watched_directories (id, path, label) VALUES (?, ?, 'Appdata')", (dir_id, watch_dir)
+        )
+        await conn.commit()
 
     data = await do_setup(client, directory_ids=[dir_id])
     api_key = data["api_key"]

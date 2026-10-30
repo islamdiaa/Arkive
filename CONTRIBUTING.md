@@ -129,7 +129,7 @@ Feature requests are welcome. Please check existing issues first to avoid duplic
 
 ## Security
 
-If you discover a security vulnerability, please do **not** open a public issue. Use GitHub Security Advisories for this repository instead: [Security Policy](https://github.com/kemetlabs/Arkive/security/policy).
+If you discover a security vulnerability, please do **not** open a public issue. Use GitHub Security Advisories for this repository instead: [Security Policy](https://github.com/islamdiaa/Arkive/security/policy).
 
 ## License
 
