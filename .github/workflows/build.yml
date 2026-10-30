@@ -17,8 +17,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Jobs pin ubuntu-24.04: when ubuntu-latest moved to 26.04, Playwright 1.58
-# had no Chromium build for it and the forked pytest tests exited early.
+# Jobs pin ubuntu-24.04: ubuntu-latest moved to 26.04, which Playwright 1.58
+# has no Chromium build for. Move the pin deliberately, not by default.
 env:
   DOCKERHUB_IMAGE: islamdiaa/arkive
 
