@@ -13,7 +13,7 @@ Security fixes go into the latest release. Upgrade by pulling `islamdiaa/arkive:
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through
-[GitHub Security Advisories](https://github.com/kemetlabs/Arkive/security/advisories/new),
+[GitHub Security Advisories](https://github.com/islamdiaa/Arkive/security/advisories/new),
 not through public issues or pull requests. Include the version, how to reproduce the
 problem, and what an attacker could do with it.
 

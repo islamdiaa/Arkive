@@ -54,10 +54,10 @@ ARG VERSION=0.4.0
 LABEL org.opencontainers.image.title="Arkive" \
       org.opencontainers.image.description="Automated disaster recovery for Unraid servers" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.source="https://github.com/kemetlabs/Arkive" \
+      org.opencontainers.image.source="https://github.com/islamdiaa/Arkive" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Arkive" \
-      maintainer="kemetlabs"
+      maintainer="islamdiaa"
 
 # System dependencies (includes WeasyPrint requirements: pango, cairo, gdk-pixbuf).
 # The upgrade picks up Debian security fixes newer than the base image.
