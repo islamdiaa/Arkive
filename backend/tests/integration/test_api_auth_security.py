@@ -32,11 +32,10 @@ async def test_token_query_param_auth_rejected(client):
     assert resp.status_code == 401
 
 
-async def test_setup_mode_bypass(client):
-    """Before setup, protected endpoints are accessible (setup mode)."""
-    # Before setup, endpoints should be accessible (setup mode bypass)
+async def test_no_setup_mode_bypass(client):
+    """Before setup, protected endpoints are closed (only the wizard's scans are open)."""
     resp = await client.get("/api/jobs")
-    assert resp.status_code == 200
+    assert resp.status_code == 401
 
 
 async def test_no_auth_after_setup_returns_401(client):

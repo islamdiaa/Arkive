@@ -8,9 +8,18 @@
 
 <p align="center">
   <a href="https://github.com/kemetlabs/Arkive/actions/workflows/build.yml"><img src="https://github.com/kemetlabs/Arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/kemetlabs/Arkive/releases/latest"><img src="https://img.shields.io/github/v/release/kemetlabs/Arkive" alt="Latest release" /></a>
+  <a href="https://hub.docker.com/r/islamdiaa/arkive"><img src="https://img.shields.io/docker/pulls/islamdiaa/arkive" alt="Docker pulls" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/kemetlabs/Arkive" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python" />
   <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey" alt="Platform" />
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-light.png" />
+    <img src="docs/images/dashboard-dark.png" alt="Arkive dashboard: system health, last backup, storage used, backup trust score and the last restore drill" width="900" />
+  </picture>
 </p>
 
 ---
@@ -47,6 +56,27 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 - A dashboard with live backup progress, health and storage use, in light and dark themes.
 - A six-step setup wizard: encryption password, container discovery, storage, schedules, directories, done.
 - A REST API with OpenAPI docs at `/docs`, and a CLI.
+
+<table>
+  <tr>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: light)" srcset="docs/images/databases-light.png" />
+        <img src="docs/images/databases-dark.png" alt="Databases page: discovered PostgreSQL, MariaDB, Redis and SQLite databases with Dump Now and Exclude actions" />
+      </picture>
+      <p align="center"><sub>Discovered databases, each dumped with its native tool</sub></p>
+    </td>
+    <td width="50%">
+      <picture>
+        <source media="(prefers-color-scheme: light)" srcset="docs/images/snapshots-light.png" />
+        <img src="docs/images/snapshots-dark.png" alt="Snapshots page: encrypted restic snapshots across two storage targets with Browse and Restore actions" />
+      </picture>
+      <p align="center"><sub>Snapshots across targets, browsable and restorable</sub></p>
+    </td>
+  </tr>
+</table>
+
+<sub>Screenshots use the built-in demo data: open any page with <code>?demo=true</code>.</sub>
 
 ---
 
@@ -249,7 +279,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Run the backe
 
 ## Security
 
-Please report vulnerabilities privately through GitHub Security Advisories, not public issues. Don't commit credentials, infrastructure details or production configuration.
+Please report vulnerabilities privately through [GitHub Security Advisories](https://github.com/kemetlabs/Arkive/security/advisories/new), not public issues. [SECURITY.md](SECURITY.md) covers the deployment model (Arkive holds the Docker socket, so treat its port like an admin console) and what is in place.
 
 ## License
 

@@ -100,7 +100,11 @@ export async function connect(customUrl?: string) {
   stopped = false;
   // Demo mode runs on the mock API: there is no backend session to stream from,
   // and a 401 from the token endpoint would bounce the visitor to /login.
-  if (DEMO_MODE) return;
+  // Report the stream as connected so the "connection lost" banner stays hidden.
+  if (DEMO_MODE) {
+    connected.set(true);
+    return;
+  }
   if (eventSource || connecting) return;
 
   connecting = true;

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { sidebarOpen } from '$lib/stores/app';
+	import { sidebarOpen, systemStatus } from '$lib/stores/app';
 	import { cn } from '$lib/utils/cn';
 	import {
 		LayoutDashboard,
@@ -134,7 +134,7 @@
 		<!-- Version -->
 		<div class="absolute bottom-4 left-0 right-0 px-5">
 			<div class="text-[11px] text-text-tertiary flex items-center justify-between">
-				<span>v0.1.0</span>
+				<span>{$systemStatus?.version ? `v${$systemStatus.version}` : ''}</span>
 				<span class="badge-success">Community</span>
 			</div>
 		</div>

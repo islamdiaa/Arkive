@@ -186,5 +186,8 @@ async def browse_snapshot(
     target = dict(target)
     target["config"] = decrypt_config(target.get("config", "{}"), str(config.config_dir))
 
-    entries = await backup_engine.ls(target, snap["full_id"], path)
+    try:
+        entries = await backup_engine.ls(target, snap["full_id"], path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"path": path, "entries": entries}

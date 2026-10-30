@@ -176,9 +176,18 @@ async def complete_setup(
     # Extract web_url from request (M4) — auto-detect from request base_url
     web_url = str(request.base_url).rstrip("/")
 
+    # Claim setup atomically: of two concurrent requests that both passed the
+    # check above, the second one's insert fails instead of replacing the key.
+    try:
+        await db.execute(
+            "INSERT INTO settings (key, value, encrypted, updated_at) VALUES ('api_key_hash', ?, 0, ?)",
+            (api_key_hash, now),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "Setup already completed") from exc
+
     # Store settings
     settings = [
-        ("api_key_hash", api_key_hash, 0),
         ("api_key", encrypt_value(api_key), 1),
         ("encryption_password", encrypt_value(body.encryption_password), 1),
         ("setup_completed", "true", 0),

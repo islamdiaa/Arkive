@@ -16,7 +16,8 @@
     - Application-aware database dumps with integrity verification
     - Encrypted, deduplicated backups via restic
     - Multi-target cloud sync (B2, S3, SFTP, local)
-    - One-click restore plan PDF
+    - Overdue-backup watchdog, heartbeat monitoring and weekly restore drills
+    - Recovery kit and one-click restore plan PDF
     - Discord/Slack/ntfy notifications
     - Web UI and API for setup, monitoring, backup, and restore
   </Overview>

@@ -32,6 +32,10 @@ RATE_LIMIT_MAX = 5
 LOCKOUT_DURATION = 60  # seconds
 MAX_TRACKED_IPS = 10_000  # cap on per-IP rate-limit state (memory bound)
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# The only protected routes the setup wizard calls before an API key exists.
+# Everything else stays closed until setup completes: otherwise anyone who can
+# reach a fresh instance could add storage targets or run restores.
+_SETUP_ROUTES = frozenset({("POST", "/api/discover/scan"), ("POST", "/api/directories/scan")})
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +317,9 @@ async def require_auth(
 
     bootstrapping, api_key_hash = await _load_api_key_hash(db)
     if bootstrapping:
-        return  # No API key set yet — setup mode
+        if (request.method, request.url.path) in _SETUP_ROUTES:
+            return
+        raise AuthError("Setup has not been completed")
 
     api_key = request.headers.get("X-API-Key")
     if api_key:
@@ -339,7 +345,7 @@ async def require_sse_auth(
     """Validate short-lived SSE token from ?token= query param."""
     bootstrapping, _hash = await _load_api_key_hash(db)
     if bootstrapping:
-        return  # setup not complete
+        raise AuthError("Setup has not been completed")
 
     token = request.query_params.get("token")
     if not token:

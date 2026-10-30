@@ -231,6 +231,26 @@ def auth_headers(api_key: str) -> dict:
     return {"X-API-Key": api_key}
 
 
+async def seed_api_key(db_path) -> str:
+    """Store an API key hash so the instance counts as set up; returns the key.
+
+    For fixtures that build their own app: protected routes are closed until
+    an API key exists.
+    """
+    import aiosqlite
+
+    from app.core.security import generate_api_key, hash_api_key
+
+    api_key = generate_api_key()
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, encrypted) VALUES ('api_key_hash', ?, 0)",
+            (hash_api_key(api_key),),
+        )
+        await conn.commit()
+    return api_key
+
+
 # ---------------------------------------------------------------------------
 # Mock Docker client fixture
 # ---------------------------------------------------------------------------

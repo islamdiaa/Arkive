@@ -35,7 +35,7 @@ class RestoreRequest(BaseModel):
     @field_validator("snapshot_id")
     @classmethod
     def validate_snapshot_id(cls, v: str) -> str:
-        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", v):
             raise ValueError("Invalid snapshot ID format: only alphanumeric, hyphens, and underscores allowed")
         return v
 

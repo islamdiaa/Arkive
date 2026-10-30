@@ -100,16 +100,71 @@
 		--color-folder: #e3b341;
 	}
 
+	/* Every token above needs a light value here: a token left out keeps its dark
+	   value, which puts dark panels behind dark text. Legacy aliases follow the
+	   scales they point at. */
 	.light {
-		--page-bg: #ffffff;
-		--surface: #f6f8fa;
-		--surface-hover: #eaeef2;
-		--border: #d0d7de;
+		/* === Background Scale === */
+		--bg-base: #f6f8fa;
+		--bg-app: #ffffff;
+		--bg-surface: #ffffff;
+		--bg-elevated: #f6f8fa;
+		--bg-overlay: #eaeef2;
+		--bg-input: #ffffff;
+		--bg-surface-hover: #f3f4f6;
+		--bg-sidebar: #f6f8fa;
+
+		/* === Border Scale === */
+		--border-muted: #d8dee4;
+		--border-default: #d0d7de;
+		--border-strong: #afb8c1;
+		--border-focus: #0969da;
+
+		/* === Text Scale === */
 		--text: #1f2328;
-		--text-secondary: #656d76;
-		--border-default: var(--border);
-		--text-primary: var(--primary);
-		--surface-subtle: #eaeef2;
+		--text-primary: #1f2328;
+		--text-secondary: #59636e;
+		--text-tertiary: #6e7781;
+		--text-muted: #6e7781;
+		--text-disabled: #8c959f;
+		--text-link: #0969da;
+		--text-on-primary: #ffffff;
+
+		/* === Accents: "hover" and "strong" get darker, for text on light backgrounds === */
+		--color-primary-bg: #ddf4ff;
+		--color-primary-muted: #b6e3ff;
+		--color-primary: #0969da;
+		--color-primary-hover: #0550ae;
+		--color-primary-strong: #033d8b;
+
+		--color-success-bg: #dafbe1;
+		--color-success-muted: #aceebb;
+		--color-success: #1a7f37;
+		--color-success-hover: #116329;
+		--color-success-strong: #044f1e;
+
+		--color-warning-bg: #fff8c5;
+		--color-warning-muted: #f5e0a0;
+		--color-warning: #9a6700;
+		--color-warning-hover: #7d4e00;
+		--color-warning-strong: #633c01;
+
+		--color-danger-bg: #ffebe9;
+		--color-danger-muted: #ffcecb;
+		--color-danger: #d1242f;
+		--color-danger-hover: #a40e26;
+		--color-danger-strong: #82071e;
+
+		--color-info-bg: #ddf8fa;
+		--color-info-muted: #a8e6ec;
+		--color-info: #1b7c83;
+		--color-info-hover: #136061;
+		--color-info-strong: #0f4d52;
+
+		--color-neutral-bg: #f6f8fa;
+		--color-neutral-muted: #8c959f;
+		--color-neutral: #59636e;
+
 		--color-folder: #bf8700;
 	}
 

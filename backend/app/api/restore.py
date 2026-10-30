@@ -107,7 +107,7 @@ def _repo_path_for_target(target: dict) -> str:
 
 
 def _validate_snapshot_id(snapshot_id: str) -> str:
-    if not re.match(r"^[a-zA-Z0-9_-]+$", snapshot_id):
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", snapshot_id):
         raise HTTPException(400, "Invalid snapshot ID format")
     return snapshot_id
 
@@ -281,7 +281,10 @@ async def browse_snapshot_alias(
     target = dict(target)
     target["config"] = decrypt_config(target.get("config", "{}"), str(config.config_dir))
 
-    entries = await backup_engine.ls(target, snap["full_id"], path)
+    try:
+        entries = await backup_engine.ls(target, snap["full_id"], path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"path": path, "entries": entries, "snapshot_id": snapshot_id}
 
 
