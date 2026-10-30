@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kemetlabs/Arkive/actions/workflows/build.yml"><img src="https://github.com/kemetlabs/Arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/kemetlabs/Arkive" alt="License" /></a>
+  <a href="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml"><img src="https://github.com/islamdiaa/Arkive/actions/workflows/build.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/islamdiaa/Arkive" alt="License" /></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python" />
   <img src="https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey" alt="Platform" />
 </p>
@@ -54,7 +54,7 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 
 ### Unraid
 
-Add the template from `https://raw.githubusercontent.com/kemetlabs/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts app data read-only and keeps Arkive's own state in `/mnt/user/appdata/arkive`.
+Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts app data read-only and keeps Arkive's own state in `/mnt/user/appdata/arkive`.
 
 ### Docker Compose
 
@@ -201,7 +201,7 @@ curl -H "X-API-Key: ark_your_key_here" http://localhost:8200/api/jobs
 Requires Python 3.12, Node.js 22 and Docker.
 
 ```bash
-git clone https://github.com/kemetlabs/Arkive.git && cd Arkive
+git clone https://github.com/islamdiaa/Arkive.git && cd Arkive
 
 # Backend
 cd backend
@@ -242,7 +242,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Run the backe
 ## Roadmap
 
 - [x] Automated restore verification (restore drills)
-- [ ] Tailwind CSS 4 ([#53](https://github.com/kemetlabs/Arkive/issues/53))
+- [ ] Tailwind CSS 4 ([#53](https://github.com/islamdiaa/Arkive/issues/53))
 - [ ] Prometheus metrics endpoint (`/api/metrics`)
 - [ ] Multi-user access with roles
 - [ ] Scheduled email digest
