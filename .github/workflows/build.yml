@@ -17,12 +17,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Jobs pin ubuntu-24.04: when ubuntu-latest moved to 26.04, Playwright 1.58
+# had no Chromium build for it and the forked pytest tests exited early.
 env:
   DOCKERHUB_IMAGE: islamdiaa/arkive
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -43,7 +45,7 @@ jobs:
         run: cd backend && ruff format --check .
 
   sast:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: backend
@@ -73,7 +75,7 @@ jobs:
         run: python -m bandit -r app/ -c pyproject.toml -ll
 
   test-backend-core:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -103,7 +105,7 @@ jobs:
         run: pip install pip-audit && pip-audit 2>&1 || true
 
   test-critical:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -136,7 +138,7 @@ jobs:
           path: backend/test-results/
 
   test-backend-heavy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -161,7 +163,7 @@ jobs:
           -q --tb=short
 
   test-frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -186,7 +188,7 @@ jobs:
         run: cd frontend && npm audit --audit-level=high 2>&1 || true
 
   test-components:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -212,7 +214,7 @@ jobs:
   # SvelteKit dev server on :5173. Developers run the same suite with
   # `frontend/scripts/e2e.sh --docker`.
   frontend-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -257,7 +259,7 @@ jobs:
 
   build:
     needs: [lint, test-backend-core, test-backend-heavy, test-critical, test-frontend, test-components, frontend-e2e, sast]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
 
