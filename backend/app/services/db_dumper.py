@@ -652,6 +652,11 @@ class DumpResult:
     # Finer integrity detail for the manifest, e.g. "unverifiable" when the
     # stock checker cannot evaluate an app-specific SQLite schema.
     integrity_detail: str | None = None
+    # Identity of the dumped database (dump_prefix of the discovered entry,
+    # including its host path) and when the dump began (UTC, the point in
+    # time it captures). Set by dump_all; recorded per run for database health.
+    db_key: str | None = None
+    started_at: str | None = None
 
 
 class DBDumper:
@@ -897,6 +902,7 @@ class DBDumper:
         results: list[DumpResult] = []
         host_paths: dict[int, str | None] = {}
         for db in databases:
+            started_at = _utc_iso()
             try:
                 result = await self._dump_one(db)
                 if result.status != "success":
@@ -918,6 +924,8 @@ class DBDumper:
                     error=redacted_error,
                 )
             host_paths[id(result)] = db.host_path
+            result.db_key = dump_prefix(db.container_name, db.db_type, db.db_name, db.host_path)
+            result.started_at = started_at
             results.append(result)
 
         # Roles and tablespaces live outside any single database: dump them
@@ -932,6 +940,7 @@ class DBDumper:
                 clusters[db.container_name] = db.db_name
                 connect_ok[db.container_name] = ok
         for container_name, connect_db in clusters.items():
+            started_at = _utc_iso()
             try:
                 result = await asyncio.to_thread(self._dump_postgres_globals_blocking, container_name, connect_db)
             except Exception as e:
@@ -948,6 +957,8 @@ class DBDumper:
                 )
             if result.status != "success":
                 self._remove_dump_file(result.dump_path)
+            result.db_key = dump_prefix(container_name, "postgres", GLOBALS_DB_NAME, kind="globals")
+            result.started_at = started_at
             results.append(result)
 
         await self._update_manifest(results, host_paths, {db.container_name for db in databases})

@@ -303,6 +303,18 @@ MIGRATIONS: dict[int, list[str]] = {
         # databases, which must not read as "this system has no databases".
         "ALTER TABLE job_runs ADD COLUMN discovery_ok INTEGER",
     ],
+    7: [
+        # Per-database health. job_run_databases could not tell apart two
+        # databases with the same container and name (same-basename SQLite
+        # files) and only knew when the run started, not when each dump was
+        # taken. db_key is the database identity (dump_prefix, the same key
+        # dump files and exclusions use; NULL on older rows, derived from the
+        # dump file name when read); dumped_at is when the dump began, i.e.
+        # the point in time it captures (NULL on older rows: the run start).
+        "ALTER TABLE job_run_databases ADD COLUMN db_key TEXT",
+        "ALTER TABLE job_run_databases ADD COLUMN dumped_at TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_job_run_databases_key ON job_run_databases(db_key)",
+    ],
 }
 
 

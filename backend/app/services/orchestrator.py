@@ -19,6 +19,7 @@ from app.core.event_bus import EventBus
 from app.core.security import decrypt_config
 from app.services.backup_engine import EXCLUDE_MARKER, BackupEngine
 from app.services.cloud_manager import CloudManager
+from app.services.database_health import result_key, shrink_warnings
 from app.services.db_dumper import (
     PARTIAL_SUFFIX,
     DBDumper,
@@ -550,6 +551,7 @@ class BackupOrchestrator:
                             integrity_check="skipped",
                             status="skipped",
                             error="Excluded from backups on the Databases page",
+                            db_key=db_identity(d),
                         )
                     )
                 # Exec-based dumps need a running container. Stopped containers
@@ -570,6 +572,7 @@ class BackupOrchestrator:
                                 integrity_check="skipped",
                                 status="skipped",
                                 error=f"Container is {status}, not running",
+                                db_key=db_identity(d),
                             )
                         )
                     else:
@@ -582,8 +585,9 @@ class BackupOrchestrator:
                     for dr in dump_results:
                         await db.execute(
                             """INSERT INTO job_run_databases
-                            (run_id, container_name, db_type, db_name, dump_size_bytes, integrity_check, status, host_path, error)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (run_id, container_name, db_type, db_name, dump_size_bytes, integrity_check, status,
+                             host_path, error, db_key, dumped_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (
                                 run_id,
                                 dr.container_name,
@@ -594,6 +598,8 @@ class BackupOrchestrator:
                                 dr.status,
                                 dr.dump_path,
                                 dr.error,
+                                result_key(dr),
+                                dr.started_at,
                             ),
                         )
                     # Roles/globals dumps are recorded per run but aren't databases.
@@ -619,6 +625,7 @@ class BackupOrchestrator:
                 ]
                 if undumped:
                     warnings.append("database(s) in stopped containers have never been dumped: " + ", ".join(undumped))
+                warnings.extend(await self._dump_size_warnings(run_id, dump_results))
 
             # Keep only the newest dump per database (older generations live
             # in earlier snapshots) and drop dumps of containers that are gone,
@@ -1086,6 +1093,21 @@ class BackupOrchestrator:
             )
         except OSError:
             return False
+
+    async def _dump_size_warnings(self, run_id: str, dump_results: list[DumpResult]) -> list[str]:
+        """Warnings for dumps that shrank sharply versus their recent history
+        (see services/database_health.py for the threshold and why).
+
+        The check only reads history; if it cannot (a database error that
+        would also break the rest of the run) it logs and the run is judged
+        on everything else.
+        """
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                return await shrink_warnings(db, run_id, dump_results)
+        except Exception as e:
+            logger.warning("Dump size check failed: %s", e)
+            return []
 
     async def _record_discovery_outcome(self, run_id: str, ok: bool) -> None:
         """Best effort: freshness bookkeeping must never fail a backup."""

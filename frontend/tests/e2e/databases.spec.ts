@@ -183,6 +183,98 @@ test.describe('Databases Page', () => {
     await expect(dbEntry.first()).toBeVisible();
   });
 
+  test('per-database health is shown and a shrunk size can be accepted', async ({ page }) => {
+    const MIB = 1024 * 1024;
+    const point = (day: number, mb: number, shrunk = false) => ({
+      run_id: `r${day}`,
+      at: `2026-11-0${day}T02:00:00Z`,
+      status: 'success',
+      size_bytes: mb * MIB,
+      shrunk,
+    });
+    const nextcloud = {
+      key: 'mariadb_nextcloud-1e7f4a90',
+      container_name: 'mariadb',
+      db_type: 'mysql',
+      db_name: 'nextcloud',
+      host_path: null,
+      excluded: false,
+      status: 'warning',
+      issues: ['Latest dump is 80% smaller than its recent median (20.0 MB vs 100.0 MB)'],
+      notes: [],
+      last_attempt: { status: 'success', at: '2026-11-05T02:00:00Z', run_id: 'r5', error: null },
+      last_success_at: '2026-11-05T02:00:00Z',
+      last_success_run_id: 'r5',
+      size_bytes: 20 * MIB,
+      integrity_check: 'ok',
+      baseline_bytes: 100 * MIB,
+      size_change_percent: -80,
+      shrunk: true,
+      shrink_percent: 80,
+      trend: [point(1, 100), point(2, 100), point(3, 100), point(4, 100), point(5, 20, true)],
+      last_drill: {
+        status: 'passed',
+        at: '2026-11-04T07:00:00Z',
+        drill_id: 'd1',
+        detail: 'Restored into mariadb:11 — 108 tables',
+        dump_file: null,
+        dump_dumped_at: '2026-11-03T02:00:00Z',
+        snapshot_id: 'abc',
+      },
+      restorable_as_of: '2026-11-05T02:00:00Z',
+    };
+    const accepted: string[] = [];
+    await page.route('**/api/databases', (route, request) => {
+      if (request.method() !== 'GET') return route.continue();
+      const items = mockDatabases.map((db) => (db.db_name === 'nextcloud' ? { ...db, key: nextcloud.key } : db));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ databases: items, items, total: items.length }),
+      });
+    });
+    await page.route(/\/api\/databases\/health(\?|$)/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [accepted.length ? { ...nextcloud, status: 'ok', issues: [], shrunk: false } : nextcloud],
+          total: 1,
+          summary: { ok: 0, warning: 1, failed: 0, never_dumped: 0, excluded: 0 },
+          policy: { shrink_alert_percent: 50, shrink_min_mb: 1, baseline_dumps: 5, min_baseline_dumps: 3 },
+          latest_upload_at: '2026-11-05T02:10:00Z',
+          generated_at: '2026-11-05T03:00:00Z',
+        }),
+      })
+    );
+    await page.route(/\/api\/databases\/health\/accept-size$/, async (route, request) => {
+      accepted.push(request.postDataJSON().key);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ key: nextcloud.key, accepted_from: nextcloud.last_success_at }),
+      });
+    });
+
+    await page.goto('/databases', { waitUntil: 'networkidle' });
+
+    const card = page.locator('.card').filter({ hasText: 'nextcloud' });
+    const health = card.getByTestId('db-health');
+    await expect(health.getByTestId('db-health-status')).toHaveText('Needs attention');
+    await expect(health.getByTestId('dump-size-trend')).toBeVisible();
+    await expect(health.getByTestId('db-health-size')).toContainText('20 MB');
+    await expect(health.getByTestId('db-health-drill')).toContainText('Passed');
+    await expect(health).toContainText('80% smaller than its recent median');
+    await expect(page.getByTestId('db-health-summary')).toContainText('1 needs attention');
+
+    await health.getByRole('button', { name: 'Accept new size' }).click();
+
+    await expect(health.getByTestId('db-health-status')).toHaveText('Healthy');
+    expect(accepted).toEqual([nextcloud.key]);
+    // The database without health data still renders as before.
+    await expect(page.locator('.card').filter({ hasText: 'appdb' }).getByTestId('db-health')).toHaveCount(0);
+  });
+
   test('a database can be excluded from backups and included again', async ({ page }) => {
     const requests: Array<{ excluded: boolean; db_name: string }> = [];
     await page.route('**/api/databases/exclusions', async (route, request) => {

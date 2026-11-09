@@ -45,6 +45,14 @@ export async function mockBackgroundEndpoints(page: Page) {
       body: JSON.stringify({ items: [], total: 0 }),
     })
   );
+  // Databases page: per-database backup health.
+  await page.route(/\/api\/databases\/health(\?|$)/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], databases: [], total: 0, summary: {}, policy: null }),
+    })
+  );
   await page.route('**/api/notifications/events', (route) =>
     route.fulfill({
       status: 200,
