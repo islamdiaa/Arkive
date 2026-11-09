@@ -25,7 +25,7 @@ NOTIFICATION_EVENTS: list[dict[str, str]] = [
     {
         "value": "backup.no_offsite",
         "label": "No offsite copy",
-        "description": "Every enabled storage target is on this server, so losing it loses the backups too (sent once)",
+        "description": "Every target the backup jobs upload to is on this server, so losing it loses the backups too (sent once)",
     },
     {
         "value": "verification.failed",

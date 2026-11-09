@@ -71,9 +71,11 @@ const DEMO_STATUS = {
   offsite: {
     has_offsite_copy: true,
     warning: false,
+    uncertain: false,
     enabled_targets: 2,
     offsite_targets: 2,
     local_targets: [] as Array<{ id: string; name: string; type: string; reason: string }>,
+    unused_offsite_targets: [] as Array<{ id: string; name: string; type: string }>,
     message: null as string | null,
   },
 };

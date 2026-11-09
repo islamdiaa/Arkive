@@ -2,28 +2,38 @@
 
 A backup kept only on the machine it protects is lost along with that machine:
 a dead disk controller, a fire, theft, ransomware. ``evaluate_offsite`` looks
-at the enabled storage targets and reports when every one of them is on this
-server — a ``local`` target (unless its folder is a network share), or an
-SFTP/S3 target whose host points back here (loopback, this server's host name
-or addresses, the Docker host, a container on this Docker daemon).
+at the storage targets the enabled backup jobs upload to and reports when
+every one of them is on this server — a ``local`` target (unless its folder is
+a network share), or an SFTP/S3 target whose host points back here (loopback,
+this server's host name or addresses, the Docker host, a container on this
+Docker daemon).
+
+It follows the orchestrator: a job whose ``targets`` list names targets
+uploads to those only; an empty list means every enabled target. An enabled
+offsite target that no enabled job uploads to is reported, but it is not an
+offsite copy.
 
 This is a warning, never an error: it describes where backups go, not whether
 they happen. Detection errs towards silence — a target counts as on this
-server only when that is evident, so a remote host Arkive can't place is
-treated as offsite.
+server only when that is evident, so a host that resolves to an address Arkive
+can't place is treated as offsite. A lookup that fails (Docker unreachable,
+DNS down, a config that can't be read) is not an answer: the result is
+``uncertain`` and the last verdict stands instead of being reset.
 """
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import re
 import socket
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -66,17 +76,30 @@ NETWORK_FSTYPES = frozenset(
 DOCKER_HOST_ALIASES = frozenset({"host.docker.internal", "gateway.docker.internal"})
 # Domains a LAN uses for its own machines: "tower.local" is the server "tower".
 LAN_DOMAINS = frozenset({"local", "lan", "home", "internal", "localdomain", "home.arpa"})
+# Docker network drivers whose endpoints are containers on this host.
+LOCAL_NETWORK_DRIVERS = frozenset({"bridge", "macvlan", "ipvlan"})
+# Unraid reserves the server's own address on its custom networks (br0) under
+# this auxiliary-address name, so it is known even when the server uses DHCP.
+UNRAID_SERVER_AUX_ADDRESS = "server"
 
 PROC_NET = Path("/proc/net")
 BOOT_CONFIG = Path("/boot-config")
 IDENTITY_TTL_SECONDS = 600
+# A gather that could not reach Docker is retried sooner.
+INCOMPLETE_IDENTITY_TTL_SECONDS = 60
 IDENTITY_TIMEOUT_SECONDS = 5.0
 
+# "No offsite copy" is told once per episode, across restarts (scheduler):
+# when it started (activity entry written) and when a channel received the
+# notification. An uncertain evaluation keeps the episode open.
+OFFSITE_WARNING_SINCE_KEY = "offsite_warning_since"
+OFFSITE_NOTIFIED_AT_KEY = "offsite_warning_notified_at"
+
 NO_OFFSITE_MESSAGE = (
-    "Every enabled storage target is on this server, so there is no offsite copy. "
-    "A disk failure, fire, theft or ransomware here would take the backups with it. "
-    "Add a target on another machine or in the cloud."
+    "Every storage target the enabled backup jobs upload to is on this server, so there is no offsite copy. "
+    "A disk failure, fire, theft or ransomware here would take the backups with it."
 )
+ADD_TARGET_ADVICE = "Add a target on another machine or in the cloud."
 
 
 @dataclass(frozen=True)
@@ -85,7 +108,12 @@ class LocalIdentity:
 
     names: frozenset[str] = frozenset()
     addresses: frozenset[IPAddress] = frozenset()
-    containers: frozenset[str] = frozenset()
+    # Address of a container on this Docker daemon -> the container's name.
+    containers: Mapping[IPAddress, str] = field(default_factory=dict)
+    # Target host name -> the addresses it resolved to (absent: lookup failed).
+    resolved: Mapping[str, frozenset[IPAddress]] = field(default_factory=dict)
+    # False when Docker could not be asked and nothing was known from before.
+    complete: bool = True
 
 
 def _normalize_name(value: Any) -> str:
@@ -154,98 +182,153 @@ def _unraid_addresses(boot_config: Path) -> set[IPAddress]:
     return {ip for match in _UNRAID_IP_RE.finditer(text) if (ip := parse_ip(match.group(1)))}
 
 
-def _docker_identity(docker_client: Any) -> tuple[set[str], set[IPAddress]]:
-    """The Docker host's name, and its address on every bridge network.
+def _docker_identity(docker_client: Any) -> tuple[set[str], set[IPAddress], dict[IPAddress, str], bool]:
+    """The Docker host's names and addresses, and the addresses of its containers.
 
-    Only ``bridge`` networks: a macvlan/ipvlan gateway is the LAN router.
+    A bridge network's gateway is this server; a macvlan/ipvlan gateway is the
+    LAN router, but Unraid records the server's own address on those networks
+    as an auxiliary address. The last value is False when the daemon could
+    not be asked, so the caller can tell "nothing found" from "didn't look".
+    Without a Docker socket there is nothing to ask, which is not a failure.
     """
     names: set[str] = set()
     addresses: set[IPAddress] = set()
+    containers: dict[IPAddress, str] = {}
     if docker_client is None:
-        return names, addresses
+        return names, addresses, containers, True
+    complete = True
     try:
         names |= name_variants((docker_client.info() or {}).get("Name"))
     except Exception as exc:
+        complete = False
         logger.debug("Offsite check: no Docker host name: %s", exc)
     try:
-        for network in docker_client.networks.list():
+        # greedy: inspect each network, which is what lists its containers.
+        for network in docker_client.networks.list(greedy=True):
             attrs = getattr(network, "attrs", None) or {}
-            if attrs.get("Driver") != "bridge":
+            driver = attrs.get("Driver")
+            if driver not in LOCAL_NETWORK_DRIVERS:
                 continue
             for ipam in (attrs.get("IPAM") or {}).get("Config") or []:
-                if isinstance(ipam, dict) and (ip := parse_ip(ipam.get("Gateway"))):
+                if not isinstance(ipam, dict):
+                    continue
+                if driver == "bridge" and (ip := parse_ip(ipam.get("Gateway"))):
                     addresses.add(ip)
+                aux = ipam.get("AuxiliaryAddresses")
+                if isinstance(aux, dict) and (ip := parse_ip(aux.get(UNRAID_SERVER_AUX_ADDRESS))):
+                    addresses.add(ip)
+            for endpoint in (attrs.get("Containers") or {}).values():
+                if not isinstance(endpoint, dict):
+                    continue
+                for key in ("IPv4Address", "IPv6Address"):
+                    if ip := parse_ip(str(endpoint.get(key) or "").split("/", 1)[0]):
+                        containers[ip] = str(endpoint.get("Name") or "").lstrip("/") or "a container"
     except Exception as exc:
+        complete = False
         logger.debug("Offsite check: no Docker networks: %s", exc)
-    return names, addresses
+    return names, addresses, containers, complete
 
 
-def gather_system_identity(docker_client: Any = None) -> LocalIdentity:
-    """Blocking: read interfaces, Unraid config and the Docker daemon."""
-    names = name_variants(socket.gethostname()) | name_variants(_unraid_server_name(BOOT_CONFIG / "ident.cfg"))
+# Last answers that worked, used while Docker or DNS is briefly unreachable
+# (host_identity keeps the daemon name the same way). Written only by the
+# gather, which runs one at a time.
+_last_docker: tuple[set[str], set[IPAddress], dict[IPAddress, str]] | None = None
+_last_resolved: dict[str, frozenset[IPAddress]] = {}
+
+
+def _resolve(host: str) -> frozenset[IPAddress] | None:
+    """Blocking: the addresses ``host`` resolves to from here, as restic and
+    rclone would see them (Docker's DNS first, then the LAN's). Falls back to
+    the last answer; None when the lookup failed and there is none."""
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        logger.debug("Offsite check: cannot resolve %s: %s", host, exc)
+        return _last_resolved.get(host)
+    found = frozenset(ip for info in infos if (ip := parse_ip(info[4][0])))
+    if not found:
+        return _last_resolved.get(host)
+    _last_resolved[host] = found
+    return found
+
+
+def gather_system_identity(docker_client: Any = None, hosts: Iterable[str] = ()) -> LocalIdentity:
+    """Blocking: read interfaces, Unraid config and the Docker daemon, and look up ``hosts``."""
+    global _last_docker
+    unraid_name = _unraid_server_name(BOOT_CONFIG / "ident.cfg")
+    names = name_variants(socket.gethostname()) | name_variants(unraid_name)
     addresses = _interface_addresses(PROC_NET) | _unraid_addresses(BOOT_CONFIG)
-    docker_names, docker_addresses = _docker_identity(docker_client)
-    return LocalIdentity(names=frozenset(names | docker_names), addresses=frozenset(addresses | docker_addresses))
+    docker_names, docker_addresses, containers, complete = _docker_identity(docker_client)
+    if complete:
+        _last_docker = (set(docker_names), set(docker_addresses), dict(containers))
+    elif _last_docker is not None:
+        # A Docker hiccup is not news: what the daemon said last still holds.
+        docker_names |= _last_docker[0]
+        docker_addresses |= _last_docker[1]
+        containers = {**_last_docker[2], **containers}
+        complete = True
+    names |= docker_names
+    addresses |= docker_addresses
+    # A DHCP address is in no config file; the server's own names find it.
+    # Only names that are this machine's (not the user's display label), and
+    # only non-public answers: a search domain must not adopt someone's server.
+    for name in name_variants(unraid_name) | docker_names:
+        addresses |= {ip for ip in _resolve(name) or () if not ip.is_global}
+    resolved = {host: ips for host in hosts if (ips := _resolve(host)) is not None}
+    return LocalIdentity(
+        names=frozenset(names),
+        addresses=frozenset(addresses),
+        containers=containers,
+        resolved=resolved,
+        complete=complete,
+    )
 
 
 _identity_lock = threading.Lock()
-_identity_cache: tuple[float, LocalIdentity] | None = None
+# (expires at, hosts looked up, identity)
+_identity_cache: tuple[float, frozenset[str], LocalIdentity] | None = None
 
 
-def cached_system_identity(docker_client: Any = None) -> LocalIdentity | None:
+def cached_system_identity(docker_client: Any = None, hosts: Iterable[str] = ()) -> LocalIdentity | None:
     """Blocking, cached. Only one gather runs at a time, so a hung Docker
-    daemon ties up one worker thread rather than one per status poll."""
+    daemon or DNS server ties up one worker thread rather than one per
+    status poll."""
     global _identity_cache
+    wanted = frozenset(hosts)
     cached = _identity_cache
-    if cached and time.monotonic() - cached[0] < IDENTITY_TTL_SECONDS:
-        return cached[1]
+    if cached and time.monotonic() < cached[0] and wanted <= cached[1]:
+        return cached[2]
     if not _identity_lock.acquire(blocking=False):
-        return cached[1] if cached else None
+        return cached[2] if cached else None
     try:
-        identity = gather_system_identity(docker_client)
-        _identity_cache = (time.monotonic(), identity)
+        identity = gather_system_identity(docker_client, wanted)
+        ttl = IDENTITY_TTL_SECONDS if identity.complete else INCOMPLETE_IDENTITY_TTL_SECONDS
+        _identity_cache = (time.monotonic() + ttl, wanted, identity)
         return identity
     finally:
         _identity_lock.release()
 
 
 def reset_identity_cache() -> None:
-    global _identity_cache
+    """Forget cached and last-known answers (tests)."""
+    global _identity_cache, _last_docker
     _identity_cache = None
+    _last_docker = None
+    _last_resolved.clear()
 
 
-async def _container_names(db: aiosqlite.Connection) -> set[str]:
-    """Containers on this Docker daemon, plus their compose service names."""
-    try:
-        cursor = await db.execute("SELECT name, compose_project FROM discovered_containers")
-        rows = await cursor.fetchall()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        return set()
-    names: set[str] = set()
-    for row in rows:
-        name, project = _normalize_name(row[0]), _normalize_name(row[1])
-        if not name:
-            continue
-        names.add(name)
-        if project and (match := re.fullmatch(re.escape(project) + r"[-_](.+)[-_]\d+", name)):
-            names.add(match.group(1))
-    return names
-
-
-async def local_identity(db: aiosqlite.Connection, docker_client: Any = None) -> LocalIdentity:
+async def local_identity(
+    db: aiosqlite.Connection, docker_client: Any = None, hosts: Iterable[str] = ()
+) -> LocalIdentity:
     try:
         system = await asyncio.wait_for(
-            asyncio.to_thread(cached_system_identity, docker_client), IDENTITY_TIMEOUT_SECONDS
+            asyncio.to_thread(cached_system_identity, docker_client, frozenset(hosts)), IDENTITY_TIMEOUT_SECONDS
         )
     except Exception as exc:  # includes TimeoutError: a slow daemon must not stall /api/status
         logger.debug("Offsite check: identity unavailable: %s", exc)
-        system = _identity_cache[1] if _identity_cache else None
-    system = system or LocalIdentity()
-    return LocalIdentity(
-        names=system.names | name_variants(await get_setting(db, "server_name", "")),
-        addresses=system.addresses,
-        containers=frozenset(await _container_names(db)),
-    )
+        system = _identity_cache[2] if _identity_cache else None
+    system = system or LocalIdentity(complete=False)
+    return replace(system, names=system.names | name_variants(await get_setting(db, "server_name", "")))
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +338,8 @@ async def local_identity(db: aiosqlite.Connection, docker_client: Any = None) ->
 
 def target_host(target_type: str, config: dict) -> str:
     """The host an SFTP/S3 target connects to, or '' when there is none."""
-    field = HOST_FIELDS.get(target_type)
-    raw = str((config or {}).get(field) or "").strip() if field else ""
+    field_name = HOST_FIELDS.get(target_type)
+    raw = str((config or {}).get(field_name) or "").strip() if field_name else ""
     if not raw:
         return ""
     if parse_ip(raw):
@@ -271,15 +354,27 @@ def target_host(target_type: str, config: dict) -> str:
     return raw.split(":", 1)[0] if raw.count(":") == 1 else raw
 
 
+def _address_locality(ip: IPAddress, identity: LocalIdentity) -> str | None:
+    if ip.is_loopback or ip.is_unspecified:
+        return "a loopback address"
+    if ip in identity.addresses:
+        return "an address of this server"
+    if container := identity.containers.get(ip):
+        return f"the container {container} on this server"
+    return None
+
+
 def host_locality(host: str, identity: LocalIdentity) -> str | None:
-    """Why ``host`` is this server, or None when that isn't evident."""
+    """Why ``host`` is this server, or None when that isn't evident.
+
+    A name counts by what it resolves to from here, not by looking like a
+    container's name: Docker's DNS answers container names only on networks
+    Arkive shares with them, and anything else is another machine's to answer.
+    """
     ip = parse_ip(host)
     if ip is not None:
-        if ip.is_loopback or ip.is_unspecified:
-            return f"{host} is a loopback address"
-        if ip in identity.addresses:
-            return f"{host} is an address of this server"
-        return None
+        what = _address_locality(ip, identity)
+        return f"{host} is {what}" if what else None
     name = _normalize_name(host)
     if not name:
         return None
@@ -287,12 +382,20 @@ def host_locality(host: str, identity: LocalIdentity) -> str | None:
         return f"{host} is this server (localhost)"
     if name in DOCKER_HOST_ALIASES:
         return f"{host} is the Docker host"
-    variants = name_variants(name)
-    if variants & identity.names:
+    if name_variants(name) & identity.names:
         return f"{host} is this server's host name"
-    if variants & identity.containers:
-        return f"{host} is a container on this server"
+    for resolved_ip in sorted(identity.resolved.get(name, ()), key=str):
+        if what := _address_locality(resolved_ip, identity):
+            return f"{host} resolves to {resolved_ip}, {what}"
     return None
+
+
+def host_is_placed(host: str, identity: LocalIdentity) -> bool:
+    """Whether ``host_locality`` returning None is an answer ("not here")
+    rather than missing information (Docker or DNS couldn't be asked)."""
+    if not identity.complete:
+        return False
+    return parse_ip(host) is not None or _normalize_name(host) in identity.resolved
 
 
 def local_path_locality(path: str, mounts: list[MountEntry]) -> str | None:
@@ -319,6 +422,40 @@ def _read_config(raw: Any, config_dir: str | Path | None) -> dict:
         return {}
 
 
+def _job_target_ids(raw: Any) -> list[str] | None:
+    """A job's pinned target IDs ([] = every enabled target), None if unreadable."""
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list):
+        return None
+    ids = []
+    for entry in value:
+        target_id = entry.get("id") if isinstance(entry, dict) else entry
+        if isinstance(target_id, str) and target_id:
+            ids.append(target_id)
+    return ids
+
+
+def _names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _warning_message(unused: list[dict], pinned_jobs: list[str]) -> str:
+    if not unused:
+        return f"{NO_OFFSITE_MESSAGE} {ADD_TARGET_ADVICE}"
+    verb, pronoun = ("is", "it") if len(unused) == 1 else ("are", "them")
+    message = (
+        f"{NO_OFFSITE_MESSAGE} {_names([str(t['name']) for t in unused])} {verb} enabled, "
+        f"but no enabled backup job uploads to {pronoun}"
+    )
+    if pinned_jobs:
+        uploads, whom = ("uploads", "it") if len(pinned_jobs) == 1 else ("upload", "them")
+        message += f": {_names(pinned_jobs)} {uploads} only to the targets chosen for {whom}"
+    return f"{message}. A job created in Settings > Jobs uploads to every enabled target."
+
+
 async def evaluate_offsite(
     db: aiosqlite.Connection,
     *,
@@ -326,58 +463,107 @@ async def evaluate_offsite(
     docker_client: Any = None,
     mountinfo: Path | None = None,
 ) -> dict:
-    """Is any enabled storage target off this server?
+    """Does any backup leave this server?
 
-    Returns ``{"has_offsite_copy", "warning", "enabled_targets",
+    Returns ``{"has_offsite_copy", "warning", "uncertain", "enabled_targets",
     "offsite_targets", "local_targets": [{"id", "name", "type", "reason"}],
-    "message"}``. ``warning`` is True when targets are enabled and every one
-    of them is on this server. With no enabled targets there is no warning
-    here: runs already turn partial for that.
+    "unused_offsite_targets": [{"id", "name", "type"}], "message"}``.
+
+    ``local_targets`` and ``offsite_targets`` cover the targets the enabled
+    jobs upload to. ``warning`` is True when they upload somewhere and all of
+    it is on this server. With no destination there is no warning here: runs
+    already turn partial for that. ``uncertain`` means a destination could not
+    be placed because a lookup failed; ``warning`` then keeps the verdict of
+    the episode the scheduler last recorded.
     """
     result: dict = {
         "has_offsite_copy": False,
         "warning": False,
+        "uncertain": False,
         "enabled_targets": 0,
         "offsite_targets": 0,
         "local_targets": [],
+        "unused_offsite_targets": [],
         "message": None,
     }
     try:
-        cursor = await db.execute(
-            "SELECT id, name, type, config FROM storage_targets WHERE enabled = 1 ORDER BY created_at, id"
-        )
-        rows = await cursor.fetchall()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
+        cursor = await db.execute("SELECT id, name, type, config, enabled FROM storage_targets ORDER BY created_at, id")
+        targets = {row[0]: row for row in await cursor.fetchall()}
+        cursor = await db.execute("SELECT name, targets FROM backup_jobs WHERE enabled = 1 ORDER BY created_at, id")
+        jobs = await cursor.fetchall()
+    except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
+        # e.g. "database is locked": not the same as "no targets".
+        logger.debug("Offsite check: cannot read targets or jobs: %s", exc)
+        result["uncertain"] = True
         return result
 
+    # Where each enabled job uploads, resolved as the orchestrator does: named
+    # targets whether or not they are enabled, else every enabled target.
+    enabled = [target_id for target_id, row in targets.items() if row[4]]
+    used: set[str] = set()
+    pinned_jobs: list[str] = []
+    for job_name, raw_targets in jobs:
+        pinned = _job_target_ids(raw_targets)
+        if pinned is None:
+            continue
+        if pinned:
+            pinned_jobs.append(str(job_name))
+        used.update(target_id for target_id in (pinned or enabled) if target_id in targets)
+
+    considered = [target_id for target_id in targets if target_id in used or targets[target_id][4]]
+    hosts: dict[str, str] = {}
+    for target_id in considered:
+        target_type = str(targets[target_id][2] or "")
+        if target_type in HOST_FIELDS:
+            hosts[target_id] = target_host(target_type, _read_config(targets[target_id][3], config_dir))
     identity: LocalIdentity | None = None
+    if any(hosts.values()):
+        lookups = {_normalize_name(host) for host in hosts.values() if host and parse_ip(host) is None}
+        identity = await local_identity(db, docker_client, lookups)
+
     mounts: list[MountEntry] | None = None
-    for row in rows:
-        target_id, name, target_type, raw_config = row[0], row[1], str(row[2] or ""), row[3]
+    certain_offsite = 0
+    for target_id in considered:
+        _, name, raw_type, raw_config, _ = targets[target_id]
+        target_type = str(raw_type or "")
         reason: str | None = None
+        placed = True
         if target_type == "local":
             if mounts is None:
                 mounts = read_mounts(mountinfo or MOUNTINFO)
             path = str(_read_config(raw_config, config_dir).get("path") or "")
             reason = local_path_locality(path, mounts)
         elif target_type in HOST_FIELDS:
-            host = target_host(target_type, _read_config(raw_config, config_dir))
-            if host:
-                if identity is None:
-                    identity = await local_identity(db, docker_client)
+            host = hosts.get(target_id, "")
+            if not host or identity is None:
+                placed = False  # no readable host: neither here nor evidently elsewhere
+            else:
                 reason = host_locality(host, identity)
+                placed = reason is not None or host_is_placed(host, identity)
         # Cloud providers and unknown types are not on this server.
 
-        result["enabled_targets"] += 1
-        if reason:
-            result["local_targets"].append({"id": target_id, "name": name, "type": target_type, "reason": reason})
-        else:
-            result["offsite_targets"] += 1
+        info = {"id": target_id, "name": name, "type": target_type}
+        if target_id in used:
+            if reason:
+                result["local_targets"].append({**info, "reason": reason})
+            else:
+                result["offsite_targets"] += 1
+                certain_offsite += 1 if placed else 0
+        elif not reason and placed:
+            result["unused_offsite_targets"].append(info)
 
-    result["has_offsite_copy"] = result["offsite_targets"] > 0
-    result["warning"] = result["enabled_targets"] > 0 and not result["has_offsite_copy"]
+    result["enabled_targets"] = len(enabled)
+    if certain_offsite:
+        result["has_offsite_copy"] = True
+    elif result["offsite_targets"]:
+        # Something may be offsite but couldn't be checked: neither raise nor
+        # clear the warning on missing information.
+        result["uncertain"] = True
+        result["warning"] = bool(await get_setting(db, OFFSITE_WARNING_SINCE_KEY, ""))
+    elif result["local_targets"]:
+        result["warning"] = True
     if result["warning"]:
-        result["message"] = NO_OFFSITE_MESSAGE
+        result["message"] = _warning_message(result["unused_offsite_targets"], pinned_jobs)
     return result
 
 

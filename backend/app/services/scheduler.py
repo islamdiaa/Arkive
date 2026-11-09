@@ -15,7 +15,7 @@ from app.core.security import decrypt_config
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.freshness import describe_stale_job, evaluate_freshness, ping_heartbeat
 from app.services.lock_manager import BackupLockManager
-from app.services.offsite import evaluate_offsite
+from app.services.offsite import OFFSITE_NOTIFIED_AT_KEY, OFFSITE_WARNING_SINCE_KEY, evaluate_offsite
 from app.services.retention import read_retention_settings
 from app.services.settings_store import DEFAULTS, get_bool_setting, get_setting, set_setting
 from app.utils.cron import crontab_trigger
@@ -34,11 +34,6 @@ SYSTEM_JOB_RESTORE_DRILL = "system_restore_drill"
 
 # Repeat the "backups overdue" alert this often while a job stays stale.
 STALE_REMINDER_SECONDS = 24 * 3600
-
-# "No offsite copy" is told once per episode, across restarts: when it started
-# (activity entry written) and when a channel received the notification.
-OFFSITE_WARNING_SINCE_KEY = "offsite_warning_since"
-OFFSITE_NOTIFIED_AT_KEY = "offsite_warning_notified_at"
 
 # Target status values written by the health check and the targets API.
 _HEALTHY_STATES = {"online", "ok", "healthy"}
@@ -285,14 +280,14 @@ class ArkiveScheduler:
         await self._check_offsite()
 
     async def _check_offsite(self) -> None:
-        """Tell the user once when every enabled target is on this server.
+        """Tell the user once when every target the jobs upload to is on this server.
 
         A warning, not a freshness failure: it never withholds the heartbeat.
         The activity entry is written when the condition starts; the
         notification is retried each cycle until a channel actually receives
         it, so a channel subscribed later still hears about it once. Both
-        reset when an offsite target appears, so a later regression is told
-        again.
+        reset when a job uploads offsite, so a later regression is told
+        again. An uncertain check (Docker or DNS unreachable) changes nothing.
         """
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         try:
@@ -302,6 +297,9 @@ class ArkiveScheduler:
                     config_dir=getattr(self.config, "config_dir", None),
                     docker_client=getattr(self.discovery, "docker", None),
                 )
+                if offsite.get("uncertain"):
+                    logger.debug("Offsite check inconclusive (a target could not be checked); keeping last verdict")
+                    return
                 since = await get_setting(db, OFFSITE_WARNING_SINCE_KEY, "")
                 notified_at = await get_setting(db, OFFSITE_NOTIFIED_AT_KEY, "")
                 if not offsite["warning"]:
@@ -330,7 +328,7 @@ class ArkiveScheduler:
                         {"local_targets": offsite["local_targets"]},
                         severity="warning",
                     )
-                    logger.warning("No offsite copy: every enabled storage target is on this server")
+                    logger.warning("No offsite copy: every target the backup jobs upload to is on this server")
         except Exception as e:
             logger.warning("System job: offsite check failed: %s", e)
             return

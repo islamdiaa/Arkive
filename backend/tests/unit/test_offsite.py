@@ -1,8 +1,9 @@
-"""3-2-1 awareness: detecting when every backup target is on this server,
-reporting it in /api/status, and telling the user once."""
+"""3-2-1 awareness: detecting when every target the backup jobs upload to is
+on this server, reporting it in /api/status, and telling the user once."""
 
 import ipaddress
 import json
+import socket
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -44,6 +45,7 @@ IPADDR[0]="192.168.1.100"
 NETMASK[0]="255.255.255.0"
 GATEWAY="192.168.1.1"
 """
+NETWORK_CFG_DHCP = 'USE_DHCP[0]="yes"\n'
 
 MOUNTINFO = """\
 100 90 0:40 / / rw,relatime - overlay overlay rw
@@ -58,8 +60,14 @@ def _ip(text: str):
     return ipaddress.ip_address(text)
 
 
+@pytest.fixture
+def dns():
+    """Name -> addresses answered by the fake resolver; anything else fails."""
+    return {}
+
+
 @pytest.fixture(autouse=True)
-def _isolated_identity(tmp_path, monkeypatch):
+def _isolated_identity(tmp_path, monkeypatch, dns):
     """Point the identity readers at fixtures instead of this machine."""
     proc_net = tmp_path / "proc_net"
     proc_net.mkdir()
@@ -69,13 +77,46 @@ def _isolated_identity(tmp_path, monkeypatch):
     boot.mkdir()
     (boot / "network.cfg").write_text(NETWORK_CFG)
     (boot / "ident.cfg").write_text('NAME="tower"\n')
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        answers = dns.get(host)
+        if isinstance(answers, Exception):
+            raise answers
+        if not answers:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [(socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, 0)) for a in answers]
+
     monkeypatch.setattr(offsite, "PROC_NET", proc_net)
     monkeypatch.setattr(offsite, "BOOT_CONFIG", boot)
     monkeypatch.setattr(offsite.socket, "gethostname", lambda: "0123456789ab")
+    monkeypatch.setattr(offsite.socket, "getaddrinfo", getaddrinfo)
     offsite.reset_identity_cache()
     yield
     offsite.reset_identity_cache()
     _reset_fernet()
+
+
+def _network(driver: str, gateway: str | None, *, aux: dict | None = None, containers: dict | None = None):
+    config = [{"Subnet": "10.0.0.0/24", "Gateway": gateway, "AuxiliaryAddresses": aux}] if gateway else []
+    endpoints = {
+        f"{i:064x}": {"Name": name, "IPv4Address": f"{address}/24", "IPv6Address": ""}
+        for i, (name, address) in enumerate((containers or {}).items())
+    }
+    return SimpleNamespace(attrs={"Driver": driver, "IPAM": {"Config": config}, "Containers": endpoints})
+
+
+def _docker(*networks, name="tower"):
+    client = MagicMock()
+    client.info.return_value = {"Name": name}
+    client.networks.list.return_value = list(networks)
+    return client
+
+
+def _failing_docker():
+    client = MagicMock()
+    client.info.side_effect = RuntimeError("daemon down")
+    client.networks.list.side_effect = RuntimeError("daemon down")
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +148,14 @@ def test_target_host(target_type, config, expected):
 IDENTITY = offsite.LocalIdentity(
     names=frozenset({"tower"}),
     addresses=frozenset({_ip("172.17.0.1"), _ip("192.168.1.100")}),
-    containers=frozenset({"minio"}),
+    containers={_ip("172.20.0.3"): "minio", _ip("192.168.1.50"): "garage", _ip("172.20.0.9"): "vaultwarden-backup-1"},
+    resolved={
+        "minio": frozenset({_ip("172.20.0.3")}),
+        "tower.example.com": frozenset({_ip("203.0.113.10")}),
+        "nas": frozenset({_ip("192.168.1.60")}),
+        "backup.lan": frozenset({_ip("192.168.1.61")}),
+        "s3.amazonaws.com": frozenset({_ip("203.0.113.20")}),
+    },
 )
 
 
@@ -128,15 +176,49 @@ IDENTITY = offsite.LocalIdentity(
         ("tower.example.com", False),
         ("192.168.1.100", True),
         ("172.17.0.1", True),
-        ("192.168.1.50", False),
-        ("minio", True),
+        ("192.168.1.50", True),  # a container's own LAN address (macvlan/ipvlan)
+        ("192.168.1.51", False),
+        ("minio", True),  # Docker's DNS answered with a container's address
         ("nas", False),
+        ("backup.lan", False),
         ("s3.amazonaws.com", False),
+        ("unresolved", False),
         ("", False),
     ],
 )
 def test_host_locality(host, local):
     assert (offsite.host_locality(host, IDENTITY) is not None) is local
+
+
+def test_host_locality_explains_resolved_containers():
+    assert (
+        offsite.host_locality("minio", IDENTITY) == "minio resolves to 172.20.0.3, the container minio on this server"
+    )
+    assert offsite.host_locality("192.168.1.50", IDENTITY) == "192.168.1.50 is the container garage on this server"
+
+
+def test_container_names_alone_never_make_a_host_local():
+    """A LAN host named like a container (or a compose service) is another machine."""
+    identity = offsite.LocalIdentity(
+        containers={_ip("172.20.0.9"): "vaultwarden-backup-1", _ip("172.20.0.10"): "nas", _ip("172.20.0.11"): "db"},
+        resolved={
+            "backup.lan": frozenset({_ip("192.168.1.61")}),
+            "nas.local": frozenset({_ip("192.168.1.62")}),
+            "db.internal": frozenset({_ip("192.168.1.63")}),
+            "nas": frozenset({_ip("192.168.1.62")}),
+        },
+    )
+    for host in ("backup.lan", "nas.local", "db.internal", "nas", "backup"):
+        assert offsite.host_locality(host, identity) is None, host
+
+
+def test_host_is_placed_only_with_complete_information():
+    assert offsite.host_is_placed("192.168.1.51", IDENTITY)
+    assert offsite.host_is_placed("NAS", IDENTITY)
+    assert not offsite.host_is_placed("unresolved", IDENTITY)
+    incomplete = offsite.LocalIdentity(resolved={"nas": frozenset({_ip("192.168.1.60")})}, complete=False)
+    assert not offsite.host_is_placed("nas", incomplete)
+    assert not offsite.host_is_placed("192.168.1.51", incomplete)
 
 
 def test_local_path_locality_treats_network_shares_as_offsite():
@@ -162,44 +244,79 @@ def test_interface_and_unraid_addresses(tmp_path):
     assert offsite._unraid_addresses(tmp_path / "missing") == set()
 
 
-def _network(driver: str, gateway: str | None):
-    config = [{"Subnet": "10.0.0.0/24", "Gateway": gateway}] if gateway else []
-    return SimpleNamespace(attrs={"Driver": driver, "IPAM": {"Config": config}})
-
-
-def test_docker_identity_uses_bridge_gateways_only():
-    client = MagicMock()
-    client.info.return_value = {"Name": "Tower"}
-    client.networks.list.return_value = [
-        _network("bridge", "172.17.0.1"),
+def test_docker_identity_reads_gateways_aux_addresses_and_containers():
+    client = _docker(
+        _network("bridge", "172.17.0.1", containers={"minio": "172.17.0.3"}),
         _network("bridge", "172.20.0.1"),
-        _network("macvlan", "192.168.1.1"),  # the LAN router, not this server
+        # Unraid's br0: the gateway is the LAN router, the "server" aux address is this host.
+        _network("ipvlan", "192.168.1.1", aux={"server": "192.168.1.100"}, containers={"garage": "192.168.1.50"}),
+        _network("macvlan", "192.168.2.1", aux={"other": "192.168.2.9"}),
         _network("host", None),
-    ]
-    names, addresses = offsite._docker_identity(client)
+        name="Tower",
+    )
+    names, addresses, containers, complete = offsite._docker_identity(client)
+    assert complete is True
     assert names == {"tower"}
-    assert addresses == {_ip("172.17.0.1"), _ip("172.20.0.1")}
+    assert addresses == {_ip("172.17.0.1"), _ip("172.20.0.1"), _ip("192.168.1.100")}
+    assert containers == {_ip("172.17.0.3"): "minio", _ip("192.168.1.50"): "garage"}
+    client.networks.list.assert_called_with(greedy=True)
 
 
-def test_docker_identity_survives_daemon_errors():
-    client = MagicMock()
-    client.info.side_effect = RuntimeError("daemon down")
-    client.networks.list.side_effect = RuntimeError("daemon down")
-    assert offsite._docker_identity(client) == (set(), set())
-    assert offsite._docker_identity(None) == (set(), set())
+def test_docker_identity_reports_daemon_errors_as_incomplete():
+    assert offsite._docker_identity(_failing_docker()) == (set(), set(), {}, False)
+    # No Docker socket at all: nothing to ask, which is not a failure.
+    assert offsite._docker_identity(None) == (set(), set(), {}, True)
+
+
+def test_gather_keeps_last_docker_answer_through_a_hiccup():
+    first = offsite.gather_system_identity(_docker(_network("bridge", "172.17.0.1"), name="test-server"))
+    assert first.complete and _ip("172.17.0.1") in first.addresses and "test-server" in first.names
+
+    during = offsite.gather_system_identity(_failing_docker())
+    assert during.complete
+    assert _ip("172.17.0.1") in during.addresses and "test-server" in during.names
+
+    # A fresh process that never reached Docker can't vouch for anything.
+    offsite.reset_identity_cache()
+    cold = offsite.gather_system_identity(_failing_docker())
+    assert cold.complete is False and _ip("172.17.0.1") not in cold.addresses
+
+
+def test_gather_finds_a_dhcp_address_through_the_servers_own_name(dns):
+    (offsite.BOOT_CONFIG / "network.cfg").write_text(NETWORK_CFG_DHCP)
+    dns["tower"] = ["192.168.1.100"]
+    dns["test-server"] = ["8.8.8.8"]  # a search-domain answer on the internet is not this server
+    identity = offsite.gather_system_identity(_docker(name="test-server"))
+    assert _ip("192.168.1.100") in identity.addresses
+    assert _ip("8.8.8.8") not in identity.addresses
+
+
+def test_gather_resolves_target_hosts_and_remembers_answers(dns):
+    dns["minio"] = ["172.20.0.3"]
+    identity = offsite.gather_system_identity(None, {"minio", "gone"})
+    assert identity.resolved == {"minio": frozenset({_ip("172.20.0.3")})}
+
+    dns["minio"] = socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+    again = offsite.gather_system_identity(None, {"minio"})
+    assert again.resolved == {"minio": frozenset({_ip("172.20.0.3")})}
 
 
 def test_system_identity_is_cached_and_never_stacks_gathers(monkeypatch):
     calls = []
 
-    def gather(docker_client=None):
-        calls.append(docker_client)
+    def gather(docker_client=None, hosts=()):
+        calls.append(frozenset(hosts))
         return offsite.LocalIdentity(names=frozenset({"tower"}))
 
     monkeypatch.setattr(offsite, "gather_system_identity", gather)
     first = offsite.cached_system_identity()
     assert offsite.cached_system_identity() is first
     assert len(calls) == 1
+    # A host that wasn't looked up yet needs a new gather.
+    offsite.cached_system_identity(None, {"minio"})
+    assert calls[-1] == {"minio"} and len(calls) == 2
+    offsite.cached_system_identity(None, set())
+    assert len(calls) == 2
 
     # While a gather is in flight (e.g. stuck on Docker), callers get the
     # last result instead of starting another one.
@@ -207,7 +324,25 @@ def test_system_identity_is_cached_and_never_stacks_gathers(monkeypatch):
     lock: threading.Lock = offsite._identity_lock
     with lock:
         assert offsite.cached_system_identity() is None
-    assert len(calls) == 1
+    assert len(calls) == 2
+
+
+def test_incomplete_identity_is_retried_sooner(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(offsite.time, "monotonic", lambda: clock[0])
+    calls = []
+
+    def gather(docker_client=None, hosts=()):
+        calls.append(1)
+        return offsite.LocalIdentity(complete=len(calls) > 1)
+
+    monkeypatch.setattr(offsite, "gather_system_identity", gather)
+    assert offsite.cached_system_identity().complete is False
+    clock[0] += offsite.INCOMPLETE_IDENTITY_TTL_SECONDS + 1
+    assert offsite.cached_system_identity().complete is True
+    clock[0] += offsite.INCOMPLETE_IDENTITY_TTL_SECONDS + 1
+    offsite.cached_system_identity()
+    assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -215,12 +350,22 @@ def test_system_identity_is_cached_and_never_stacks_gathers(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+async def _add_job(db, job_id, targets=(), enabled=1, name=None):
+    await db.execute(
+        "INSERT INTO backup_jobs (id, name, type, schedule, enabled, targets) VALUES (?, ?, 'full', '0 2 * * *', ?, ?)",
+        (job_id, name or f"Job {job_id}", enabled, json.dumps(list(targets))),
+    )
+    await db.commit()
+
+
 @pytest.fixture
 async def db(tmp_path):
+    """A database with one enabled job that uploads to every enabled target."""
     path = tmp_path / "arkive.db"
     await init_db(path)
     await run_migrations(path)
     async with aiosqlite.connect(path) as conn:
+        await _add_job(conn, "all", name="Nightly")
         yield conn
 
 
@@ -244,9 +389,11 @@ async def test_no_targets_is_not_a_warning(db, tmp_path):
     assert result == {
         "has_offsite_copy": False,
         "warning": False,
+        "uncertain": False,
         "enabled_targets": 0,
         "offsite_targets": 0,
         "local_targets": [],
+        "unused_offsite_targets": [],
         "message": None,
     }
 
@@ -255,11 +402,11 @@ async def test_only_local_targets_warn(db, tmp_path):
     await _add_target(db, tmp_path, "usb", "local", {"path": "/mnt/disks/usb"})
     await _add_target(db, tmp_path, "share", "local", {"path": "/mnt/user/backups"})
     result = await _evaluate(db, tmp_path)
-    assert result["warning"] is True and result["has_offsite_copy"] is False
+    assert result["warning"] is True and result["has_offsite_copy"] is False and result["uncertain"] is False
     assert result["enabled_targets"] == 2 and result["offsite_targets"] == 0
     assert {t["id"] for t in result["local_targets"]} == {"usb", "share"}
     assert all(t["type"] == "local" and "on this server" in t["reason"] for t in result["local_targets"])
-    assert "no offsite copy" in result["message"]
+    assert "no offsite copy" in result["message"] and "Add a target" in result["message"]
 
 
 async def test_cloud_target_is_offsite(db, tmp_path):
@@ -275,12 +422,59 @@ async def test_disabled_offsite_target_does_not_count(db, tmp_path):
     await _add_target(db, tmp_path, "b2t", "b2", {"bucket": "b"}, enabled=0)
     result = await _evaluate(db, tmp_path)
     assert result["warning"] is True and result["enabled_targets"] == 1
+    assert result["unused_offsite_targets"] == []
 
 
 async def test_local_target_on_network_share_is_offsite(db, tmp_path):
     await _add_target(db, tmp_path, "nas", "local", {"path": "/mnt/remotes/nas/arkive"})
     result = await _evaluate(db, tmp_path)
     assert result["warning"] is False and result["has_offsite_copy"] is True
+
+
+async def test_offsite_target_no_job_uploads_to_is_not_an_offsite_copy(db, tmp_path):
+    """Setup pins Full Backup to the target chosen then; a target added later
+    is not one it uploads to, so it must not clear the warning."""
+    await db.execute("UPDATE backup_jobs SET enabled = 0 WHERE id = 'all'")
+    await _add_target(db, tmp_path, "usb", "local", {"path": "/mnt/disks/usb"})
+    await _add_job(db, "full", ["usb"], name="Full Backup")
+    await _add_job(db, "flash", [], enabled=0, name="Flash Backup")
+    await _add_target(db, tmp_path, "b2t", "b2", {"bucket": "b"})
+
+    result = await _evaluate(db, tmp_path)
+    assert result["warning"] is True and result["has_offsite_copy"] is False
+    assert result["enabled_targets"] == 2 and result["offsite_targets"] == 0
+    assert [t["id"] for t in result["local_targets"]] == ["usb"]
+    assert result["unused_offsite_targets"] == [{"id": "b2t", "name": "Target b2t", "type": "b2"}]
+    assert (
+        "Target b2t is enabled, but no enabled backup job uploads to it: "
+        "Full Backup uploads only to the targets chosen for it." in result["message"]
+    )
+
+    # A job that uploads to every enabled target takes the backups offsite.
+    await db.execute("UPDATE backup_jobs SET enabled = 1 WHERE id = 'flash'")
+    await db.commit()
+    result = await _evaluate(db, tmp_path)
+    assert result["warning"] is False and result["has_offsite_copy"] is True
+    assert result["unused_offsite_targets"] == []
+
+
+async def test_job_pinned_to_an_offsite_target(db, tmp_path):
+    await db.execute("DELETE FROM backup_jobs")
+    await _add_target(db, tmp_path, "usb", "local", {"path": "/mnt/disks/usb"})
+    await _add_target(db, tmp_path, "b2t", "b2", {"bucket": "b"}, enabled=0)
+    # Like the orchestrator, a target named on the job is used even when disabled.
+    await _add_job(db, "full", ["b2t", "missing"])
+    result = await _evaluate(db, tmp_path)
+    assert result["has_offsite_copy"] is True and result["warning"] is False
+    assert result["local_targets"] == []  # usb is enabled but not used
+
+
+async def test_no_enabled_job_is_not_a_warning(db, tmp_path):
+    await db.execute("UPDATE backup_jobs SET enabled = 0")
+    await _add_target(db, tmp_path, "usb", "local", {"path": "/mnt/disks/usb"})
+    result = await _evaluate(db, tmp_path)
+    assert result["warning"] is False and result["has_offsite_copy"] is False
+    assert result["enabled_targets"] == 1 and result["local_targets"] == []
 
 
 @pytest.mark.parametrize(
@@ -298,36 +492,74 @@ async def test_local_target_on_network_share_is_offsite(db, tmp_path):
         ("wasabi", {"bucket": "b", "region": "eu-central-1"}, False),
     ],
 )
-async def test_self_hosted_targets_pointing_back_here(db, tmp_path, target_type, config, local):
+async def test_self_hosted_targets_pointing_back_here(db, tmp_path, dns, target_type, config, local):
+    dns["backup.example.com"] = ["203.0.113.10"]
+    dns["s3.eu-central-1.amazonaws.com"] = ["203.0.113.20"]
     await _add_target(db, tmp_path, "t1", target_type, config)
     result = await _evaluate(db, tmp_path)
     assert result["warning"] is local
     assert result["has_offsite_copy"] is not local
+    assert result["uncertain"] is False
 
 
-async def test_s3_on_a_local_container_or_compose_service(db, tmp_path):
-    await db.execute(
-        "INSERT INTO discovered_containers (name, image, compose_project) VALUES "
-        "('minio', 'minio/minio', NULL), ('storage-garage-1', 'dxflrs/garage', 'storage')"
+async def test_s3_on_a_container_reached_by_name_or_lan_address(db, tmp_path, dns):
+    dns["minio"] = ["172.20.0.3"]  # Docker's DNS on a network Arkive shares
+    client = _docker(
+        _network("bridge", "172.20.0.1", containers={"minio": "172.20.0.3"}),
+        _network("ipvlan", "192.168.1.1", containers={"garage": "192.168.1.50"}),
     )
-    await db.commit()
     await _add_target(db, tmp_path, "m1", "s3", {"endpoint": "http://minio:9000", "bucket": "b"})
-    await _add_target(db, tmp_path, "g1", "s3", {"endpoint": "http://garage:3900", "bucket": "b"})
-    result = await _evaluate(db, tmp_path)
+    await _add_target(db, tmp_path, "g1", "s3", {"endpoint": "http://192.168.1.50:3900", "bucket": "b"})
+    result = await _evaluate(db, tmp_path, docker_client=client)
     assert result["warning"] is True
     reasons = {t["id"]: t["reason"] for t in result["local_targets"]}
     assert reasons == {
-        "m1": "minio is a container on this server",
-        "g1": "garage is a container on this server",
+        "m1": "minio resolves to 172.20.0.3, the container minio on this server",
+        "g1": "192.168.1.50 is the container garage on this server",
     }
+
+
+async def test_lan_host_named_like_a_compose_service_is_offsite(db, tmp_path, dns):
+    """vaultwarden-backup-1 runs here; backup.lan is a different machine."""
+    await db.execute(
+        "INSERT INTO discovered_containers (name, image, compose_project) "
+        "VALUES ('vaultwarden-backup-1', 'img', 'vaultwarden'), ('nas', 'img', NULL)"
+    )
+    await db.commit()
+    dns["backup.lan"] = ["192.168.1.61"]
+    dns["nas.local"] = ["192.168.1.62"]
+    client = _docker(_network("bridge", "172.17.0.1", containers={"vaultwarden-backup-1": "172.17.0.9"}))
+    await _add_target(db, tmp_path, "pi", "sftp", {"host": "backup.lan", "username": "u"})
+    await _add_target(db, tmp_path, "nas", "sftp", {"host": "nas.local", "username": "u"})
+    result = await _evaluate(db, tmp_path, docker_client=client)
+    assert result["warning"] is False and result["has_offsite_copy"] is True
+    assert result["local_targets"] == [] and result["offsite_targets"] == 2
+
+
+async def test_dhcp_server_address_is_recognised(db, tmp_path, dns):
+    """Unraid on DHCP: the address is in no config file. Its own name, or the
+    aux address Unraid reserves on br0, gives it away."""
+    (offsite.BOOT_CONFIG / "network.cfg").write_text(NETWORK_CFG_DHCP)
+    await _add_target(db, tmp_path, "s3", "s3", {"endpoint": "http://192.168.1.100:9000", "bucket": "b"})
+
+    assert (await _evaluate(db, tmp_path))["warning"] is False  # nothing to go on
+
+    offsite.reset_identity_cache()
+    dns["tower"] = ["192.168.1.100"]
+    result = await _evaluate(db, tmp_path)
+    assert result["warning"] is True
+    assert result["local_targets"][0]["reason"] == "192.168.1.100 is an address of this server"
+
+    offsite.reset_identity_cache()
+    dns.clear()
+    client = _docker(_network("ipvlan", "192.168.1.1", aux={"server": "192.168.1.100"}))
+    assert (await _evaluate(db, tmp_path, docker_client=client))["warning"] is True
 
 
 async def test_server_name_and_docker_bridge_gateway(db, tmp_path):
     await db.execute("INSERT INTO settings (key, value) VALUES ('server_name', 'unraid-test')")
     await db.commit()
-    client = MagicMock()
-    client.info.return_value = {"Name": "test-server"}
-    client.networks.list.return_value = [_network("bridge", "172.17.0.1")]
+    client = _docker(_network("bridge", "172.17.0.1"), name="test-server")
     await _add_target(db, tmp_path, "a", "sftp", {"host": "unraid-test", "username": "u"})
     await _add_target(db, tmp_path, "b", "sftp", {"host": "172.17.0.1", "username": "u"})
     await _add_target(db, tmp_path, "c", "sftp", {"host": "test-server.lan", "username": "u"})
@@ -335,17 +567,40 @@ async def test_server_name_and_docker_bridge_gateway(db, tmp_path):
     assert result["warning"] is True and len(result["local_targets"]) == 3
 
 
-async def test_unreadable_remote_config_is_not_claimed_local(db, tmp_path):
+async def test_unreadable_remote_config_is_uncertain(db, tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     await _add_target(db, other, "s1", "sftp", {"host": "localhost", "username": "u"})
     await _add_target(db, other, "l1", "local", {"path": "/mnt/remotes/nas"})
     (tmp_path / ".keyfile").unlink(missing_ok=True)
     result = await _evaluate(db, tmp_path)
-    # The sftp host can't be read, so it isn't evidently local; the local
-    # target is local by type even without its path.
-    assert result["offsite_targets"] == 1 and [t["id"] for t in result["local_targets"]] == ["l1"]
+    # The sftp host can't be read, so it is neither local nor evidently
+    # offsite; the local target is local by type even without its path.
+    assert [t["id"] for t in result["local_targets"]] == ["l1"]
+    assert result["offsite_targets"] == 1
+    assert result["uncertain"] is True and result["has_offsite_copy"] is False and result["warning"] is False
     assert not (tmp_path / ".keyfile").exists(), "reading configs must never create a keyfile"
+
+
+async def test_uncertain_result_keeps_an_open_warning(db, tmp_path):
+    await _add_target(db, tmp_path, "usb", "local", {"path": "/mnt/disks/usb"})
+    await _add_target(db, tmp_path, "s1", "sftp", {"host": "unresolvable", "username": "u"})
+    result = await _evaluate(db, tmp_path)
+    assert result["uncertain"] is True and result["warning"] is False
+
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, '2026-11-01T00:00:00Z')", (offsite.OFFSITE_WARNING_SINCE_KEY,)
+    )
+    await db.commit()
+    result = await _evaluate(db, tmp_path)
+    assert result["uncertain"] is True and result["warning"] is True and result["has_offsite_copy"] is False
+    assert result["message"]
+
+
+async def test_unreadable_database_is_uncertain_not_empty(tmp_path):
+    async with aiosqlite.connect(tmp_path / "bare.db") as conn:
+        result = await offsite.evaluate_offsite(conn)
+    assert result["uncertain"] is True and result["warning"] is False and result["has_offsite_copy"] is False
 
 
 async def test_plain_json_legacy_config(db, tmp_path):
@@ -355,7 +610,7 @@ async def test_plain_json_legacy_config(db, tmp_path):
 
 
 async def test_slow_identity_does_not_stall(db, tmp_path, monkeypatch):
-    def hang(docker_client=None):
+    def hang(docker_client=None, hosts=()):
         threading.Event().wait(2)
         return None
 
@@ -364,8 +619,10 @@ async def test_slow_identity_does_not_stall(db, tmp_path, monkeypatch):
     await _add_target(db, tmp_path, "s1", "sftp", {"host": "localhost", "username": "u"})
     await _add_target(db, tmp_path, "s2", "sftp", {"host": "192.168.1.100", "username": "u"})
     result = await _evaluate(db, tmp_path)
-    # Loopback is still recognised; the host address needs the identity.
+    # Loopback is still recognised; the host address needs the identity, and
+    # without it that target is unplaced rather than offsite.
     assert [t["id"] for t in result["local_targets"]] == ["s1"]
+    assert result["uncertain"] is True and result["has_offsite_copy"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +661,9 @@ async def test_status_reports_missing_offsite_copy_as_warning_only(client):
     before = (await client.get("/api/status", headers=headers)).json()
     assert before["offsite"]["warning"] is True
     assert before["offsite"]["has_offsite_copy"] is False
+    assert before["offsite"]["uncertain"] is False
     assert before["offsite"]["local_targets"][0]["id"] == "usb"
+    assert before["offsite"]["unused_offsite_targets"] == []
     assert before["offsite"]["message"]
 
     await _insert_target(client, "b2t", "b2", {"bucket": "b", "key_id": "k", "app_key": "s"})
@@ -412,6 +671,24 @@ async def test_status_reports_missing_offsite_copy_as_warning_only(client):
     assert after["offsite"]["warning"] is False and after["offsite"]["has_offsite_copy"] is True
     # The warning never changes the overall verdict.
     assert before["status"] == after["status"]
+
+
+async def test_status_still_warns_when_the_only_job_skips_the_new_target(client):
+    """The reviewer's scenario: setup pinned Full Backup to a local target,
+    the other jobs are off, and a B2 target is added afterwards."""
+    data = await do_setup(client)
+    headers = auth_headers(data["api_key"])
+    async with aiosqlite.connect(_app(client).state.config.db_path) as conn:
+        await conn.execute("DELETE FROM storage_targets")
+        await conn.execute("UPDATE backup_jobs SET targets = '[\"usb\"]' WHERE type = 'full'")
+        await conn.execute("UPDATE backup_jobs SET enabled = 0 WHERE type != 'full'")
+        await conn.commit()
+    await _insert_target(client, "usb", "local", {"path": "/mnt/disks/usb"})
+    await _insert_target(client, "b2t", "b2", {"bucket": "b", "key_id": "k", "app_key": "s"})
+
+    offsite_status = (await client.get("/api/status", headers=headers)).json()["offsite"]
+    assert offsite_status["warning"] is True and offsite_status["has_offsite_copy"] is False
+    assert [t["id"] for t in offsite_status["unused_offsite_targets"]] == ["b2t"]
 
 
 async def test_status_offsite_is_not_in_unauthenticated_payload(client):
@@ -438,19 +715,46 @@ def test_event_is_in_catalog_and_defaults():
     assert "backup.no_offsite" in EVENT_TYPES and "backup.no_offsite" in DEFAULT_EVENTS
 
 
+async def test_migration_subscribes_existing_failure_channels(tmp_path):
+    """Channels created before the event existed hear about it if they asked for failures."""
+    path = tmp_path / "arkive.db"
+    await init_db(path)
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "INSERT INTO notification_channels (id, type, name, events) VALUES "
+            "('a', 'discord', 'A', '[\"backup.failed\", \"backup.stale\"]'), "
+            "('b', 'ntfy', 'B', '[\"backup.success\"]'), "
+            "('c', 'ntfy', 'C', '[\"backup.failed\", \"backup.no_offsite\"]')"
+        )
+        await conn.commit()
+    await run_migrations(path)
+    async with aiosqlite.connect(path) as conn:
+        rows = {
+            k: json.loads(v)
+            for k, v in await (await conn.execute("SELECT id, events FROM notification_channels")).fetchall()
+        }
+    assert rows["a"].count("backup.no_offsite") == 1
+    assert "backup.no_offsite" not in rows["b"]
+    assert rows["c"].count("backup.no_offsite") == 1
+
+
 class TestOffsiteNotification:
     async def _seed(self, tmp_path, *targets):
         path = tmp_path / "arkive.db"
         await init_db(path)
         await run_migrations(path)
         async with aiosqlite.connect(path) as conn:
+            await _add_job(conn, "all")
             for target_id, target_type, config in targets:
                 await _add_target(conn, tmp_path, target_id, target_type, config)
         return path
 
-    def _scheduler(self, tmp_path, notifier):
+    def _scheduler(self, tmp_path, notifier, docker_client=None):
         config = SimpleNamespace(db_path=tmp_path / "arkive.db", config_dir=tmp_path, dump_dir=tmp_path / "dumps")
-        return scheduler_mod.ArkiveScheduler(orchestrator=MagicMock(), config=config, notifier=notifier)
+        discovery = SimpleNamespace(docker=docker_client) if docker_client is not None else None
+        return scheduler_mod.ArkiveScheduler(
+            orchestrator=MagicMock(), config=config, discovery=discovery, notifier=notifier
+        )
 
     @staticmethod
     def _notifier(status="sent"):
@@ -463,6 +767,12 @@ class TestOffsiteNotification:
         async with aiosqlite.connect(path) as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM activity_log WHERE type='target' AND action=?", (action,))
             return (await cursor.fetchone())[0]
+
+    @staticmethod
+    async def _markers(path):
+        async with aiosqlite.connect(path) as conn:
+            cursor = await conn.execute("SELECT key FROM settings WHERE key LIKE 'offsite_warning_%'")
+            return {row[0] for row in await cursor.fetchall()}
 
     async def test_notifies_once_across_restarts(self, tmp_path, monkeypatch):
         path = await self._seed(tmp_path, ("usb", "local", {"path": "/mnt/disks/usb"}))
@@ -516,9 +826,7 @@ class TestOffsiteNotification:
             await _add_target(conn, tmp_path, "b2t", "b2", {"bucket": "b"})
         await sched._run_freshness_check()
         assert await self._activity(path, "offsite") == 1
-        async with aiosqlite.connect(path) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'offsite_warning_%'")
-            assert (await cursor.fetchone())[0] == 0
+        assert await self._markers(path) == set()
 
         async with aiosqlite.connect(path) as conn:
             await conn.execute("UPDATE storage_targets SET enabled = 0 WHERE id = 'b2t'")
@@ -535,6 +843,29 @@ class TestOffsiteNotification:
         notifier.send.assert_not_awaited()
         assert await self._activity(path, "no_offsite") == 0
         assert await self._activity(path, "offsite") == 0
+
+    async def test_docker_hiccup_neither_resets_nor_repeats_the_notice(self, tmp_path, monkeypatch):
+        """MinIO reached through the docker0 gateway: only Docker knows that
+        address is this server. Docker being briefly unreachable right after a
+        restart must not read as "offsite now", then "local again"."""
+        path = await self._seed(tmp_path, ("minio", "s3", {"endpoint": "http://172.17.0.1:9000", "bucket": "b"}))
+        monkeypatch.setattr(scheduler_mod, "ping_heartbeat", AsyncMock())
+        notifier = self._notifier()
+        healthy = _docker(_network("bridge", "172.17.0.1"))
+
+        await self._scheduler(tmp_path, notifier, healthy)._run_freshness_check()
+        assert notifier.send.await_count == 1
+        assert await self._markers(path) == {offsite.OFFSITE_WARNING_SINCE_KEY, offsite.OFFSITE_NOTIFIED_AT_KEY}
+
+        offsite.reset_identity_cache()  # a restart: nothing remembered in memory
+        await self._scheduler(tmp_path, notifier, _failing_docker())._run_freshness_check()
+        assert await self._markers(path) == {offsite.OFFSITE_WARNING_SINCE_KEY, offsite.OFFSITE_NOTIFIED_AT_KEY}
+        assert await self._activity(path, "offsite") == 0
+
+        offsite.reset_identity_cache()  # Docker is back
+        await self._scheduler(tmp_path, notifier, healthy)._run_freshness_check()
+        assert notifier.send.await_count == 1
+        assert await self._activity(path, "no_offsite") == 1
 
     async def test_check_failure_is_contained(self, tmp_path, monkeypatch):
         await self._seed(tmp_path, ("usb", "local", {"path": "/mnt/disks/usb"}))
