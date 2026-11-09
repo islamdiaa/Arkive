@@ -8,8 +8,12 @@ against real database servers and a real Arkive instance:
   read-only role, extensions, large objects, partitions, a LATIN1 database,
   a database name with spaces, a non-default bootstrap superuser)
 - MariaDB 11.4 and MySQL 8.4 (utf8mb4, binary BLOBs, latin1, a view, a
-  trigger, a procedure, a function, an event, a second application database)
+  trigger, a procedure, a function, an event, a second application database),
+  plus a MariaDB without MARIADB_DATABASE
 - SQLite in WAL mode held open by a running "app" (rows live only in the WAL)
+
+Restored dumps are loaded by running the database steps of the restore plan
+Arkive generates, so the documented commands are tested too.
 
 Everything runs inside a throwaway Docker-in-Docker daemon, so the host's
 containers are never discovered, dumped or swept by the Arkive under test,
@@ -67,7 +71,6 @@ ENCRYPTION_PASSWORD = "roundtrip-encryption-password"
 # have a "postgres" role (like an Immich-style POSTGRES_USER=immich setup).
 PG_USERS = {"pg16": "postgres", "pg17": "immich"}
 MYSQL_CLIENTS = {"mariadb": "mariadb", "mysql": "mysql"}
-MYSQL_ROOT_ENV = {"mariadb": "MARIADB_ROOT_PASSWORD", "mysql": "MYSQL_ROOT_PASSWORD"}
 
 PG_CHECKS = {
     "appdb": {
@@ -134,9 +137,7 @@ for name, queries in {
                "ticks": "SELECT count(*) > 0 FROM ticks"},
     "other.sqlite3": {"integrity": "PRAGMA integrity_check", "theme": "SELECT v FROM settings WHERE k = 'theme'"},
 }.items():
-    path = sys.argv[1] + "/" + name if not sys.argv[1].endswith((".db", ".sqlite3")) else sys.argv[1]
-    if len(sys.argv) > 2:
-        path = sys.argv[2] if name == "app.db" else sys.argv[3]
+    path = sys.argv[1] if name == "app.db" else sys.argv[2]
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         out[name] = {k: [list(r) for r in conn.execute(q).fetchall()] for k, q in queries.items()}
@@ -409,7 +410,7 @@ class Harness:
 
     def sqlite_fingerprint(self, container_path_app: str, container_path_other: str, mount: str) -> dict:
         result = self.dind(
-            "run", "--rm", "-v", mount, SQLITE_APP_IMAGE, "python", "-c", SQLITE_CHECK, "-",
+            "run", "--rm", "-v", mount, SQLITE_APP_IMAGE, "python", "-c", SQLITE_CHECK,
             container_path_app, container_path_other,
         )  # fmt: skip
         return json.loads(result.stdout)
