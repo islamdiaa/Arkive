@@ -157,6 +157,27 @@ export interface SystemStatus {
   /** False until the user confirms they stored a recovery kit off-server. */
   recovery_kit_confirmed?: boolean;
   last_drill?: LastDrill | null;
+  /** 3-2-1 awareness: whether any enabled target is off this server. A warning only. */
+  offsite?: OffsiteStatus | null;
+}
+
+// ── Offsite copy (3-2-1) ──
+export interface OffsiteLocalTarget {
+  id: string;
+  name: string;
+  type: string;
+  /** Why the target counts as on this server, e.g. "localhost is a loopback address". */
+  reason: string;
+}
+
+export interface OffsiteStatus {
+  has_offsite_copy: boolean;
+  /** True when targets are enabled and every one of them is on this server. */
+  warning: boolean;
+  enabled_targets: number;
+  offsite_targets: number;
+  local_targets: OffsiteLocalTarget[];
+  message: string | null;
 }
 
 // ── Backup freshness (stale backups) ──

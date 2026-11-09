@@ -68,6 +68,14 @@ const DEMO_STATUS = {
   },
   recovery_kit_confirmed: false,
   last_drill: DEMO_LAST_DRILL as typeof DEMO_LAST_DRILL | null,
+  offsite: {
+    has_offsite_copy: true,
+    warning: false,
+    enabled_targets: 2,
+    offsite_targets: 2,
+    local_targets: [] as Array<{ id: string; name: string; type: string; reason: string }>,
+    message: null as string | null,
+  },
 };
 
 const DEMO_JOBS = {

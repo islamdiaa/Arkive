@@ -18,6 +18,7 @@ from app.services.db_exclusions import excluded_identities
 from app.services.db_exclusions import identity as db_identity
 from app.services.freshness import evaluate_freshness
 from app.services.host_identity import resolve_hostname
+from app.services.offsite import docker_client_for, evaluate_offsite
 
 logger = logging.getLogger("arkive.status")
 
@@ -459,6 +460,14 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
     except Exception:
         hostname = server_name or ""
 
+    # 3-2-1: is any copy off this server? A warning only — it never changes
+    # overall_status, the heartbeat or the freshness verdict.
+    try:
+        offsite = await evaluate_offsite(db, config_dir=config_dir, docker_client=docker_client_for(request.app))
+    except Exception as exc:
+        logger.warning("Offsite check failed: %s", exc)
+        offsite = None
+
     return StatusResponse(
         status=overall_status,
         health=_health_alias(overall_status),
@@ -490,4 +499,5 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
         },
         recovery_kit_confirmed=await recovery_kit_confirmed(db),
         last_drill=last_drill,
+        offsite=offsite,
     )
