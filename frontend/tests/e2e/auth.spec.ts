@@ -128,4 +128,42 @@ test.describe('Authentication', () => {
     await expect(page).toHaveURL(/:\d+\/no-such-page$/);
     await expect(page.getByRole('heading', { name: 'Page Not Found' })).toBeVisible();
   });
+
+  // Browsers drop tab/CR/LF and read '\' as '/' while parsing a URL, so each
+  // of these ?next= values means //evil.example. goto() rejects it as external;
+  // the login page must fall back to the dashboard, never load it.
+  for (const next of ['/%09/evil.example/phish', '/%0A/evil.example', '/%0D%5Cevil.example']) {
+    test(`login with ?next=${next} stays on this origin`, async ({ page }) => {
+      const offsite: string[] = [];
+      await page.route(
+        (url) => url.hostname === 'evil.example',
+        (route) => {
+          offsite.push(route.request().url());
+          return route.abort();
+        }
+      );
+      await page.route(
+        (url) => url.pathname.startsWith('/api/'),
+        (route) => route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+      );
+      await mockSetupComplete(page);
+      await mockDashboardData(page);
+      await page.route('**/api/status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ version: '3.0.0', status: 'ok', setup_completed: true }),
+        })
+      );
+      await page.route('**/api/events/**', (route) =>
+        route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
+      );
+
+      // Already signed in, so the login page forwards to ?next= straight away.
+      await page.goto(`/login?next=${next}`);
+
+      await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+      expect(offsite).toEqual([]);
+    });
+  }
 });

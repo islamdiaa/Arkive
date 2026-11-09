@@ -4,7 +4,7 @@
 
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import { safeNext } from '$lib/api/session';
+	import { goToNext } from '$lib/api/session';
 	import { addToast, setupCompleted } from '$lib/stores/app';
 	import { applySession } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
@@ -12,18 +12,6 @@
 
 	let apiKey = '';
 	let loading = false;
-
-	function nextDestination(): string {
-		if (typeof window === 'undefined') return '/';
-		return safeNext(new URLSearchParams(window.location.search).get('next'));
-	}
-
-	// goto() rejects a path that matches no route (SvelteKit 3). Load it like a link
-	// would instead, so the user lands on the 404 page rather than staying here.
-	function goToNext() {
-		const next = nextDestination();
-		goto(next).catch(() => window.location.assign(next));
-	}
 
 	onMount(async () => {
 		try {
@@ -33,7 +21,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goToNext();
+				void goToNext(goto);
 			}
 		} catch {
 			// Ignore and let the user attempt login.
@@ -51,7 +39,7 @@
 			const session = await api.login(apiKey.trim());
 			applySession(session);
 			setupCompleted.set(true);
-			goToNext();
+			void goToNext(goto);
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Login failed' });
 		} finally {
