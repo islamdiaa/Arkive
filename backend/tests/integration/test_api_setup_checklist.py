@@ -8,8 +8,9 @@ import json
 
 import aiosqlite
 import pytest
+import yaml
 
-from app.api.setup_checklist import STEP_IDS
+from app.api.setup_checklist import DISMISSED_SETTING, STEP_IDS
 from tests.conftest import auth_headers, do_setup
 
 pytestmark = pytest.mark.asyncio
@@ -62,12 +63,32 @@ async def _add_run(
         )
 
 
-async def _add_discovered_database(client, container: str = "pg", db_name: str = "appdb") -> None:
-    databases = [{"container_name": container, "db_type": "postgres", "db_name": db_name, "host_path": None}]
+async def _add_run_database(client, run_id: str, db_type: str, db_name: str, status: str = "success") -> None:
     await _exec(
         client,
-        "INSERT INTO discovered_containers (name, image, status, databases) VALUES (?, 'postgres:16', 'running', ?)",
-        (container, json.dumps(databases)),
+        """INSERT INTO job_run_databases (run_id, container_name, db_type, db_name, dump_size_bytes, status)
+           VALUES (?, ?, ?, ?, 1024, ?)""",
+        (run_id, f"{db_type}-1", db_type, db_name, status),
+    )
+
+
+async def _add_discovered_database(
+    client, container: str = "pg", db_name: str = "appdb", db_type: str = "postgres", image: str = "postgres:16"
+) -> None:
+    databases = [{"container_name": container, "db_type": db_type, "db_name": db_name, "host_path": None}]
+    await _exec(
+        client,
+        "INSERT INTO discovered_containers (name, image, status, databases) VALUES (?, ?, 'running', ?)",
+        (container, image, json.dumps(databases)),
+    )
+
+
+async def _add_drill_result(client, drill_id: str, db_type: str, status: str, detail: str) -> None:
+    await _exec(
+        client,
+        """INSERT INTO restore_drill_results (drill_id, container_name, db_type, db_name, dump_file, status, detail)
+           VALUES (?, ?, ?, 'appdb', ?, ?, ?)""",
+        (drill_id, f"{db_type}-1", db_type, f"{db_type}-1_appdb.sql", status, detail),
     )
 
 
@@ -190,11 +211,50 @@ async def test_successful_run_completes_first_backup(client, headers):
     assert step["completed_at"] == "2026-11-01T03:05:00Z"
 
 
-async def test_partial_run_with_snapshot_counts_like_the_freshness_watchdog(client, headers):
-    # restic exit 3: snapshot written, some files unreadable. Still a restore point.
-    await _add_run(client, "r1", "flash", "partial", "2026-11-01T03:00:00Z", target_status="partial")
+async def test_partial_run_with_snapshot_needs_a_clean_run(client, headers):
+    # restic exit 3: a snapshot was written, but some files were unreadable.
+    # The freshness watchdog accepts that as a restore point; the checklist,
+    # which ends in "this server is protected", waits for a clean run.
+    await _add_run(
+        client,
+        "r1",
+        "flash",
+        "partial",
+        "2026-11-01T03:00:00Z",
+        target_status="partial",
+        error_message="Some files could not be read",
+    )
 
-    assert _steps(await _checklist(client, headers))["first_backup"]["state"] == "done"
+    step = _steps(await _checklist(client, headers))["first_backup"]
+    assert step["state"] == "attention"
+    assert step["done"] is False
+    assert step["detail"] == "The last backup finished with warnings: Some files could not be read"
+
+
+async def test_partial_run_that_missed_a_database_does_not_count(client, headers):
+    # Postgres dumped, MariaDB failed: a snapshot exists, but MariaDB has never
+    # been backed up. Marking the step done would let the card claim the server
+    # is protected and be dismissed for good.
+    await _add_run(
+        client,
+        "r1",
+        "full",
+        "partial",
+        "2026-11-01T03:00:00Z",
+        target_status="success",
+        databases_discovered=2,
+        databases_dumped=1,
+        error_message="1 database dump(s) failed: mariadb/nextcloud",
+    )
+    step = _steps(await _checklist(client, headers))["first_backup"]
+    assert step["state"] == "attention"
+    assert step["detail"] == "The last backup finished with warnings: 1 database dump(s) failed: mariadb/nextcloud"
+
+    # Once the cause is fixed and a run completes cleanly, the step is done.
+    await _add_run(client, "r2", "full", "success", "2026-11-02T03:00:00Z", databases_dumped=2)
+    step = _steps(await _checklist(client, headers))["first_backup"]
+    assert step["state"] == "done"
+    assert step["completed_at"] == "2026-11-02T03:05:00Z"
 
 
 async def test_partial_db_run_that_dumped_nothing_does_not_count(client, headers):
@@ -213,7 +273,7 @@ async def test_partial_db_run_that_dumped_nothing_does_not_count(client, headers
 
     step = _steps(await _checklist(client, headers))["first_backup"]
     assert step["state"] == "attention"
-    assert step["detail"] == "The last backup was only partial: Database discovery failed"
+    assert step["detail"] == "The last backup finished with warnings: Database discovery failed"
 
 
 async def test_partial_run_without_snapshot_needs_attention(client, headers):
@@ -221,7 +281,7 @@ async def test_partial_run_without_snapshot_needs_attention(client, headers):
 
     step = _steps(await _checklist(client, headers))["first_backup"]
     assert step["state"] == "attention"
-    assert step["detail"].startswith("The last backup was only partial:")
+    assert step["detail"] == "The last backup finished with warnings: no reason recorded"
 
 
 async def test_failed_run_needs_attention_with_reason(client, headers):
@@ -297,12 +357,96 @@ async def test_databases_seen_only_in_past_runs_still_need_a_drill(client, heade
     # Discovery is down right now, but this system has dumped databases before:
     # a file-level verification must not stand in for a drill.
     await _add_run(client, "r1", "full", "success", "2026-11-01T03:00:00Z", databases_dumped=3)
+    await _add_run_database(client, "r1", "postgres", "appdb")
     await _add_target(client, "t-local", "Array", "local")
     await _add_verification(client, "v1", "passed", "2026-11-01T04:00:00Z", files_checked=1)
 
     step = _steps(await _checklist(client, headers))["restore_test"]
     assert step["method"] == "drill"
     assert step["state"] == "todo"
+
+
+async def test_redis_and_mongodb_alone_use_a_file_restore_test(client, headers):
+    # Drills never test Redis or MongoDB dumps: asking for a drill here would
+    # be a step that can never be completed.
+    await _add_discovered_database(client, "unifi-db", "admin", db_type="mongodb", image="mongo:7")
+    await _add_discovered_database(client, "cache", "redis", db_type="redis", image="redis:7")
+    await _add_run(client, "r1", "full", "success", "2026-11-01T03:00:00Z", databases_dumped=2)
+    await _add_run_database(client, "r1", "mongodb", "admin")
+    await _add_run_database(client, "r1", "redis", "redis")
+    await _add_target(client, "t-local", "Array", "local")
+
+    step = _steps(await _checklist(client, headers))["restore_test"]
+    assert step["method"] == "verification"
+    assert step["state"] == "todo"
+
+    await _add_verification(client, "v1", "passed", "2026-11-01T04:00:00Z", files_checked=1)
+    step = _steps(await _checklist(client, headers))["restore_test"]
+    assert step["method"] == "verification"
+    assert step["state"] == "done"
+
+    # A drillable database alongside them brings the drill back.
+    await _add_discovered_database(client, "pg", "appdb")
+    assert _steps(await _checklist(client, headers))["restore_test"]["method"] == "drill"
+
+
+async def test_failed_dumps_of_drillable_types_do_not_require_a_drill(client, headers):
+    # A Postgres dump that never succeeded left nothing in a snapshot to drill.
+    await _add_run(client, "r1", "full", "partial", "2026-11-01T03:00:00Z", target_status="success")
+    await _add_run_database(client, "r1", "postgres", "appdb", status="failed")
+
+    assert _steps(await _checklist(client, headers))["restore_test"]["method"] == "verification"
+
+
+async def test_drill_with_nothing_testable_falls_back_to_a_file_restore_test(client, headers):
+    # Every dump is over restore_drill_max_dump_mb: the drill picks nothing,
+    # so no drill can pass until that changes. A file restore test counts.
+    await _add_discovered_database(client)
+    await _add_target(client, "t-local", "Array", "local")
+    await _add_drill(
+        client,
+        "d1",
+        "skipped",
+        "2026-11-01T07:00:00Z",
+        error="snapshot abcd1234 has no drill-testable database dumps (1 skipped)",
+    )
+    await _add_drill_result(client, "d1", "postgres", "skipped", "dump is 9000 MB; limit is 2048 MB")
+
+    step = _steps(await _checklist(client, headers))["restore_test"]
+    assert step["method"] == "verification"
+    assert step["state"] == "todo"
+    assert step["detail"] == (
+        "The last drill found nothing it can test: snapshot abcd1234 has no drill-testable database dumps (1 skipped)"
+    )
+
+    # A later drill postponed before it looked at the snapshot changes nothing.
+    await _add_drill(
+        client, "d2", "skipped", "2026-11-02T07:00:00Z", error="a backup or restore was still running; drill postponed"
+    )
+    assert _steps(await _checklist(client, headers))["restore_test"]["method"] == "verification"
+
+    await _add_verification(client, "v1", "passed", "2026-11-02T08:00:00Z", files_checked=1)
+    step = _steps(await _checklist(client, headers))["restore_test"]
+    assert step["state"] == "done"
+    assert step["method"] == "verification"
+
+
+async def test_drill_that_chose_dumps_but_could_not_test_them_still_needs_a_drill(client, headers):
+    # Docker was unreachable: the dump is drillable, the environment wasn't.
+    await _add_discovered_database(client)
+    await _add_drill(
+        client,
+        "d1",
+        "skipped",
+        "2026-11-01T07:00:00Z",
+        error="no database could be tested (1 selected, none could be started or restored for testing): pg/appdb",
+    )
+    await _add_drill_result(client, "d1", "postgres", "skipped", "Docker is not reachable: timeout")
+
+    step = _steps(await _checklist(client, headers))["restore_test"]
+    assert step["method"] == "drill"
+    assert step["state"] == "todo"
+    assert step["detail"].startswith("The last drill was skipped: no database could be tested")
 
 
 async def test_excluded_databases_do_not_require_a_drill(client, headers):
@@ -431,3 +575,39 @@ async def test_dismiss_once_complete_persists(client, headers):
     activity = await client.get("/api/activity", headers=headers)
     messages = [entry["message"] for entry in activity.json()["activities"]]
     assert "Setup checklist completed: this server is protected" in messages
+
+
+async def test_dismissal_does_not_travel_with_a_config_export(client, headers):
+    # The dismissal belongs to this server. A config exported here and
+    # imported onto a rebuilt server must not hide that server's checklist,
+    # where no backup, drill or recovery kit has happened yet.
+    await _complete_everything(client, headers)
+    assert (await client.post(f"{URL}/dismiss", headers=headers)).status_code == 200
+
+    resp = await client.get("/api/settings/export", headers=headers)
+    assert resp.status_code == 200
+    exported = yaml.safe_load(resp.text)["arkive_config"]
+    assert DISMISSED_SETTING not in {s["key"] for s in exported["settings"]}
+
+    # An export from before this fix (or a hand-edited one) still carries it.
+    await _exec(client, "DELETE FROM settings WHERE key = ?", (DISMISSED_SETTING,))
+    old_export = {
+        "arkive_config": {
+            "version": 1,
+            "settings": [
+                {"key": DISMISSED_SETTING, "value": "2026-11-01T00:00:00Z", "encrypted": False},
+                {"key": "theme", "value": "light", "encrypted": False},
+            ],
+        }
+    }
+    resp = await client.post(
+        "/api/settings/import",
+        content=yaml.dump(old_export).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/x-yaml"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["restored"]["settings"] == 1
+
+    checklist = await _checklist(client, headers)
+    assert checklist["dismissed"] is False
+    assert checklist["dismissed_at"] is None

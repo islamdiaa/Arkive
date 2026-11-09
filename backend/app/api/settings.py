@@ -37,7 +37,10 @@ _BANDWIDTH_RE = re.compile(r"^([1-9]\d*)?$")
 SENSITIVE_KEYS = {"api_key_hash", "restic_password", "encryption_password"}
 SENSITIVE_PATTERNS = ["key_hash", "password", "secret", "token", "credential"]
 REDACTED = "********"
-EXPORT_EXCLUDED_KEYS = {"api_key_hash"}
+# Left out of config export, and skipped on import. setup_checklist_dismissed_at
+# (app.api.setup_checklist.DISMISSED_SETTING) belongs to one server: imported
+# onto a rebuilt one it would hide that server's setup checklist.
+EXPORT_EXCLUDED_KEYS = {"api_key_hash", "setup_checklist_dismissed_at"}
 
 
 def _is_sensitive(key: str, encrypted: int) -> bool:

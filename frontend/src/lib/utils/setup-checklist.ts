@@ -47,15 +47,18 @@ const STEP_TITLES: Record<SetupStepId, string> = {
 };
 
 const STEP_DESCRIPTIONS: Record<SetupStepId, string> = {
-	first_backup: 'Until a backup completes there is nothing to restore.',
+	first_backup:
+		'Until a backup completes cleanly there is nothing to rely on: one that finishes with warnings may be missing a database or a folder.',
 	restore_test: 'A restore drill loads recent database dumps into a throwaway container to prove they restore.',
 	offsite_target: 'A cloud or remote target survives what a local disk does not: a failed array, a fire, theft.',
 	notifications: 'Add a notification channel so failed or overdue backups reach you instead of going unnoticed.',
 	recovery_kit: "Without the encryption password stored somewhere else, the backups can't be opened if this server dies.",
 };
 
+// Used when no database here can be drilled: none at all, only Redis/MongoDB
+// (drills don't test those), or every dump is over the drill size limit.
 const VERIFICATION_RESTORE_DESCRIPTION =
-	'No databases here to drill, so a restore test pulls a file back out of the latest snapshot and checks its checksum.';
+	'No database here can be restore-drilled, so a restore test pulls a file back out of the latest snapshot and checks its checksum.';
 
 /** Steps whose action is a settings page rather than a button. */
 export const SETUP_STEP_LINKS: Partial<Record<SetupStepId, { href: string; label: string }>> = {

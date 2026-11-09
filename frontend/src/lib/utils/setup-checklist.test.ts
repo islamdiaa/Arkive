@@ -106,7 +106,7 @@ describe('restore test', () => {
 
 	it('describes the drill and the file-restore fallback differently', () => {
 		expect(stepDescription({ id: 'restore_test', method: 'drill' })).toMatch(/restore drill/);
-		expect(stepDescription({ id: 'restore_test', method: 'verification' })).toMatch(/No databases here/);
+		expect(stepDescription({ id: 'restore_test', method: 'verification' })).toMatch(/No database here can be restore-drilled/);
 	});
 });
 

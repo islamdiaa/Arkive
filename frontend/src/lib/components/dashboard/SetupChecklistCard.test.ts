@@ -142,7 +142,7 @@ describe('SetupChecklistCard', () => {
 		expect(addToast).toHaveBeenCalledWith({ type: 'info', message: 'Restore drill started' });
 	});
 
-	it('falls back to a verification restore test without databases', async () => {
+	it('falls back to a verification restore test when nothing can be drilled', async () => {
 		triggerVerification.mockResolvedValue({ run_id: 'v1', status: 'started' });
 		render(SetupChecklistCard, {
 			props: {
@@ -150,7 +150,7 @@ describe('SetupChecklistCard', () => {
 			},
 		});
 
-		expect(step('restore_test')).toHaveTextContent('No databases here to drill');
+		expect(step('restore_test')).toHaveTextContent('No database here can be restore-drilled');
 		await fireEvent.click(screen.getByRole('button', { name: 'Run restore test now' }));
 		await waitFor(() => expect(triggerVerification).toHaveBeenCalledTimes(1));
 		expect(runDrill).not.toHaveBeenCalled();

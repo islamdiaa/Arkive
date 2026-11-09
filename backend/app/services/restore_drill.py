@@ -69,6 +69,10 @@ MAX_MANIFEST_BYTES = 16 * MIB
 SQL_SERVER_TYPES = frozenset({"postgres", "mariadb", "mysql"})
 DRILLABLE_TYPES = SQL_SERVER_TYPES | {"sqlite"}
 NOT_DRILLED_TYPES = frozenset({"mongodb", "redis"})
+# In the message of a drill skipped because the snapshot held dumps but none it
+# can test (untested types, roles dumps, over the size limit). The setup
+# checklist looks for it to accept a file restore test instead.
+NOTHING_TO_DRILL = "has no drill-testable database dumps"
 
 PG_DUMP_TRAILER = b"PostgreSQL database dump complete"
 MYSQL_DUMP_TRAILER = b"-- Dump completed"
@@ -882,7 +886,7 @@ class RestoreDrillEngine:
         elif outcome.passed:
             outcome.status = "passed"
         elif not chosen:
-            outcome.skip(f"snapshot {short_id} has no drill-testable database dumps ({len(excluded)} skipped)")
+            outcome.skip(f"snapshot {short_id} {NOTHING_TO_DRILL} ({len(excluded)} skipped)")
         else:
             chosen_files = {c.file for c in chosen}
             reasons = [

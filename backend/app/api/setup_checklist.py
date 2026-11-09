@@ -7,12 +7,15 @@ anyone hears about failures, or that the encryption password exists anywhere
 but here. Each step below is judged from evidence already in the database,
 never from a flag the UI sets:
 
-- ``first_backup``: a run met the same "good run" bar the freshness watchdog
-  uses (success, or partial with a snapshot written and, for database jobs,
-  at least one dump).
-- ``restore_test``: the latest decisive restore drill passed. On a system
-  with no databases a drill has nothing to restore, so the latest backup
-  verification whose random-file restore test actually ran counts instead.
+- ``first_backup``: a backup run finished with status ``success``. The
+  freshness watchdog also accepts some partial runs (a snapshot was written),
+  but a partial run may be missing a database or a folder, and this
+  checklist ends in "this server is protected", so it waits for a clean run.
+- ``restore_test``: the latest decisive restore drill passed. When there is
+  nothing a drill can test (no databases, or only types drills skip such as
+  Redis and MongoDB, or the last drill found no dump it could test), the
+  latest backup verification whose random-file restore test actually ran
+  counts instead.
 - ``offsite_target``: an enabled, non-local storage target exists. A local
   target never counts, even when its path happens to be a network mount:
   Arkive can't tell that apart from a disk in this server.
@@ -39,7 +42,7 @@ from app.core.activity import log_activity
 from app.core.dependencies import get_db, require_auth
 from app.services.db_exclusions import excluded_identities
 from app.services.db_exclusions import identity as db_identity
-from app.services.freshness import _GOOD_RUN_SQL, DATABASE_JOB_TYPES
+from app.services.restore_drill import DRILLABLE_TYPES, NOTHING_TO_DRILL
 from app.services.settings_store import get_setting, set_setting
 from app.utils.redact import redact_credentials
 
@@ -52,6 +55,8 @@ router = APIRouter(
 )
 
 STEP_IDS = ("first_backup", "restore_test", "offsite_target", "notifications", "recovery_kit")
+# Per-server state: settings export leaves it out (EXPORT_EXCLUDED_KEYS), so a
+# config imported onto a rebuilt server doesn't hide that server's checklist.
 DISMISSED_SETTING = "setup_checklist_dismissed_at"
 
 # Step states. ``attention`` means the last attempt went wrong (a failed run,
@@ -95,53 +100,58 @@ def _names(rows: list, limit: int = 3) -> str:
 
 
 async def _first_backup(db: aiosqlite.Connection) -> dict:
-    """A run that met the freshness watchdog's good-run bar, from any job."""
+    """The latest backup run that finished cleanly, from any job."""
     try:
-        cursor = await db.execute("SELECT id, type, include_databases FROM backup_jobs")
-        jobs = await cursor.fetchall()
-        last_good: tuple[str, str] | None = None  # (started_at, job_id)
-        for job_id, job_type, include_databases in jobs:
-            needs_databases = 1 if (include_databases and job_type in DATABASE_JOB_TYPES) else 0
-            cursor = await db.execute(_GOOD_RUN_SQL, {"job_id": job_id, "needs_databases": needs_databases})
-            row = await cursor.fetchone()
-            if row and (last_good is None or row[0] > last_good[0]):
-                last_good = (row[0], job_id)
-        if last_good:
-            cursor = await db.execute(
-                "SELECT COALESCE(completed_at, started_at) FROM job_runs WHERE job_id = ? AND started_at = ? LIMIT 1",
-                (last_good[1], last_good[0]),
-            )
-            row = await cursor.fetchone()
-            return _step("first_backup", DONE, completed_at=row[0] if row else last_good[0])
+        cursor = await db.execute(
+            """SELECT COALESCE(completed_at, started_at) FROM job_runs
+               WHERE status = 'success'
+               ORDER BY started_at DESC LIMIT 1"""
+        )
+        row = await cursor.fetchone()
+        if row:
+            return _step("first_backup", DONE, completed_at=row[0])
 
         cursor = await db.execute("SELECT 1 FROM job_runs WHERE status = 'running' LIMIT 1")
         if await cursor.fetchone():
             return _step("first_backup", RUNNING, "A backup is running now.")
 
-        # No good run yet: say why the latest attempt didn't count.
+        # No clean run yet: say why the latest attempt didn't count. A partial
+        # run's error_message names what was left out (a database, a folder).
         cursor = await db.execute(
             """SELECT status, error_message FROM job_runs
                WHERE status IN ('partial', 'failed')
                ORDER BY started_at DESC LIMIT 1"""
         )
         last = await cursor.fetchone()
+        cursor = await db.execute("SELECT 1 FROM backup_jobs LIMIT 1")
+        has_jobs = await cursor.fetchone() is not None
     except _DB_ERRORS:
         return _step("first_backup", TODO)
     if last:
         status, error = last
         if status == "failed":
             return _step("first_backup", ATTENTION, f"The last backup failed: {_clip(error) or 'no reason recorded'}")
-        reason = _clip(error) or "no snapshot was written, or no database was dumped"
-        return _step("first_backup", ATTENTION, f"The last backup was only partial: {reason}")
-    if not jobs:
+        reason = _clip(error) or "no reason recorded"
+        return _step("first_backup", ATTENTION, f"The last backup finished with warnings: {reason}")
+    if not has_jobs:
         return _step("first_backup", TODO, "No backup jobs are configured.")
     return _step("first_backup", TODO)
 
 
-async def _has_databases(db: aiosqlite.Connection) -> bool:
-    """True when there is something for a restore drill to restore."""
+async def _has_drillable_databases(db: aiosqlite.Connection) -> bool:
+    """True when there is a database a restore drill can test.
+
+    Drills load Postgres, MariaDB/MySQL and SQLite dumps; Redis and MongoDB
+    dumps are never drilled, so a server with only those can't pass one.
+    """
+    drillable = tuple(sorted(DRILLABLE_TYPES))
+    placeholders = ", ".join("?" for _ in drillable)
     try:
-        cursor = await db.execute("SELECT 1 FROM job_runs WHERE databases_dumped > 0 LIMIT 1")
+        # Discovery may be down right now; dumps this system made still count.
+        cursor = await db.execute(
+            f"SELECT 1 FROM job_run_databases WHERE status = 'success' AND db_type IN ({placeholders}) LIMIT 1",  # nosec B608
+            drillable,
+        )
         if await cursor.fetchone():
             return True
         cursor = await db.execute("SELECT databases FROM discovered_containers")
@@ -155,9 +165,37 @@ async def _has_databases(db: aiosqlite.Connection) -> bool:
         except (json.JSONDecodeError, TypeError):
             continue
         for entry in entries if isinstance(entries, list) else []:
-            if isinstance(entry, dict) and entry.get("db_name") and db_identity(entry) not in excluded:
+            if (
+                isinstance(entry, dict)
+                and entry.get("db_name")
+                and str(entry.get("db_type") or "").lower() in DRILLABLE_TYPES
+                and db_identity(entry) not in excluded
+            ):
                 return True
     return False
+
+
+async def _nothing_to_drill(db: aiosqlite.Connection) -> str | None:
+    """Why drills can't test anything here, or None.
+
+    Looks at the latest skipped drill that got as far as choosing dumps (it
+    recorded per-dump results). When it found dumps but none it can test
+    (only untested types, or every dump over restore_drill_max_dump_mb), no
+    drill will pass until that changes. Drills skipped for a transient reason
+    (a backup was running, no target) record no results and are ignored.
+    """
+    try:
+        cursor = await db.execute(
+            """SELECT error_message FROM restore_drills d
+               WHERE status = 'skipped'
+                 AND EXISTS (SELECT 1 FROM restore_drill_results r WHERE r.drill_id = d.id)
+               ORDER BY started_at DESC, rowid DESC LIMIT 1"""
+        )
+        row = await cursor.fetchone()
+    except _DB_ERRORS:
+        return None
+    message = row[0] if row else None
+    return message if message and NOTHING_TO_DRILL in message else None
 
 
 async def _restore_test_by_drill(db: aiosqlite.Connection) -> dict:
@@ -199,7 +237,7 @@ async def _restore_test_by_drill(db: aiosqlite.Connection) -> dict:
 
 
 async def _restore_test_by_verification(db: aiosqlite.Connection) -> dict:
-    """No databases: a verification whose file restore test ran is the proof."""
+    """Nothing to drill: a verification whose file restore test ran is the proof."""
     try:
         cursor = await db.execute(
             """SELECT status, completed_at, started_at, error_message FROM verification_runs
@@ -275,14 +313,27 @@ async def _recovery_kit(db: aiosqlite.Connection) -> dict:
     return _step("recovery_kit", TODO)
 
 
+async def _restore_test(db: aiosqlite.Connection) -> dict:
+    """A passed drill when a drill can test something here, else a file restore test."""
+    if not await _has_drillable_databases(db):
+        return await _restore_test_by_verification(db)
+    step = await _restore_test_by_drill(db)
+    if step["state"] != TODO:
+        return step
+    reason = await _nothing_to_drill(db)
+    if reason is None:
+        return step
+    fallback = await _restore_test_by_verification(db)
+    if fallback["state"] == TODO:
+        fallback["detail"] = f"The last drill found nothing it can test: {_clip(reason)}"
+    return fallback
+
+
 async def evaluate_setup_checklist(db: aiosqlite.Connection) -> dict:
     """The checklist as served by GET /api/setup-checklist."""
-    restore_test = (
-        await _restore_test_by_drill(db) if await _has_databases(db) else await _restore_test_by_verification(db)
-    )
     steps = [
         await _first_backup(db),
-        restore_test,
+        await _restore_test(db),
         await _offsite_target(db),
         await _notifications(db),
         await _recovery_kit(db),
