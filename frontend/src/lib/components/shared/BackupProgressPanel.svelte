@@ -46,11 +46,13 @@
   $: currentPhaseIndex = status === 'success' ? phases.length : phaseIndexIn(phases, currentPhaseKey);
   $: isTerminal = status !== 'idle' && status !== 'running';
 
+  // Theme -bg tokens rather than /20 tints, under which the accent text
+  // drops below 4.5:1 (danger in both themes, success and warning in dark).
   const badge: Record<string, { label: string; cls: string }> = {
-    running: { label: 'Running', cls: 'bg-primary/20 text-primary' },
-    success: { label: 'Complete', cls: 'bg-success/20 text-success' },
-    partial: { label: 'Completed with problems', cls: 'bg-warning/20 text-warning' },
-    failed: { label: 'Failed', cls: 'bg-danger/20 text-danger' },
+    running: { label: 'Running', cls: 'bg-primary-bg text-primary' },
+    success: { label: 'Complete', cls: 'bg-success-bg text-success' },
+    partial: { label: 'Completed with problems', cls: 'bg-warning-bg text-warning' },
+    failed: { label: 'Failed', cls: 'bg-danger-bg text-danger' },
     cancelled: { label: 'Cancelled', cls: 'bg-neutral-bg text-neutral' },
     skipped: { label: 'Skipped', cls: 'bg-neutral-bg text-neutral' },
   };

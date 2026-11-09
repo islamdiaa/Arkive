@@ -93,9 +93,21 @@
     }
   }
 
+  // Where the current press started. A drag that starts in the panel (say,
+  // selecting the text typed into a confirmation field) and ends outside it
+  // fires `click` on the nearest common ancestor, which is the layer, so the
+  // click's own target can't tell it apart from a real backdrop click.
+  let pressStartedOnLayer = false;
+
+  function handleLayerPointerdown(e: PointerEvent) {
+    pressStartedOnLayer = e.target === e.currentTarget;
+  }
+
   function handleBackdropClick(e: MouseEvent) {
-    // Only clicks on the backdrop area itself, not ones bubbling up from the panel.
-    if (closeOnBackdrop && e.target === e.currentTarget) {
+    const startedOnLayer = pressStartedOnLayer;
+    pressStartedOnLayer = false;
+    // Only a press that both started and ended on the backdrop area itself.
+    if (closeOnBackdrop && startedOnLayer && e.target === e.currentTarget) {
       close();
     }
   }
@@ -116,6 +128,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="fixed inset-0 z-modal flex items-center justify-center p-4"
+    on:pointerdown={handleLayerPointerdown}
     on:click={handleBackdropClick}
     role="presentation"
   >

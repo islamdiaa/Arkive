@@ -165,9 +165,10 @@
 							<div class="min-w-0">
 								<div class="flex items-center gap-2">
 									<p class="text-sm font-medium text-text">{suggestion.label}</p>
+									<!-- Theme -bg tokens: accent text on a /20 tint is under 4.5:1. -->
 									<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide
-										{suggestion.priority === 'critical' ? 'bg-danger/20 text-danger' :
-										 suggestion.priority === 'recommended' ? 'bg-primary/20 text-primary' :
+										{suggestion.priority === 'critical' ? 'bg-danger-bg text-danger' :
+										 suggestion.priority === 'recommended' ? 'bg-primary-bg text-primary' :
 										 'bg-bg-surface text-text-secondary'}">
 										{suggestion.priority}
 									</span>

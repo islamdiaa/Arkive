@@ -67,17 +67,39 @@ describe('ModalShell keyboard and focus handling', () => {
 	it('closes when the backdrop area is clicked but not when the panel is', async () => {
 		const { container } = render(ModalShell, { props: { open: true, title: 'Test' } });
 		const dialog = screen.getByRole('dialog');
+		await fireEvent.pointerDown(dialog);
 		await fireEvent.click(dialog);
 		expect(screen.queryByRole('dialog')).toBeTruthy();
 
 		const layer = dialog.parentElement as HTMLElement;
+		await fireEvent.pointerDown(layer);
 		await fireEvent.click(layer);
 		await waitFor(() => expect(container.querySelector('[role="dialog"]')).toBeNull());
+	});
+
+	it('stays open when a drag starts inside the dialog and ends on the backdrop', async () => {
+		// Selecting typed text and releasing past the panel's edge: the browser
+		// sends `click` to the common ancestor, the backdrop layer.
+		render(ConfirmDangerModal, { props: { open: true, title: 'Delete thing', confirmText: 'DELETE' } });
+		const field = screen.getByRole('textbox') as HTMLInputElement;
+		await fireEvent.input(field, { target: { value: 'DELET' } });
+		const layer = screen.getByRole('dialog').parentElement as HTMLElement;
+
+		await fireEvent.pointerDown(field);
+		await fireEvent.click(layer);
+		expect(screen.queryByRole('dialog')).toBeTruthy();
+		expect(field.value).toBe('DELET');
+
+		// A later, real backdrop click still closes it.
+		await fireEvent.pointerDown(layer);
+		await fireEvent.click(layer);
+		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 	});
 
 	it('stays open on backdrop click when closeOnBackdrop is false', async () => {
 		render(ModalShell, { props: { open: true, title: 'Test', closeOnBackdrop: false } });
 		const layer = screen.getByRole('dialog').parentElement as HTMLElement;
+		await fireEvent.pointerDown(layer);
 		await fireEvent.click(layer);
 		expect(screen.queryByRole('dialog')).toBeTruthy();
 	});
