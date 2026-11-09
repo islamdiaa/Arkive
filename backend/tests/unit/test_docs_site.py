@@ -7,7 +7,10 @@ list providers, notification events and defaults match the code, and the
 deploy workflow publishes from main only.
 """
 
+import os
 import re
+import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -18,7 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCS_DIR = REPO_ROOT / "docs"
 MKDOCS_YML = REPO_ROOT / "mkdocs.yml"
 DOCS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docs.yml"
+BUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build.yml"
 README = REPO_ROOT / "README.md"
+SECURITY_MD = REPO_ROOT / "SECURITY.md"
+SETUP_PAGE = REPO_ROOT / "frontend" / "src" / "routes" / "setup" / "+page.svelte"
 
 pytestmark = pytest.mark.skipif(not MKDOCS_YML.is_file(), reason="repository docs are not available")
 
@@ -256,7 +262,6 @@ def test_overdue_examples_match_the_freshness_rules():
 
 def test_documented_defaults_match_the_code():
     from app.core.security import ALLOW_NEW_KEYFILE_ENV
-    from app.models.settings import SetupCompleteRequest
     from app.services.retention import DEFAULT_KEEP_DAILY, DEFAULT_KEEP_MONTHLY, DEFAULT_KEEP_WEEKLY
     from app.services.settings_store import DEFAULTS
 
@@ -265,19 +270,138 @@ def test_documented_defaults_match_the_code():
     assert f"| Databases per drill | {DEFAULTS['restore_drill_max_databases']} |" in drills
     assert f"| Max dump size (MB) | {DEFAULTS['restore_drill_max_dump_mb']} |" in drills
 
-    wizard = _page("setup-wizard.md")
-    fields = SetupCompleteRequest.model_fields
-    for job, field in (("Full Backup", "cloud_sync_schedule"), ("DB Dumps", "db_dump_schedule")):
-        assert f"| {job} |" in wizard
-        assert f"`{fields[field].default}`" in wizard, field
-    assert f"`{fields['flash_schedule'].default}`" in wizard
-
     storage = _page("storage-providers.md")
     assert (
         f"keep {DEFAULT_KEEP_DAILY} daily, {DEFAULT_KEEP_WEEKLY} weekly and {DEFAULT_KEEP_MONTHLY} monthly" in storage
     )
 
     assert ALLOW_NEW_KEYFILE_ENV in _page("troubleshooting.md")
+
+
+def test_wizard_schedule_table_matches_the_setup_page():
+    """The wizard always sends its own schedules (the backend model defaults
+    apply only to clients that omit them), so the table must follow the page."""
+    source = SETUP_PAGE.read_text(encoding="utf-8")
+    rows = {row[0]: row for row in _table_rows(_page("setup-wizard.md")) if len(row) == 4}
+    checked = 0
+    for job, variable, field in (
+        ("Full Backup", "fullBackupSchedule", "cloud_sync_schedule"),
+        ("DB Dumps", "dbDumpSchedule", "db_dump_schedule"),
+        ("Flash Backup", "flashSchedule", "flash_schedule"),
+    ):
+        assert re.search(rf"\b{field}:\s*{variable}\b", source), f"the setup page no longer sends {variable}"
+        match = re.search(rf"\blet\s+{variable}\s*=\s*'([^']+)'", source)
+        assert match, f"no initial value for {variable} in the setup page"
+        cron = match.group(1)
+        assert job in rows, f"setup-wizard.md has no schedule row for {job}"
+        cell = rows[job][2]
+        assert cell.startswith(f"`{cron}`"), (job, cell)
+        minute, hours = cron.split()[:2]
+        if minute.isdigit() and re.fullmatch(r"\d+(,\d+)*", hours):
+            for hour in hours.split(","):
+                assert f"{int(hour):02d}:{int(minute):02d}" in cell, (job, cell)
+        checked += 1
+    assert checked == 3
+
+
+@pytest.mark.parametrize(("database", "maintenance_db"), [("appdb", "postgres"), ("postgres", "template1")])
+def test_postgres_restore_connects_where_the_drill_does(database, maintenance_db):
+    """restore.md says a drill loads Postgres dumps the same way as its
+    commands: check the database the drill connects to for the load."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.services.restore_drill import DumpCandidate, RestoreDrillEngine
+
+    class Container:
+        def __init__(self):
+            self.calls = []
+
+        def exec_run(self, cmd, environment=None):
+            self.calls.append((cmd, environment or {}))
+            return (0, b"1\n")  # load exit code / restored table count
+
+    container = Container()
+    engine = RestoreDrillEngine(MagicMock(), lock_manager=MagicMock())
+    spec = SimpleNamespace(is_postgres=True, password="pw", pg_user="alice", client=None, admin=None, image="pg")
+    prepared = SimpleNamespace(size_bytes=1, create_tables=1, database=database, trailer_ok=True, globals_path=None)
+    cand = DumpCandidate(file=f"db_{database}.sql", container_name="db", db_type="postgres", db_name=database)
+
+    status, _detail = engine._load_and_check(container, spec, prepared, cand)
+
+    assert status == "passed"
+    loads = [env for cmd, env in container.calls if cmd[:2] == ["sh", "-c"] and "ARKIVE_DRILL_MAINTDB" in env]
+    assert loads and {env["ARKIVE_DRILL_MAINTDB"] for env in loads} == {maintenance_db}
+
+    restore = _page("restore.md")
+    assert f"psql -U <user> -d {maintenance_db} -v ON_ERROR_STOP=1 < <dump>.sql" in restore
+    assert f"psql -U <user> -d {maintenance_db} -v ON_ERROR_STOP=1\n" in restore  # the .sql.gz variant
+    assert "connected to `template1` for the `postgres` database and to `postgres` for every other one" in restore
+
+
+@pytest.mark.asyncio
+async def test_documented_api_key_recovery_prints_the_key_setup_stored(client, tmp_path):
+    """restore.md's one-liner reads the old API key back from a restored database."""
+    from tests.conftest import do_setup
+
+    api_key = (await do_setup(client))["api_key"]
+    commands = re.findall(r'docker exec Arkive python -c "([^"]+)"', _page("restore.md"))
+    snippets = [c for c in commands if "decrypt_value" in c]
+    assert len(snippets) == 1, snippets
+    snippet = snippets[0]
+    assert "'/config/arkive.db'" in snippet  # Arkive's database inside the container
+    snippet = snippet.replace("'/config/arkive.db'", repr(str(tmp_path / "arkive.db")))
+
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        cwd=REPO_ROOT / "backend",
+        env={**os.environ, "ARKIVE_CONFIG_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == api_key
+
+
+def test_security_pages_describe_what_ci_enforces():
+    workflow = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))
+    guide = re.sub(r"\s+", " ", _page("security.md"))
+    policy = re.sub(r"\s+", " ", SECURITY_MD.read_text(encoding="utf-8"))
+
+    steps = [step for job in workflow["jobs"].values() for step in job.get("steps", [])]
+    audits = [step for step in steps if re.search(r"\b(pip-audit|npm audit)\b", step.get("run", ""))]
+    assert len(audits) >= 2
+    report_only = [step.get("continue-on-error") or step["run"].rstrip().endswith("|| true") for step in audits]
+    if all(report_only):
+        assert "only report: their findings don't fail the build" in guide
+    else:
+        assert "only report" not in guide, "an audit now gates the build; update security.md"
+
+    build = workflow["jobs"]["build"]["steps"]
+    uses = [step.get("uses", "") for step in build]
+    push = next(i for i, name in enumerate(uses) if name.startswith("docker/build-push-action@"))
+    trivy = next(i for i, name in enumerate(uses) if name.startswith("aquasecurity/trivy-action@"))
+    if trivy > push:
+        assert "scanned with Trivy after they have been pushed" in guide
+        assert "doesn't withdraw the image" in guide
+        assert "scanned with Trivy after they are pushed" in policy
+    else:
+        assert "after they have been pushed" not in guide, "Trivy now runs before the push; update security.md"
+
+
+def test_security_policy_agrees_with_the_guide():
+    from app.models.restore import _allowed_restore_roots
+
+    policy = re.sub(r"\s+", " ", SECURITY_MD.read_text(encoding="utf-8"))
+    if "`latest` follows the main branch" in _page("upgrading.md"):
+        # Then `latest` can be an unreleased build: the policy must not send users to it for fixes.
+        assert "arkive:latest" not in policy
+    for root in _allowed_restore_roots():
+        name = "/config/restores" if root.name == "restores" else str(root)
+        assert f"`{name}`" in policy, name
+        assert f"`{name}`" in _page("restore.md"), name
 
 
 # ---------------------------------------------------------------------------

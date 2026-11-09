@@ -80,23 +80,33 @@ Stop the apps that use a database before you restore it.
 
 ### PostgreSQL (`.sql`, or `.sql.gz` with gzip compression)
 
-Arkive dumps each database with `pg_dump --clean --create --if-exists --no-owner --no-privileges`. Loading the file drops the database if it exists, creates it again and fills it, so connect to the `postgres` maintenance database:
+Arkive dumps each database with `pg_dump --clean --create --if-exists --no-owner --no-privileges`. Loading the file drops the database if it exists, creates it again and fills it. PostgreSQL can't drop the database you are connected to, so connect to a different one:
 
-```bash
-docker exec -i <postgres-container> psql -U <user> -d postgres -v ON_ERROR_STOP=1 < <dump>.sql
-gunzip -c <dump>.sql.gz | docker exec -i <postgres-container> psql -U <user> -d postgres -v ON_ERROR_STOP=1
-```
+- for most dumps, the `postgres` maintenance database:
 
-`<user>` is the database superuser of that container, usually its `POSTGRES_USER`. A [restore drill](restore-drills.md) loads dumps the same way. Because the dump has no owner or privilege statements, the restored objects belong to the user you load it with.
+    ```bash
+    docker exec -i <postgres-container> psql -U <user> -d postgres -v ON_ERROR_STOP=1 < <dump>.sql
+    gunzip -c <dump>.sql.gz | docker exec -i <postgres-container> psql -U <user> -d postgres -v ON_ERROR_STOP=1
+    ```
 
-On a new database server, load the roles first. Arkive dumps them per PostgreSQL container with `pg_dumpall --globals-only` into `<container>_globals-<hash>_<timestamp>.sql`. Load that file the same way, without `ON_ERROR_STOP` (the role you connect as already exists, and creating it again reports an error you can ignore). If the dump user couldn't read role passwords (it wasn't a superuser), Arkive made the roles dump with `--no-role-passwords`, and you need to set the passwords again.
+- for a dump of the `postgres` database itself (file name `<container>_postgres-<hash>_<timestamp>.sql`, or `postgres` as the database name in the manifest), `template1`. Arkive dumps `postgres` when it is the database the container is configured with (no `POSTGRES_DB`, `DB_DATABASE_NAME` or `DB_NAME` set) or when it holds tables of its own. Connected to `postgres`, this load stops with "cannot drop the currently open database" and restores nothing.
 
-### MariaDB and MySQL (`.sql`)
+    ```bash
+    docker exec -i <postgres-container> psql -U <user> -d template1 -v ON_ERROR_STOP=1 < <dump>.sql
+    gunzip -c <dump>.sql.gz | docker exec -i <postgres-container> psql -U <user> -d template1 -v ON_ERROR_STOP=1
+    ```
+
+`<user>` is the database superuser of that container, usually its `POSTGRES_USER`. A [restore drill](restore-drills.md) loads dumps the same way, connected to `template1` for the `postgres` database and to `postgres` for every other one. Because the dump has no owner or privilege statements, the restored objects belong to the user you load it with.
+
+On a new database server, load the roles first. Arkive dumps them per PostgreSQL container with `pg_dumpall --globals-only` into `<container>_globals-<hash>_<timestamp>.sql`. Load that file connected to `postgres`, without `ON_ERROR_STOP` (the role you connect as already exists, and creating it again reports an error you can ignore). If the dump user couldn't read role passwords (it wasn't a superuser), Arkive made the roles dump with `--no-role-passwords`, and you need to set the passwords again.
+
+### MariaDB and MySQL (`.sql`, or `.sql.gz` with gzip compression)
 
 Arkive dumps each database with `mysqldump --single-transaction --databases <name>` (`mariadb-dump` on MariaDB images). The file creates the database and switches to it, so load it without naming a database:
 
 ```bash
 docker exec -i <mariadb-container> mysql -u root -p'<root-password>' < <dump>.sql
+gunzip -c <dump>.sql.gz | docker exec -i <mariadb-container> mysql -u root -p'<root-password>'
 ```
 
 On images without a `mysql` command, use `mariadb`.
@@ -159,10 +169,25 @@ When the server is gone, you need:
 Every snapshot contains `config/dumps/arkive_self.db`, a copy of Arkive's database (jobs, targets, notification channels, settings and history). The secrets in it are encrypted with the old instance's keyfile, which is in your recovery kit. To bring it back once your apps are running again:
 
 1. Stop the Arkive container.
-2. In `/mnt/user/appdata/arkive/`, replace `arkive.db` with the restored `arkive_self.db`, and delete `arkive.db-wal` and `arkive.db-shm` if they exist.
+2. In `/mnt/user/appdata/arkive/`, replace `arkive.db` with the restored `arkive_self.db` (`restores/dr/config/dumps/arkive_self.db` for the restore above), and delete `arkive.db-wal` and `arkive.db-shm` if they exist.
 3. Write the keyfile from the recovery kit to `/mnt/user/appdata/arkive/.keyfile`, with mode 600.
-4. Start Arkive. If the keyfile doesn't match the database, Arkive refuses to start and says so (see [Troubleshooting](troubleshooting.md#arkive-refuses-to-start-keyfile)).
-5. Sign in with the **old** instance's API key. If `/mnt/user/appdata` was a watched directory, it is in the restore at `mnt/user/appdata/arkive/.api_key`.
+4. Put the **old** instance's API key file back. The restored database accepts only the old instance's API key, while `/mnt/user/appdata/arkive/.api_key` still holds the new install's key, which the CLI and the commands on this page read. If `/mnt/user/appdata` was a watched directory, the old file is in the restore:
+
+    ```bash
+    cp /mnt/user/appdata/arkive/restores/dr/mnt/user/appdata/arkive/.api_key /mnt/user/appdata/arkive/.api_key
+    chmod 600 /mnt/user/appdata/arkive/.api_key
+    ```
+
+5. Start Arkive. If the keyfile doesn't match the database, Arkive refuses to start and says so (see [Troubleshooting](troubleshooting.md#arkive-refuses-to-start-keyfile)).
+6. Sign in with the old API key, the one now in `.api_key`.
+
+If the restore has no `.api_key`, Arkive can read the old key back from the restored database, which keeps a copy encrypted with the keyfile. With Arkive running, this prints it:
+
+```bash
+docker exec Arkive python -c "import sqlite3; from app.core.security import decrypt_value; row = sqlite3.connect('/config/arkive.db').execute('SELECT value FROM settings WHERE key = ?', ('api_key',)).fetchone(); print(decrypt_value(row[0]))"
+```
+
+Sign in with it, save it in your password manager, and write it to `/mnt/user/appdata/arkive/.api_key` (mode 600) so the commands on this page work again. Signing in with the new install's key fails, and 5 wrong keys within 5 minutes lock your IP address out for 60 seconds.
 
 The jobs resume on their schedules as soon as Arkive starts.
 

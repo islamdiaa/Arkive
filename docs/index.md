@@ -28,9 +28,9 @@ Each backup job runs the same pipeline:
 3. **Archive the flash drive.** On Unraid, `/boot/config` is archived into the same folder as `flash_<timestamp>.tar` (Full Backup and Flash Drive jobs).
 4. **Snapshot.** restic backs up the dump folder and every enabled watched directory to each storage target of the job. A copy of Arkive's own database (`arkive_self.db`) goes into the dump folder first, so it is in every snapshot too.
 5. **Apply retention.** `restic forget` applies your keep-daily, keep-weekly and keep-monthly settings on each target. The space is reclaimed by a prune that runs every Sunday at 04:00.
-6. **Report.** The run ends as `success`, `partial` (a snapshot was written but something was missed, with the reason) or `failed`, and a notification goes to the channels that subscribed to that outcome.
+6. **Report.** The run ends as `success`, `partial` (something was missed, with the reason) or `failed`, and a notification goes to the channels that subscribed to that outcome.
 
-Because every job uploads the same set of paths, every snapshot is a complete restore point.
+Because every job uploads the same set of paths, every snapshot is a complete restore point. A `partial` run usually still wrote a snapshot, but not always: a job with no storage target to upload to ends as `partial` with "nothing was uploaded" and leaves no restore point at all.
 
 ## Words used in this guide
 

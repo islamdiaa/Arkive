@@ -9,7 +9,7 @@
 
 ## A run ends as `partial`
 
-`partial` means a snapshot was written to at least one target but something was missed. The run's message, `Backup completed with problems (...)` or `Backup completed with failures (...)`, lists every problem, separated by semicolons. A run that is `partial` every time usually means configuration drift, such as a watched directory that no longer exists or a target that was disabled.
+`partial` means the run finished but something was missed. Usually a snapshot was still written to at least one target, but not always: when the job had no storage target to upload to (none is enabled, or the targets it lists don't exist), the run is `partial` and nothing was uploaded. Read the message before you rely on a `partial` run as a restore point. The run's message, `Backup completed with problems (...)` or `Backup completed with failures (...)`, lists every problem, separated by semicolons. A run that is `partial` every time usually means configuration drift, such as a watched directory that no longer exists or a target that was disabled.
 
 | Message | What it means | What to do |
 |---------|---------------|------------|
@@ -21,7 +21,8 @@
 | `database(s) in stopped containers have never been dumped: ...` | A database container is stopped, and there is no earlier dump of it. | Start the container so a dump can be made, or exclude the database on the Databases page. Stopped containers that already have a dump are skipped without a warning. |
 | `backup path(s) not found: ...` | A watched directory doesn't exist inside the container. restic would otherwise drop it silently. | Map the path into the container, or remove it under Settings → Directories. |
 | `<target>: some files could not be read (...)` | restic wrote the snapshot but couldn't read some files (permission denied, or files that disappeared mid-backup). | Run the container as root. To leave out a folder that can't or needn't be read, put an empty file named `.arkive-exclude` in it; restic skips every folder that contains one, and every folder marked as a cache with a `CACHEDIR.TAG` file. |
-| `no enabled storage targets, nothing was uploaded` | The job had nowhere to upload. | Add or enable a target. |
+| `no enabled storage targets, nothing was uploaded` | The job had nowhere to upload. **No snapshot was written.** | Add or enable a target. |
+| `storage target <id> no longer exists` | The job's target list names a target that doesn't exist: it was set through the API with a wrong ID, or the target was deleted as the run started. If that was the job's only target, **no snapshot was written.** | Run the job again. If the message comes back, set the job's `targets` with `PUT /api/jobs/<job-id>`; an empty list means every enabled target. |
 | `Backup completed with failures (<target>: ...)` | Some targets failed and at least one succeeded. | See [A storage target fails](#a-storage-target-fails). |
 
 Databases you excluded on the Databases page are recorded as `skipped` and don't make a run partial.

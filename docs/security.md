@@ -48,5 +48,6 @@ Arkive needs broad access to do its job. It reads your app data, runs dump tools
 
 **Build and release**
 
-- CI runs bandit, `pip-audit` and `npm audit` on pull requests. Images built from release tags are scanned with Trivy, and the release fails on fixable HIGH or CRITICAL findings.
+- CI runs bandit on every pull request, and a finding of medium or high severity fails the build. `pip-audit` and `npm audit` run too, but only report: their findings don't fail the build.
+- Images built from version tags are scanned with Trivy after they have been pushed to Docker Hub. A fixable HIGH or CRITICAL finding fails the release build, but it doesn't withdraw the image, so a published version tag is not proof that the scan passed.
 - restic and rclone are built from their release tags (checked against the release commits) with a current Go toolchain, rather than downloaded as prebuilt binaries.
