@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 	import { sidebarOpen, systemStatus } from '$lib/stores/app';
 	import { cn } from '$lib/utils/cn';
 	import {

@@ -14,7 +14,7 @@
 	import { timeAgo } from '$lib/utils/date';
 	import { jobTypeLabel } from '$lib/utils/job-types';
 	import { onMount, onDestroy } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 
 	let jobs: any[] = [];
 	let selectedJob: any = null;

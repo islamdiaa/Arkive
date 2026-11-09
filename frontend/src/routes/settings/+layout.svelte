@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/stores';
+  import { page } from '$lib/stores/page';
 
   const links = [
     { href: '/settings/general', label: 'General', icon: '⚙️' },

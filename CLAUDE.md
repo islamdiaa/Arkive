@@ -599,8 +599,14 @@ At the time this handoff was updated (v0.4.0):
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
-- open follow-up: Tailwind CSS 4 migration (#53); remaining low-severity npm
-  advisories need SvelteKit 3 (build-time only)
+- open follow-up: Tailwind CSS 4 migration (#53)
+- the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
+  (there is no svelte.config.js), `$lib` still works through the deprecated
+  `alias` option (moving to `#lib` subpath imports is a follow-up), and `$:`
+  components read the route from `$lib/stores/page` because `$app/stores` is
+  gone and `$app/state` only notifies runes. The one npm advisory left is
+  deepmerge (GHSA-gcqx-w48m-w2h4, via vite-plugin-svelte, build-time only): no
+  patched release exists and its CVE was rejected upstream
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still

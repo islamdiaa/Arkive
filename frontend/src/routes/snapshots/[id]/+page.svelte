@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '$lib/stores/page';
   import Header from '$lib/components/layout/Header.svelte';
   import RestoreModal from '$lib/components/modals/RestoreModal.svelte';
   import { api } from '$lib/api/client';

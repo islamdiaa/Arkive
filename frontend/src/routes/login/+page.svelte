@@ -18,6 +18,13 @@
 		return safeNext(new URLSearchParams(window.location.search).get('next'));
 	}
 
+	// goto() rejects a path that matches no route (SvelteKit 3). Load it like a link
+	// would instead, so the user lands on the 404 page rather than staying here.
+	function goToNext() {
+		const next = nextDestination();
+		goto(next).catch(() => window.location.assign(next));
+	}
+
 	onMount(async () => {
 		try {
 			const session = await api.getSession();
@@ -26,7 +33,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto(nextDestination());
+				goToNext();
 			}
 		} catch {
 			// Ignore and let the user attempt login.
@@ -44,7 +51,7 @@
 			const session = await api.login(apiKey.trim());
 			applySession(session);
 			setupCompleted.set(true);
-			goto(nextDestination());
+			goToNext();
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Login failed' });
 		} finally {
