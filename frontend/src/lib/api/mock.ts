@@ -328,6 +328,52 @@ function _mockDrillDetail(id: string): any {
   return { ...drill, results: DEMO_DRILL_RESULTS[drill.id] ?? [] };
 }
 
+/** Demo "finish protecting this server" checklist, derived from the other demo data. */
+let DEMO_CHECKLIST_DISMISSED_AT: string | null = null;
+
+function _mockSetupChecklist(): any {
+  const drill = DEMO_STATUS.last_drill;
+  const offsite = DEMO_TARGETS.targets.filter(t => t.type !== 'local' && t.enabled);
+  const channels = DEMO_CHANNELS.channels.filter(c => c.enabled);
+  const step = (id: string, done: boolean, detail: string | null, completedAt: string | null, extra = {}) => ({
+    id,
+    state: done ? 'done' : 'todo',
+    done,
+    detail,
+    completed_at: done ? completedAt : null,
+    ...extra,
+  });
+  const steps = [
+    step('first_backup', DEMO_STATUS.last_backup_status === 'success', null, DEMO_STATUS.last_backup.completed_at),
+    step(
+      'restore_test',
+      drill?.status === 'passed',
+      drill ? `${drill.databases_passed} of ${drill.databases_tested} databases restored in the last drill` : null,
+      drill?.completed_at ?? null,
+      { method: 'drill' },
+    ),
+    step('offsite_target', offsite.length > 0, offsite.map(t => t.name).join(', ') || null, null),
+    step('notifications', channels.length > 0, channels.map(c => c.name).join(', ') || null, null),
+    step('recovery_kit', DEMO_STATUS.recovery_kit_confirmed, null, DEMO_SETTINGS.recovery_kit_confirmed_at),
+  ];
+  const completed = steps.filter(s => s.done).length;
+  return {
+    complete: completed === steps.length,
+    completed_count: completed,
+    total: steps.length,
+    dismissed: DEMO_CHECKLIST_DISMISSED_AT !== null,
+    dismissed_at: DEMO_CHECKLIST_DISMISSED_AT,
+    steps,
+  };
+}
+
+function _mockDismissSetupChecklist(): any {
+  const checklist = _mockSetupChecklist();
+  // The real API answers 409 until every step is done; demo mode just leaves it visible.
+  if (checklist.complete && !checklist.dismissed) DEMO_CHECKLIST_DISMISSED_AT = new Date().toISOString();
+  return _mockSetupChecklist();
+}
+
 function _mockRecoveryKit(): any {
   const generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const targets = [
@@ -441,6 +487,7 @@ async function _mockGet(path: string): Promise<any> {
   if (clean === '/drills') return DEMO_DRILLS;
   if (clean.startsWith('/drills/')) return _mockDrillDetail(decodeURIComponent(clean.split('/')[2] ?? ''));
   if (clean === '/settings') return DEMO_SETTINGS;
+  if (clean === '/setup-checklist') return _mockSetupChecklist();
   if (clean === '/activity') return DEMO_ACTIVITY;
   if (clean === '/storage') return DEMO_STORAGE;
   if (clean.startsWith('/snapshots')) return DEMO_SNAPSHOTS;
@@ -478,6 +525,7 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean === '/jobs') return { ...data, id: `job-new-${Date.now()}` };
   if (clean === '/drills/run') return { drill_id: `drill-demo-${Date.now()}`, status: 'running' };
   if (clean === '/settings/recovery-kit') return _mockRecoveryKit();
+  if (clean === '/setup-checklist/dismiss') return _mockDismissSetupChecklist();
   if (clean === '/settings/recovery-kit/confirm') {
     const confirmedAt = new Date().toISOString();
     DEMO_SETTINGS.recovery_kit_confirmed_at = confirmedAt;
