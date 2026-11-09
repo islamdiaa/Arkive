@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("arkive_release_script", REPO_ROOT / "scripts" / "release.py")
@@ -115,15 +116,15 @@ def test_version_key_follows_semver_precedence():
     "tag,existing,latest,newest_in_major",
     [
         # A new stable release moves both.
-        ("v0.5.0", ["v0.2.4", "v0.4.0"], "true", "true"),
-        # The tag itself may or may not already be in the listing.
-        ("v0.5.0", ["v0.4.0", "v0.5.0"], "true", "true"),
+        ("v0.5.0", ["v0.2.4", "v0.4.0", "v0.5.0"], "true", "true"),
+        # The first release of all.
+        ("v0.1.0", ["v0.1.0"], "true", "true"),
         # A fix on an older line moves neither: latest and "0" stay on 0.5.0.
-        ("v0.4.1", ["v0.4.0", "v0.5.0"], "false", "false"),
+        ("v0.4.1", ["v0.4.0", "v0.5.0", "v0.4.1"], "false", "false"),
         # A fix on an older major moves its own major tag but not latest.
-        ("v1.4.1", ["v1.4.0", "v2.0.0"], "false", "true"),
+        ("v1.4.1", ["v1.4.0", "v2.0.0", "v1.4.1"], "false", "true"),
         # Pre-release tags and other tags don't count as newer releases.
-        ("v0.4.2", ["v0.4.1", "v0.5.0-rc.1", "nightly", "v9-broken"], "true", "true"),
+        ("v0.4.2", ["v0.4.1", "v0.5.0-rc.1", "nightly", "v9-broken", "v0.4.2"], "true", "true"),
     ],
 )
 def test_tag_info_moves_latest_only_for_the_newest_stable_release(tag, existing, latest, newest_in_major):
@@ -135,13 +136,28 @@ def test_tag_info_moves_latest_only_for_the_newest_stable_release(tag, existing,
 
 
 def test_tag_info_never_moves_latest_for_a_prerelease():
-    info = release.tag_info("v2.0.0-rc.1", ["v1.0.0"])
+    info = release.tag_info("v2.0.0-rc.1", ["v1.0.0", "v2.0.0-rc.1"])
     assert info == {"version": "2.0.0-rc.1", "prerelease": "true", "latest": "false", "newest_in_major": "false"}
 
 
 def test_tag_info_rejects_a_non_version_tag():
     with pytest.raises(release.ReleaseError):
-        release.tag_info("vnext", ["v1.0.0"])
+        release.tag_info("vnext", ["v1.0.0", "vnext"])
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        # git ls-remote failed and printed nothing: without the other tags,
+        # v0.4.1 would look like the newest release and take "latest".
+        [],
+        # A listing that stopped early, or one from the wrong remote.
+        ["v0.1.0", "v0.2.0"],
+    ],
+)
+def test_tag_info_refuses_a_listing_without_the_tag_itself(existing):
+    with pytest.raises(release.ReleaseError, match="does not include v0.4.1"):
+        release.tag_info("v0.4.1", existing)
 
 
 def test_read_tag_list_accepts_ls_remote_output_and_plain_lines():
@@ -301,7 +317,9 @@ def test_cli_notes_prints_the_section(tmp_path, capsys):
 
 
 def test_cli_tag_info_prints_github_output_lines(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "stdin", io.StringIO("abc\trefs/tags/v0.4.0\ndef\trefs/tags/v0.5.0\n"))
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO("abc\trefs/tags/v0.4.0\nabd\trefs/tags/v0.4.1\ndef\trefs/tags/v0.5.0\n")
+    )
     assert release.main(["tag-info", "v0.4.1"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "version=0.4.1",
@@ -309,6 +327,17 @@ def test_cli_tag_info_prints_github_output_lines(monkeypatch, capsys):
         "latest=false",
         "newest_in_major=false",
     ]
+
+
+def test_cli_tag_info_fails_closed_on_an_empty_listing(monkeypatch, capsys):
+    # The workflow pipes `git ls-remote` into tag-info; if the listing fails,
+    # the step must fail (so the build job stops before pushing anything)
+    # rather than report latest=true for a tag it could not compare.
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert release.main(["tag-info", "v0.4.1"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "does not include v0.4.1" in captured.err
 
 
 def test_cli_errors_use_github_annotations_in_actions(tmp_path, monkeypatch, capsys):
@@ -325,6 +354,22 @@ def test_cli_errors_use_github_annotations_in_actions(tmp_path, monkeypatch, cap
 
 def test_repository_changelog_and_version_files_are_consistent():
     assert release.check(REPO_ROOT) == []
+
+
+def test_workflow_tag_info_pipes_run_with_pipefail():
+    # GitHub's default shell is `bash -e` without pipefail; only an explicit
+    # `shell: bash` adds it. Every step that pipes the tag listing into
+    # tag-info must have it, so a failed `git ls-remote` fails the step.
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8"))
+    steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "release.py tag-info" in step.get("run", "")
+    ]
+    assert len(steps) >= 2  # the build job and the release job
+    for step in steps:
+        assert step.get("shell") == "bash", step["name"]
 
 
 def test_repository_has_release_notes_for_the_current_version():

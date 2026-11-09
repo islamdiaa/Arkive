@@ -20,6 +20,8 @@ Standard library only, so the workflow can run it without installing anything.
       one tag per line) and print key=value lines for $GITHUB_OUTPUT:
       version, prerelease, latest (newest stable release overall) and
       newest_in_major (newest stable release with this major version).
+      Fails, printing nothing, when the list doesn't include vX.Y.Z itself
+      (an empty or truncated listing).
 """
 
 from __future__ import annotations
@@ -80,8 +82,19 @@ def tag_info(tag: str, existing_tags: list[str]) -> dict[str, str]:
     Only a stable release that is at least as new as every other stable release
     moves them, so a fix tagged on an older line (v0.4.1 after v0.5.0) or a
     pre-release never pulls users of ``latest`` backwards or onto an RC.
+
+    ``existing_tags`` is the repository's full tag list, which includes the
+    tag being released (it was pushed before CI ran). A list without it means
+    the listing failed or came back empty, and without the other tags this
+    tag would look like the newest release, so that is an error, not a guess.
     """
     version, prerelease = parse_tag(tag)
+    if tag not in existing_tags:
+        raise ReleaseError(
+            f"the tag list does not include {tag} itself, so it is incomplete "
+            f"({len(existing_tags)} tag(s) read; did 'git ls-remote --tags' fail?). "
+            "Refusing to decide whether this tag may move 'latest'."
+        )
     stable = [version]
     for name in existing_tags:
         m = TAG_RE.fullmatch(name)

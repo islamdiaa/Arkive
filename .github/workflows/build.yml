@@ -293,10 +293,13 @@ jobs:
       # "latest" follows the newest stable version tag only. Pushes to main get
       # "main" and the commit sha; a pre-release tag gets just its version; a
       # fix tagged on an older line (v0.4.1 after v0.5.0) moves neither
-      # "latest" nor the major-version tag.
+      # "latest" nor the major-version tag. This fails closed: `shell: bash`
+      # sets pipefail, and tag-info refuses a listing without this tag in it,
+      # so a failed ls-remote stops the job instead of reading as "no tags".
       - name: Compare this tag with the existing version tags
         id: release_tag
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: git ls-remote --tags --refs origin | python3 scripts/release.py tag-info "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Extract metadata (tags, labels)
@@ -355,6 +358,7 @@ jobs:
 
       - name: Prepare release notes
         id: info
+        shell: bash
         run: |
           git ls-remote --tags --refs origin | python3 scripts/release.py tag-info "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           python3 scripts/release.py notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
