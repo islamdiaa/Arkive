@@ -1,7 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Arkive</Name>
-  <!-- ":0" follows every 0.x release (":latest" is rebuilt from every commit to main). Change it to ":1" for 1.0. -->
+  <!-- ":0" follows every final 0.x release (":latest" is rebuilt from every commit to main). Change it to ":1" only
+       after the v1.0.0 image has been published: before that, ":1" doesn't exist and installs fail to pull. -->
   <Repository>islamdiaa/arkive:0</Repository>
   <Registry>https://hub.docker.com/r/islamdiaa/arkive</Registry>
   <Network>bridge</Network>
@@ -15,7 +16,7 @@
 
 It also checks that backups keep working: an overdue-backup watchdog, an optional heartbeat URL for Uptime Kuma or healthchecks.io, weekly restore drills that load recent dumps into a throwaway container, and notifications through Discord, Slack, ntfy, email and other Apprise services. A recovery kit and a printable restore plan cover the day the server is gone.
 
-User shares, the flash config and the Docker socket are mounted read-only. Restores go to the config folder, and you copy files into place from there. After installing, open the web UI and follow the setup wizard.</Overview>
+Appdata, the flash config and the Docker socket are mounted read-only. To back up another share, add a path that maps it to the same path in the container, read-only. Restores go to the config folder, and you copy files into place from there. After installing, open the web UI and follow the setup wizard.</Overview>
   <Category>Backup: Tools:System</Category>
   <WebUI>http://[IP]:[PORT:8200]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml</TemplateURL>
@@ -30,9 +31,13 @@ After setup, save the recovery kit (Settings, Recovery kit) somewhere other than
   <Screenshot>https://raw.githubusercontent.com/islamdiaa/Arkive/main/docs/images/snapshots-dark.png</Screenshot>
   <Config Name="Web UI Port" Target="8200" Default="8200" Mode="tcp" Description="Port for the Arkive web interface and API. Don't expose it to the internet." Type="Port" Display="always" Required="true" Mask="false"/>
   <Config Name="Config Directory" Target="/config" Default="/mnt/user/appdata/arkive" Mode="rw" Description="Arkive's database, encryption keyfile, logs, database dumps and restores." Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="User Shares" Target="/mnt/user" Default="/mnt/user" Mode="ro" Description="Your user shares, read-only. Arkive reads appdata and the shares you choose to back up, and finds SQLite databases in app folders through this path." Type="Path" Display="always" Required="true" Mask="false"/>
+  <!-- Shares are mapped one by one, never /mnt/user as a whole. An exclusive share is a symlink in /mnt/user that
+       points at its pool (/mnt/user/appdata -> /mnt/cache/appdata), so inside a container that only has /mnt/user
+       it leads nowhere. A direct mapping is resolved on the host and works either way. Mappings also must not
+       nest: a read-write path inside a read-only /mnt/user can't be created and the container won't start. -->
+  <Config Name="App Data" Target="/mnt/user/appdata" Default="/mnt/user/appdata" Mode="ro" Description="Your appdata share, read-only. Arkive backs it up and finds app SQLite databases in it, so keep the container path /mnt/user/appdata. To back up another share, add a path with the same host and container path (for example /mnt/user/photos), read-only. Don't map all of /mnt/user: exclusive shares can't be read through it." Type="Path" Display="always" Required="true" Mask="false"/>
   <Config Name="Flash Drive" Target="/boot-config" Default="/boot/config" Mode="ro" Description="Unraid flash drive config, read-only, for flash backups." Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="Docker Socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="ro" Description="Used to discover containers and run database dump tools inside them. Read-only doesn't limit Docker API calls: whoever controls Arkive controls Docker." Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="Local Backups" Target="/mnt/user/backups" Default="/mnt/user/backups" Mode="rw" Description="Read-write folder for a local storage target (the setup wizard suggests /mnt/user/backups). Remove this path if you only use remote targets. A local target doesn't protect against losing the server, so add an off-site target too." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Local Backups" Target="/mnt/user/backups" Default="/mnt/user/backups" Mode="rw" Description="Read-write folder for a local storage target (the setup wizard suggests /mnt/user/backups). The host folder can be anywhere, such as an Unassigned Devices disk; keep the container path. Remove this path if you only use remote targets. A local target doesn't protect against losing the server, so add an off-site target too." Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="Restic Cache" Target="/cache" Default="/mnt/user/appdata/arkive/cache" Mode="rw" Description="restic metadata cache. Speeds up backups to remote targets; safe to delete." Type="Path" Display="advanced" Required="false" Mask="false"/>
 </Container>

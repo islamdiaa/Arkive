@@ -28,11 +28,26 @@ links into this repository, valid CA categories, the icon, the image tag and the
   in `.github/workflows/build.yml`). Today it points at the same image as `0.4.0`.
   docker/metadata-action's docs suggest turning that pattern off for 0.x versions. Keep it on
   while the template uses `:0`; the template test fails if it gets a condition.
-- **Read-only data.** `/mnt/user`, `/boot/config` (as `/boot-config`) and the Docker socket
-  are mounted `ro`. Arkive writes only to `/config` (restores land in `/config/restores`),
-  `/cache` and `/mnt/user/backups`, a read-write mount nested inside the read-only
-  `/mnt/user` for a local target. A local target anywhere else under a read-only mount is
-  now rejected when it's created, with a message saying why.
+- **Read-only data.** `/mnt/user/appdata`, `/boot/config` (as `/boot-config`) and the Docker
+  socket are mounted `ro`. Arkive writes only to `/config` (restores land in
+  `/config/restores`), `/cache` and `/mnt/user/backups`, a read-write path for a local
+  target. A local target on a read-only mount (inside appdata, say) is now rejected when
+  it's created, with a message saying why; 0.4.0 accepted it and restic failed later.
+- **Shares are mapped one at a time, not `/mnt/user` as a whole.** With "Permit exclusive
+  shares" on (Unraid 6.12+), a share that lives only on a pool is a symlink in `/mnt/user`
+  (`/mnt/user/appdata -> /mnt/cache/appdata`). A container that only has `/mnt/user`
+  sees a symlink to a path it doesn't have, so appdata would be invisible: not preselected
+  in setup, not suggested by the directory scan, and no SQLite databases discovered, with
+  no warning. Mapping appdata on its own as well doesn't fix that: Docker mounts it at
+  `/mnt/cache/appdata` inside the container, `/mnt/user/appdata` stays a symlink, and
+  restic stores the symlink, not the data. A direct mapping (`/mnt/user/appdata` to
+  `/mnt/user/appdata`) is resolved on the host and works whether or not the share is
+  exclusive. Users add other shares the same way: same host and container path, read-only.
+  Mappings also don't nest: a read-write path inside a read-only `/mnt/user` can only be
+  created if that folder already exists in `/mnt/user` on the host, so pointing "Local
+  Backups" at an Unassigned Devices disk would stop the container from starting.
+  `docker-compose.yml` still mounts `/mnt/user` whole, so it has the exclusive-share
+  problem; that's outside this template.
 - **No `TZ` variable.** Unraid's Docker manager passes the server's time zone to every
   container. The old template's `TZ=America/New_York` came later on the command line and
   replaced it.
@@ -74,30 +89,52 @@ pre-release tags such as `v0.5.0-rc1` don't.
 
 ### 4. Test-install the template
 
-Use a test server or a VM with an Unraid trial licence. Don't test on a server whose Arkive
-install you rely on: `/boot` is FAT32, so `my-Arkive.xml` and `my-arkive.xml` are the
-same file, and downloading the template under that name replaces the existing container's
-template.
+Use a test server or a VM with an Unraid trial licence, with no Arkive installed. Don't
+test on a server whose Arkive install you rely on. The template's defaults are the
+production install's: the container name `Arkive`, the config folder
+`/mnt/user/appdata/arkive` (its database and `.keyfile`) and port 8200. When you click
+**Apply**, Unraid saves the form as `my-<container name>.xml`, matched without regard to
+case, so a test container named `Arkive` overwrites an existing `my-arkive.xml`, whatever
+name you downloaded the template under. A second Arkive on the same config folder shares
+the first one's database and keyfile, and deleting "the test install's appdata" afterwards
+deletes the real one.
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-Arkive-test.xml \
   https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml
 ```
 
-Then go to **Docker → Add Container → Template → Arkive-test** and apply. Check that:
+Go to **Docker → Add Container → Template → Arkive-test**. If the server already has an
+Arkive container, despite the advice above, change these before you apply:
 
-- the command Unraid prints contains `-v '/mnt/user':'/mnt/user':'ro'`,
+| Field | Change to |
+|-------|-----------|
+| Name | `Arkive-test` |
+| Web UI Port | a free port, such as `8201` |
+| Config Directory | `/mnt/user/appdata/arkive-test` |
+| Restic Cache (Show more settings) | `/mnt/user/appdata/arkive-test/cache` |
+| Local Backups | a new, empty folder, such as `/mnt/user/arkive-test-backups` |
+
+Apply, then check that:
+
+- the command Unraid prints contains `-v '/mnt/user/appdata':'/mnt/user/appdata':'ro'`,
   `-v '/boot/config':'/boot-config':'ro'`, `-v '/var/run/docker.sock':'/var/run/docker.sock':'ro'`
-  and only one `TZ` (the server's)
-- the Docker tab shows the Arkive icon, and **WebUI** opens `http://<server>:8200`
-- the setup wizard accepts the local target `/mnt/user/backups`. From the first release
-  after this change, it also rejects a path such as `/mnt/user/photos/arkive` with a
-  "mounted read-only" error. 0.4.0 accepts that path, and the target then fails when restic
-  tries to write to it.
+  and only one `TZ` (the server's), and no `-v '/mnt/user':'/mnt/user'`
+- the Docker tab shows the Arkive icon, and **WebUI** opens `http://<server>:<port>`
+- the setup wizard preselects `/mnt/user/appdata` and accepts the local target
+  `/mnt/user/backups`. A path such as `/mnt/user/photos/arkive` is rejected as "not
+  persistent storage". From the first release after this change, `/mnt/user/appdata/arkive-repo`
+  is rejected as "mounted read-only"; 0.4.0 accepts it, and the target then fails when
+  restic tries to write to it.
+- if the server has **Settings → Global Share Settings → Permit exclusive shares** on and
+  appdata is exclusive (`ls -l /mnt/user` shows `appdata` as a symlink), discovery still
+  lists the SQLite databases of your apps
 - a manual backup finishes `success`, flash config included, and the container's health
   shows `healthy`
 
-Remove the test container and its appdata folder afterwards.
+Afterwards, remove the test container from the Docker tab, delete `my-Arkive-test.xml` from
+`/boot/config/plugins/dockerMan/templates-user/`, and delete only the folders you created
+for the test. Check each path before you delete it: never `/mnt/user/appdata/arkive`.
 
 ### 5. Optional: create a forum support thread
 
@@ -134,9 +171,14 @@ Approved apps appear after CA's next catalog build.
 
 ## Keeping the listing healthy
 
-- **At 1.0.0**, change `<Repository>` to `islamdiaa/arkive:1`. The template test fails
-  until you do. Containers installed with `:0` stay on the last 0.x release until their
-  owners edit the repository field, so say so in the release notes.
+- **At 1.0.0**, change `<Repository>` to `islamdiaa/arkive:1`, but only after the `v1.0.0`
+  tag's build has published the image (`docker buildx imagetools inspect islamdiaa/arkive:1`
+  succeeds). Not in the release-prep PR that bumps `ARG VERSION`: until the final tag is
+  built, `:1` doesn't exist and every new install would fail to pull, and pre-release tags
+  such as `v1.0.0-rc1` never publish it. The template test allows the template's major to
+  lag `ARG VERSION` by one and fails if it gets ahead. Containers installed with `:0` stay
+  on the last 0.x release until their owners edit the repository field, so say so in the
+  release notes.
 - **Template edits** reach CA on its next catalog build. Installed containers keep their
   own copy of the template on the flash drive, so new or changed paths only reach new
   installs, or users who edit the container.

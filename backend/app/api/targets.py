@@ -176,22 +176,26 @@ def _validate_local_path(config: dict) -> list[str]:
             errors.append(f"Cannot use system directory as backup target: {prefix}")
         elif resolved == prefix or resolved.startswith(prefix + "/"):
             errors.append(f"Cannot use path resolving to system directory as backup target: {prefix}")
+    # The mount checks look at where the data would really land. An exclusive
+    # Unraid share is a symlink (/mnt/user/backups -> /mnt/cache/backups), and
+    # with /mnt/user mounted too, Docker mounts the share at the symlink target.
+    shown = normalized if resolved == normalized else f"{normalized} (resolves to {resolved})"
     if not errors:
-        reason = ephemeral_path_reason(normalized)
+        reason = ephemeral_path_reason(resolved)
         if reason:
             errors.append(
-                f"Local path {normalized} is not persistent storage ({reason}); backups there are lost "
+                f"Local path {shown} is not persistent storage ({reason}); backups there are lost "
                 f"when the container is re-created. Map a host directory to it, e.g. "
                 f"-v /mnt/user/backups:/mnt/user/backups"
             )
     if not errors:
-        # Data is meant to be mounted read-only (the Unraid template mounts
-        # /mnt/user :ro with a read-write /mnt/user/backups inside it). A target
-        # anywhere else on such a mount would only fail later, inside restic.
-        read_only_mount = read_only_mount_for(normalized)
+        # Data is meant to be mounted read-only (appdata in the Unraid template,
+        # /mnt/user in docker-compose.yml). A target on such a mount would only
+        # fail later, inside restic.
+        read_only_mount = read_only_mount_for(resolved)
         if read_only_mount:
             errors.append(
-                f"Local path {normalized} is on {read_only_mount}, which is mounted read-only in the "
+                f"Local path {shown} is on {read_only_mount}, which is mounted read-only in the "
                 f"Arkive container. Use a path mapped read-write, e.g. -v /mnt/user/backups:/mnt/user/backups"
             )
     config["path"] = normalized

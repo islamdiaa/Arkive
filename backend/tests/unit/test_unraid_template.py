@@ -4,7 +4,8 @@ Community Apps reads ``unraid-template.xml`` and ``ca_profile.xml`` from the
 default branch, and Unraid's Docker manager builds the ``docker create``
 command from the template. These tests keep both files valid and keep the
 template's mounts in line with Arkive's security model (data read-only,
-writes only to /config, /cache and the local-target path).
+writes only to /config, /cache and the local-target path) and with how
+Unraid lays out shares (exclusive shares are symlinks in /mnt/user).
 """
 
 from __future__ import annotations
@@ -130,13 +131,20 @@ class TestTemplateMetadata:
         assert "Backup:" in categories
 
     def test_repository_tag_follows_releases(self, template):
-        # The release workflow publishes {{major}} for every vX.Y.Z tag, while
-        # :latest is rebuilt from main. Bump the template's tag with the major,
-        # and keep {{major}} unconditional (metadata-action's docs suggest
-        # disabling it for 0.x, which would freeze the template's :0).
+        # The release workflow publishes {{major}} for every final vX.Y.Z tag,
+        # while :latest is rebuilt from main. Keep {{major}} unconditional
+        # (metadata-action's docs suggest disabling it for 0.x, which would
+        # freeze the template's :0).
+        #
+        # The template's major may lag the Dockerfile's VERSION by one: a
+        # release-prep PR bumps VERSION days before the tag is built, and
+        # pre-release tags don't publish {{major}}, so the new major tag doesn't
+        # exist yet. It must never be ahead, or installs fail to pull.
         image, _, tag = _text(template, "Repository").partition(":")
         assert image == "islamdiaa/arkive"
-        assert tag == _image_version().split(".")[0]
+        assert tag.isdigit(), f"use a major-version tag, not {tag!r}"
+        version_major = int(_image_version().split(".")[0])
+        assert version_major - 1 <= int(tag) <= version_major
         workflow = (REPO_ROOT / ".github" / "workflows" / "build.yml").read_text()
         assert re.search(r"^\s*type=semver,pattern=\{\{major\}\}\s*$", workflow, re.MULTILINE)
 
@@ -173,11 +181,30 @@ class TestTemplateMounts:
         return {p["Target"]: p for p in _configs(template, "Path")}
 
     def test_data_sources_are_read_only(self, paths):
-        assert paths["/mnt/user"]["Default"] == "/mnt/user"
+        # Discovery rewrites container mounts to /mnt/user/appdata/<app>, so
+        # appdata must be at that path inside the container.
+        assert paths["/mnt/user/appdata"]["Default"] == "/mnt/user/appdata"
+        assert paths["/mnt/user/appdata"]["Required"] == "true"
         assert paths["/boot-config"]["Default"] == "/boot/config"
         assert paths["/var/run/docker.sock"]["Default"] == "/var/run/docker.sock"
-        for target in ("/mnt/user", "/boot-config", "/var/run/docker.sock"):
+        for target in ("/mnt/user/appdata", "/boot-config", "/var/run/docker.sock"):
             assert paths[target]["Mode"] == "ro", target
+
+    def test_shares_are_mapped_directly_and_never_nested(self, paths):
+        # With "Permit exclusive shares", /mnt/user/appdata is a symlink to
+        # /mnt/cache/appdata. Mapping /mnt/user as a whole hands the container
+        # that symlink, which leads nowhere inside it: appdata becomes
+        # invisible to setup, the directory scan and SQLite discovery. Adding
+        # a direct appdata mapping inside it doesn't help either: Docker mounts
+        # it at /mnt/cache/appdata, /mnt/user/appdata stays a symlink, and
+        # restic backs up the symlink instead of the data. And a read-write
+        # path nested in a read-only parent stops the container from starting
+        # when the inner host folder doesn't exist under the parent.
+        assert "/mnt/user" not in paths
+        assert "/mnt" not in paths
+        for outer in paths:
+            for inner in paths:
+                assert not inner.startswith(outer.rstrip("/") + "/"), f"{inner} is nested inside {outer}"
 
     def test_only_arkive_storage_is_writable(self, paths):
         writable = {target for target, p in paths.items() if p["Mode"] != "ro"}
@@ -203,21 +230,37 @@ class TestProfile:
         _png_size(icon)
 
 
+def _use_mountinfo(monkeypatch, mountinfo: Path) -> None:
+    """Point the local-target mount checks at a fake mountinfo, as if running
+    in a container."""
+    import app.api.targets as targets_mod
+    from app.utils import mounts
+
+    monkeypatch.setattr(targets_mod, "read_only_mount_for", lambda p: mounts.read_only_mount_for(p, mountinfo))
+    monkeypatch.setattr(
+        targets_mod,
+        "ephemeral_path_reason",
+        lambda p: mounts.ephemeral_path_reason(p, mountinfo, in_container=True),
+    )
+
+
+def _write_mountinfo(path: Path, mounts: list[tuple[str, str, str]]) -> Path:
+    lines = ["100 90 0:40 / / rw,relatime - overlay overlay rw"]
+    for i, (source, target, mode) in enumerate(mounts, start=101):
+        lines.append(f"{i} 100 0:50 {source} {target} {mode},noatime - shfs shfs rw")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 class TestLocalTargetsUnderTemplateMounts:
-    """A local target must be on a read-write mount. With the template's
-    mounts, that's /mnt/user/backups but not the rest of /mnt/user."""
+    """A local target must be on a persistent, read-write mount. With the
+    template's mounts, that's /mnt/user/backups (or /config), not appdata and
+    not an unmapped share."""
 
     @pytest.fixture
     def template_mounts(self, template, tmp_path, monkeypatch):
-        import app.api.targets as targets_mod
-        from app.utils import mounts
-
-        lines = ["100 90 0:40 / / rw,relatime - overlay overlay rw"]
-        for i, path in enumerate(_configs(template, "Path"), start=101):
-            lines.append(f"{i} 100 0:50 {path['Default']} {path['Target']} {path['Mode']},noatime - shfs shfs rw")
-        mountinfo = tmp_path / "mountinfo"
-        mountinfo.write_text("\n".join(lines) + "\n")
-        monkeypatch.setattr(targets_mod, "read_only_mount_for", lambda p: mounts.read_only_mount_for(p, mountinfo))
+        mounts = [(p["Default"], p["Target"], p["Mode"]) for p in _configs(template, "Path")]
+        _use_mountinfo(monkeypatch, _write_mountinfo(tmp_path / "mountinfo", mounts))
 
     @pytest.mark.parametrize("path", ["/mnt/user/backups", "/mnt/user/backups/arkive", "/config/local-repo"])
     def test_writable_paths_are_accepted(self, template_mounts, path):
@@ -225,13 +268,19 @@ class TestLocalTargetsUnderTemplateMounts:
 
         assert _validate_local_path({"path": path}) == []
 
-    @pytest.mark.parametrize("path", ["/mnt/user/photos/repo", "/mnt/user/appdata/repo"])
-    def test_read_only_paths_are_rejected(self, template_mounts, path):
+    def test_read_only_appdata_is_rejected(self, template_mounts):
         from app.api.targets import _validate_local_path
 
-        errors = _validate_local_path({"path": path})
+        errors = _validate_local_path({"path": "/mnt/user/appdata/repo"})
         assert len(errors) == 1
-        assert "/mnt/user, which is mounted read-only" in errors[0]
+        assert "/mnt/user/appdata, which is mounted read-only" in errors[0]
+
+    def test_unmapped_share_is_rejected_as_not_persistent(self, template_mounts):
+        from app.api.targets import _validate_local_path
+
+        errors = _validate_local_path({"path": "/mnt/user/photos/repo"})
+        assert len(errors) == 1
+        assert "not persistent storage" in errors[0]
 
     async def test_create_target_on_read_only_mount_returns_422(self, template_mounts, client):
         from tests.conftest import auth_headers, do_setup
@@ -239,8 +288,43 @@ class TestLocalTargetsUnderTemplateMounts:
         api_key = (await do_setup(client))["api_key"]
         resp = await client.post(
             "/api/targets",
-            json={"name": "Photos", "type": "local", "config": {"path": "/mnt/user/photos/arkive"}},
+            json={"name": "Appdata", "type": "local", "config": {"path": "/mnt/user/appdata/arkive-repo"}},
             headers=auth_headers(api_key),
         )
         assert resp.status_code == 422
         assert "mounted read-only" in resp.text
+
+
+class TestLocalTargetsOnExclusiveShares:
+    """An exclusive share is a symlink in /mnt/user that points at its pool.
+    With /mnt/user mounted read-only (as docker-compose.yml does) plus a
+    read-write mapping for such a share, Docker mounts the share at the
+    symlink's target. The checks must follow the symlink, not match the path
+    as typed."""
+
+    @pytest.fixture
+    def user_shares(self, tmp_path, monkeypatch) -> Path:
+        base = tmp_path.resolve()
+        user, pool = base / "user", base / "cache"
+        (pool / "backups").mkdir(parents=True)
+        user.mkdir()
+        (user / "backups").symlink_to(pool / "backups")
+        (user / "gone").symlink_to(pool / "gone")  # a share on a pool the container can't see
+        mounts = [(str(user), str(user), "ro"), (str(pool / "backups"), str(pool / "backups"), "rw")]
+        _use_mountinfo(monkeypatch, _write_mountinfo(base / "mountinfo", mounts))
+        return user
+
+    def test_writable_share_behind_a_symlink_is_accepted(self, user_shares):
+        from app.api.targets import _validate_local_path
+
+        config = {"path": str(user_shares / "backups" / "arkive")}
+        assert _validate_local_path(config) == []
+        assert config["path"] == str(user_shares / "backups" / "arkive")  # stored as typed
+
+    def test_symlink_into_the_container_filesystem_is_rejected(self, user_shares):
+        from app.api.targets import _validate_local_path
+
+        errors = _validate_local_path({"path": str(user_shares / "gone" / "arkive")})
+        assert len(errors) == 1
+        assert "not persistent storage" in errors[0]
+        assert "resolves to" in errors[0]
