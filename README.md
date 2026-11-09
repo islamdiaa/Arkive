@@ -30,6 +30,12 @@ Copying `appdata` while databases are running produces backups that may not rest
 
 Arkive is under active development. Backup, snapshot, restore, cloud targets and verification are implemented and covered by unit, integration and end-to-end tests.
 
+## Documentation
+
+The [user guide](docs/index.md) covers installing on Unraid, the setup wizard, every storage provider, notifications, the recovery kit, restoring (including disaster recovery on a fresh server), restore drills, overdue-backup alerts and the heartbeat, troubleshooting, upgrading, and the security model. Start with the [quick start](docs/quick-start.md).
+
+To explore the interface with sample data before you configure anything, open any Arkive page with `?demo=true`, for example `http://your-server:8200/?demo=true`.
+
 ## Features
 
 **Backup**
@@ -261,7 +267,7 @@ scripts/e2e.sh --docker                               # Playwright suite in Dock
 backend/      FastAPI app (api/, core/, models/, services/) and pytest suites
 frontend/     SvelteKit 2 + Svelte 5 + Tailwind; Vitest and Playwright tests
 profiles/     YAML app profiles used by discovery
-docs/         Deployment notes (homeserver smoke test)
+docs/         User guide (MkDocs site: mkdocs.yml) and deployment notes
 CLAUDE.md     Architecture notes and invariants for contributors and coding agents
 ```
 
