@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<CommunityApplications>
+  <Profile>Arkive is open-source (MIT) backup and disaster recovery for Unraid. It dumps the databases behind your containers with their native tools and stores them, with your appdata, flash config and chosen shares, as encrypted restic snapshots on local or cloud storage. It then keeps checking that backups still happen and still restore.
+
+This repository holds the Arkive source and its Docker template (unraid-template.xml). Report bugs and ask questions in GitHub issues; report security problems privately through GitHub Security Advisories.</Profile>
+  <Icon>https://raw.githubusercontent.com/islamdiaa/Arkive/main/docs/images/arkive-icon.png</Icon>
+  <WebPage>https://github.com/islamdiaa/Arkive</WebPage>
+  <Forum>https://github.com/islamdiaa/Arkive/issues</Forum>
+</CommunityApplications>

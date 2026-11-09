@@ -28,7 +28,7 @@ from app.core.dependencies import (
 )
 from app.core.security import decrypt_config, encrypt_config
 from app.models.targets import TargetCreate, TargetUpdate
-from app.utils.mounts import ephemeral_path_reason
+from app.utils.mounts import ephemeral_path_reason, read_only_mount_for
 
 logger = logging.getLogger("arkive.api.targets")
 router = APIRouter(prefix="/targets", tags=["targets"], dependencies=[Depends(require_auth)])
@@ -183,6 +183,16 @@ def _validate_local_path(config: dict) -> list[str]:
                 f"Local path {normalized} is not persistent storage ({reason}); backups there are lost "
                 f"when the container is re-created. Map a host directory to it, e.g. "
                 f"-v /mnt/user/backups:/mnt/user/backups"
+            )
+    if not errors:
+        # Data is meant to be mounted read-only (the Unraid template mounts
+        # /mnt/user :ro with a read-write /mnt/user/backups inside it). A target
+        # anywhere else on such a mount would only fail later, inside restic.
+        read_only_mount = read_only_mount_for(normalized)
+        if read_only_mount:
+            errors.append(
+                f"Local path {normalized} is on {read_only_mount}, which is mounted read-only in the "
+                f"Arkive container. Use a path mapped read-write, e.g. -v /mnt/user/backups:/mnt/user/backups"
             )
     config["path"] = normalized
     return errors
