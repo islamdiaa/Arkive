@@ -58,6 +58,17 @@ describe('database health mock', () => {
 		}
 	});
 
+	it('never flags a Redis dump as shrunk, like the backend', async () => {
+		const health = await mockApi.getDatabaseHealth();
+		const redis = health.items.filter((i: any) => i.db_type === 'redis');
+		expect(redis.length).toBeGreaterThan(0);
+		for (const item of redis) {
+			expect(item.shrunk).toBe(false);
+			expect(item.baseline_bytes).toBeNull();
+			expect(item.notes.some((n: string) => n.includes('not checked for shrinking'))).toBe(true);
+		}
+	});
+
 	it('accepting a shrunk size clears the warning', async () => {
 		const health = await mockApi.getDatabaseHealth();
 		const shrunk = health.items.find((i: any) => i.shrunk);

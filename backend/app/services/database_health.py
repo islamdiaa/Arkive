@@ -5,7 +5,7 @@ its dumps are and how that changed over recent runs, the last restore-drill
 result for it, and the newest point in time it can be restored to from a
 snapshot ("restorable as of").
 
-Also the dump-shrink check (``shrink_warnings``): a run whose dump of a
+Also the dump-shrink check (``check_dump_sizes``): a run whose dump of a
 database is much smaller than that database's recent dumps is ``partial``.
 
 Shrink threshold
@@ -33,11 +33,21 @@ alerting. Comparing only same-format dumps keeps a ``dump_compression`` change
 from looking like data loss.
 
 SQLite dumps are page copies that do shrink after a VACUUM; only a VACUUM that
-reclaims more than half the file crosses the threshold. A real, permanent
-shrink warns until it becomes the baseline (at most three runs with the
-defaults) or until it is accepted on the Databases page
-(``accept_current_size``). ``dump_shrink_alert_percent = 0`` turns the check
+reclaims more than half the file crosses the threshold. Redis is not checked
+(``SIZE_CHECK_EXEMPT_TYPES``): an RDB file is a snapshot of a cache or a job
+queue, and it legitimately drops by 90%+ when the cache is flushed, the
+server restarts without persistence or a queue drains.
+
+A flagged dump is recorded (``job_run_databases.shrink_flagged``) and never
+becomes part of the baseline, so a real, permanent shrink keeps every run
+``partial`` until the size returns or the user accepts it on the Databases
+page (``accept_current_size``). There is deliberately no time limit: unlike
+a database whose container is gone, a shrink has an explicit way to say
+"this is the new normal". ``dump_shrink_alert_percent = 0`` turns the check
 off.
+
+If the check cannot read the history, the run is ``partial`` with that reason
+rather than judged as if nothing shrank.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
+import re
 import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -69,16 +79,40 @@ BASELINE_DUMPS = 5
 MIN_BASELINE_DUMPS = 3
 MAX_SHRINK_PERCENT = 95
 TREND_POINTS = 14
-# Runs (with database records) read for history; plenty for the trend and the
-# baseline, and bounded so the Databases page stays fast after years of runs.
-HISTORY_RUNS = 200
 MIB = 1024 * 1024
+# Database types whose dump size is not checked for shrinking (see the module
+# docstring): Redis dumps are cache/queue snapshots.
+SIZE_CHECK_EXEMPT_TYPES = frozenset({"redis"})
+
+# History is read per database, whatever its age, so a database that has
+# failed for months still shows its last good dump and size baseline: the
+# newest HISTORY_RECORDS unflagged successes, flagged successes, failures and
+# skips (more than TREND_POINTS, and more than BASELINE_DUMPS since only those
+# in the current format count), plus the newest dump a snapshot holds.
+# Bounded and indexed, so the page stays fast after years of runs.
+HISTORY_RECORDS = 20
 
 _TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+# Container states in which a skipped dump is a problem, not a pause: the
+# container is crash-looping or broken, so its data may be changing (or lost)
+# without being dumped. Stopped/paused containers hold still.
+_UNHEALTHY_CONTAINER_STATES = frozenset({"restarting", "dead"})
+_NOT_RUNNING_ERROR = re.compile(r"^Container is (\w+), not running")
 
 
 def _now() -> str:
     return datetime.now(UTC).strftime(_TS_FORMAT)
+
+
+def size_checked(db_type: str | None) -> bool:
+    """Whether dumps of this database type are checked for sharp shrinks."""
+    return _norm_type(db_type) not in SIZE_CHECK_EXEMPT_TYPES
+
+
+def not_running_error(container_status: str) -> str:
+    """Error recorded for a database skipped because its container isn't running."""
+    return f"Container is {container_status}, not running"
 
 
 def human_size(size_bytes: int) -> str:
@@ -245,88 +279,12 @@ class DumpRecord:
     dump_file: str
     integrity_check: str | None
     error: str | None
+    # The run flagged this dump as a sharp shrink (never part of a baseline).
+    flagged: bool = False
 
     @property
     def format(self) -> str:
         return dump_format(self.dump_file)
-
-
-async def load_dump_history(
-    db: aiosqlite.Connection,
-    *,
-    run_limit: int = HISTORY_RUNS,
-    exclude_run_id: str | None = None,
-    containers: Iterable[str] | None = None,
-) -> list[DumpRecord]:
-    """Dump records of the newest ``run_limit`` runs that dumped anything, newest first.
-
-    job_run_databases.host_path holds the dump file path (a historical name).
-    """
-    params: list = [run_limit]
-    extra = ""
-    if exclude_run_id is not None:
-        extra += " AND jrd.run_id != ?"
-        params.append(exclude_run_id)
-    container_list = sorted(set(containers)) if containers is not None else None
-    if container_list is not None:
-        if not container_list:
-            return []
-        extra += f" AND jrd.container_name IN ({','.join('?' for _ in container_list)})"  # nosec B608
-        params.extend(container_list)
-    # ``extra`` only adds fixed conditions with "?" placeholders.
-    try:
-        cursor = await db.execute(
-            f"""SELECT jrd.id, jrd.run_id, jrd.container_name, jrd.db_type, jrd.db_name,
-                       jrd.dump_size_bytes, jrd.status, jrd.host_path, jrd.integrity_check,
-                       jrd.error, jrd.db_key, jrd.dumped_at, jr.started_at, jr.status
-                FROM job_run_databases jrd
-                JOIN job_runs jr ON jr.id = jrd.run_id
-                WHERE jrd.run_id IN (
-                    SELECT r.id FROM job_runs r
-                    WHERE EXISTS (SELECT 1 FROM job_run_databases d WHERE d.run_id = r.id)
-                    ORDER BY r.started_at DESC LIMIT ?){extra}""",  # nosec B608
-            params,
-        )
-        rows = await cursor.fetchall()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError) as exc:
-        logger.warning("Could not read dump history: %s", exc)
-        return []
-
-    records = []
-    for (
-        row_id,
-        run_id,
-        container,
-        db_type,
-        db_name,
-        size,
-        status,
-        dump_path,
-        integrity,
-        error,
-        db_key,
-        dumped_at,
-        run_started,
-        run_status,
-    ) in rows:
-        dump_file = os.path.basename(dump_path or "")
-        records.append(
-            DumpRecord(
-                row_id=row_id,
-                run_id=run_id,
-                run_status=run_status or "",
-                key=db_key or dump_file_key(dump_file),
-                legacy=legacy_identity(container, db_type, db_name),
-                status=status or "",
-                size_bytes=int(size or 0),
-                dumped_at=dumped_at or dump_file_time(dump_file) or run_started or "",
-                dump_file=dump_file,
-                integrity_check=integrity,
-                error=error,
-            )
-        )
-    records.sort(key=lambda r: (r.dumped_at, r.row_id), reverse=True)
-    return records
 
 
 class _Matcher:
@@ -351,38 +309,180 @@ class _Matcher:
         return self.legacy.get(legacy_id)
 
 
+_HISTORY_COLUMNS = (
+    "jrd.id, jrd.run_id, jrd.container_name, jrd.db_type, jrd.db_name, jrd.dump_size_bytes, jrd.status,"
+    " jrd.host_path, jrd.integrity_check, jrd.error, jrd.db_key, jrd.dumped_at, jrd.shrink_flagged,"
+    " jr.started_at AS run_started, jr.status AS run_status"
+)
+# A database's rows: by identity, or (rows from before db_key existed) by
+# container and name, matched further in Python. Each slice below is an
+# equality match on an index over (group, status, shrink_flagged), whose
+# entries are in row id, i.e. insertion (time), order: no scan, no sort.
+# shrink_flagged is 1 or NULL, and only successful dumps are flagged.
+_HISTORY_GROUPS = (
+    "jrd.db_key = :key",
+    "jrd.db_key IS NULL AND jrd.container_name = :container AND COALESCE(jrd.db_name, '') = :name",
+)
+# The newest HISTORY_RECORDS of each kind, and the newest dump a snapshot holds.
+_HISTORY_SLICES = (
+    ("jrd.status = 'success' AND jrd.shrink_flagged IS NULL", HISTORY_RECORDS),
+    ("jrd.status = 'success' AND jrd.shrink_flagged = 1", HISTORY_RECORDS),
+    ("jrd.status = 'failed' AND jrd.shrink_flagged IS NULL", HISTORY_RECORDS),
+    ("jrd.status = 'skipped' AND jrd.shrink_flagged IS NULL", HISTORY_RECORDS),
+) + tuple(
+    (
+        f"jrd.status = 'success' AND jrd.shrink_flagged {flag} AND :uploaded_by IS NOT NULL"
+        " AND COALESCE(jrd.dumped_at, jr.started_at) <= :uploaded_by",
+        1,
+    )
+    for flag in ("IS NULL", "= 1")
+)
+# Built from the constants above only; all values are bound parameters.
+_HISTORY_SQL = " UNION ".join(
+    f"SELECT * FROM (SELECT {_HISTORY_COLUMNS} FROM job_run_databases jrd"  # nosec B608
+    f" JOIN job_runs jr ON jr.id = jrd.run_id WHERE {group} AND {condition}"
+    f" AND (:exclude_run_id IS NULL OR jrd.run_id != :exclude_run_id) ORDER BY jrd.id DESC LIMIT {limit})"
+    for group in _HISTORY_GROUPS
+    for condition, limit in _HISTORY_SLICES
+)
+
+
+def _record(row) -> DumpRecord:
+    (
+        row_id,
+        run_id,
+        container,
+        db_type,
+        db_name,
+        size,
+        status,
+        dump_path,
+        integrity,
+        error,
+        db_key,
+        dumped_at,
+        shrink_flagged,
+        run_started,
+        run_status,
+    ) = row
+    dump_file = os.path.basename(dump_path or "")
+    return DumpRecord(
+        row_id=row_id,
+        run_id=run_id,
+        run_status=run_status or "",
+        key=db_key or dump_file_key(dump_file),
+        legacy=legacy_identity(container, db_type, db_name),
+        status=status or "",
+        size_bytes=int(size or 0),
+        dumped_at=dumped_at or dump_file_time(dump_file) or run_started or "",
+        dump_file=dump_file,
+        integrity_check=integrity,
+        error=error,
+        flagged=bool(shrink_flagged),
+    )
+
+
+async def load_dump_history(
+    db: aiosqlite.Connection,
+    databases: Iterable[tuple[str, tuple[str, str, str]]],
+    *,
+    keys: Iterable[str] | None = None,
+    exclude_run_id: str | None = None,
+    uploaded_by: str | None = None,
+) -> dict[str, list[DumpRecord]]:
+    """Dump records per database key, newest first.
+
+    ``databases``: (key, legacy identity) of every known database; rows from
+    before db_key existed are attributed only when that is unambiguous among
+    them. ``keys``: the databases to load (default: all). For each, however
+    old: the newest HISTORY_RECORDS successes (flagged and not), failures and
+    skips, and with ``uploaded_by`` the newest successful dump taken no later
+    than that ("restorable as of"). Errors propagate: an unreadable history
+    is not an empty one. job_run_databases.host_path holds the dump file path.
+    """
+    known = list(databases)
+    matcher = _Matcher(known)
+    wanted = set(keys) if keys is not None else {key for key, _ in known}
+    history: dict[str, list[DumpRecord]] = {key: [] for key in wanted}
+    seen: set[int] = set()
+    for key, (container, _db_type, name) in known:
+        if key not in wanted:
+            continue
+        cursor = await db.execute(
+            _HISTORY_SQL,
+            {
+                "key": key,
+                "container": container,
+                "name": name,
+                "exclude_run_id": exclude_run_id,
+                "uploaded_by": uploaded_by,
+            },
+        )
+        for row in await cursor.fetchall():
+            record = _record(row)
+            owner = matcher.match(record.key, record.legacy)
+            if owner in history and record.row_id not in seen:
+                seen.add(record.row_id)
+                history[owner].append(record)
+    for records in history.values():
+        records.sort(key=lambda r: (r.dumped_at, r.row_id), reverse=True)
+    return history
+
+
 def _previous_sizes(records: list[DumpRecord], fmt: str, since: str | None) -> list[int]:
-    """Successful sizes in ``fmt``, newest first, not older than ``since``."""
+    """Baseline sizes: successful dumps in ``fmt``, newest first.
+
+    Only dumps from ``since`` on (the accepted dump, when the user accepted a
+    new size) count, and never a dump that was flagged as a shrink, except
+    the accepted one itself; otherwise a lasting shrink would become its own
+    baseline after a few runs and stop being reported.
+    """
     return [
         r.size_bytes
         for r in records
-        if r.status == "success" and r.format == fmt and (not since or r.dumped_at >= since)
+        if r.status == "success"
+        and r.format == fmt
+        and (not since or r.dumped_at >= since)
+        and (not r.flagged or (bool(since) and r.dumped_at == since))
     ]
 
 
-async def shrink_warnings(db: aiosqlite.Connection, run_id: str, dump_results: list) -> list[str]:
-    """Run warnings for this run's database dumps that shrank sharply."""
+@dataclass
+class SizeCheckResult:
+    warnings: list[str] = field(default_factory=list)
+    # result_key of each dump flagged as a sharp shrink
+    flagged: set[str] = field(default_factory=set)
+
+
+async def check_dump_sizes(db: aiosqlite.Connection, run_id: str, dump_results: list) -> SizeCheckResult:
+    """Flag this run's database dumps that shrank sharply (run warnings).
+
+    Errors propagate: the caller must not treat "could not check" as "fine".
+    """
+    outcome = SizeCheckResult()
     policy = await read_shrink_policy(db)
     if not policy.enabled:
-        return []
-    current = [r for r in dump_results if getattr(r, "kind", "database") == "database" and r.status == "success"]
-    if not current:
-        return []
-    keyed = [(result_key(r), r) for r in current]
-    matcher = _Matcher(
-        (result_key(r), legacy_identity(r.container_name, r.db_type, r.db_name))
+        return outcome
+    current = [
+        r
         for r in dump_results
-        if getattr(r, "kind", "database") == "database"
+        if getattr(r, "kind", "database") == "database" and r.status == "success" and size_checked(r.db_type)
+    ]
+    if not current:
+        return outcome
+    keyed = [(result_key(r), r) for r in current]
+    by_key = await load_dump_history(
+        db,
+        [
+            (result_key(r), legacy_identity(r.container_name, r.db_type, r.db_name))
+            for r in dump_results
+            if getattr(r, "kind", "database") == "database"
+        ],
+        keys={key for key, _ in keyed},
+        exclude_run_id=run_id,
     )
-    history = await load_dump_history(db, exclude_run_id=run_id, containers={r.container_name for r in current})
-    by_key: dict[str, list[DumpRecord]] = {}
-    for record in history:
-        key = matcher.match(record.key, record.legacy)
-        if key:
-            by_key.setdefault(key, []).append(record)
     baselines = await read_size_baselines(db)
 
-    warnings = []
     for key, result in keyed:
         previous = _previous_sizes(by_key.get(key, []), dump_format(result.dump_path), baselines.get(key))
         check = detect_shrink(int(result.dump_size_bytes or 0), previous, policy)
@@ -395,8 +495,14 @@ async def shrink_warnings(db: aiosqlite.Connection, run_id: str, dump_results: l
                 check.size_bytes,
                 check.baseline_bytes,
             )
-            warnings.append(shrink_message(label, check))
-    return warnings
+            outcome.warnings.append(shrink_message(label, check))
+            outcome.flagged.add(key)
+    return outcome
+
+
+async def shrink_warnings(db: aiosqlite.Connection, run_id: str, dump_results: list) -> list[str]:
+    """Run warnings for this run's database dumps that shrank sharply."""
+    return (await check_dump_sizes(db, run_id, dump_results)).warnings
 
 
 # ---------------------------------------------------------------------------
@@ -413,12 +519,14 @@ class _Known:
     drills: list[dict] = field(default_factory=list)
 
 
+# The readers below let database errors propagate (the API answers 500 and the
+# page shows the error) instead of returning "no databases", "never uploaded"
+# or "never drilled", which would read as facts about the backups.
+
+
 async def _discovered(db: aiosqlite.Connection) -> list[dict]:
-    try:
-        cursor = await db.execute("SELECT name, databases FROM discovered_containers ORDER BY name")
-        rows = await cursor.fetchall()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        return []
+    cursor = await db.execute("SELECT name, databases FROM discovered_containers ORDER BY name")
+    rows = await cursor.fetchall()
     entries: list[dict] = []
     seen: set[str] = set()
     for name, raw in rows:
@@ -452,34 +560,28 @@ async def _latest_upload(db: aiosqlite.Connection) -> str | None:
     overlap (backup lock), so a dump that began before a run finished existed
     when that run uploaded. Targets that were deleted don't count.
     """
-    try:
-        cursor = await db.execute(
-            """SELECT MAX(COALESCE(jr.completed_at, jr.started_at))
-               FROM job_run_targets t JOIN job_runs jr ON jr.id = t.run_id
-               WHERE t.status IN ('success', 'partial')
-                 AND COALESCE(t.snapshot_id, '') != ''
-                 AND t.target_id IN (SELECT id FROM storage_targets)"""
-        )
-        row = await cursor.fetchone()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        return None
+    cursor = await db.execute(
+        """SELECT MAX(COALESCE(jr.completed_at, jr.started_at))
+           FROM job_run_targets t JOIN job_runs jr ON jr.id = t.run_id
+           WHERE t.status IN ('success', 'partial')
+             AND COALESCE(t.snapshot_id, '') != ''
+             AND t.target_id IN (SELECT id FROM storage_targets)"""
+    )
+    row = await cursor.fetchone()
     return row[0] if row and row[0] else None
 
 
 async def _drill_results(db: aiosqlite.Connection, limit: int = 5000) -> list[dict]:
-    try:
-        cursor = await db.execute(
-            """SELECT r.container_name, r.db_type, r.db_name, r.dump_file, r.status, r.detail,
-                      d.id, COALESCE(d.completed_at, d.started_at), d.snapshot_id
-               FROM restore_drill_results r JOIN restore_drills d ON d.id = r.drill_id
-               WHERE d.status != 'running'
-               ORDER BY d.started_at DESC, r.id DESC
-               LIMIT ?""",
-            (limit,),
-        )
-        rows = await cursor.fetchall()
-    except (sqlite3.OperationalError, aiosqlite.OperationalError):
-        return []
+    cursor = await db.execute(
+        """SELECT r.container_name, r.db_type, r.db_name, r.dump_file, r.status, r.detail,
+                  d.id, COALESCE(d.completed_at, d.started_at), d.snapshot_id
+           FROM restore_drill_results r JOIN restore_drills d ON d.id = r.drill_id
+           WHERE d.status != 'running'
+           ORDER BY d.started_at DESC, r.id DESC
+           LIMIT ?""",
+        (limit,),
+    )
+    rows = await cursor.fetchall()
     keys = ("container_name", "db_type", "db_name", "dump_file", "status", "detail", "drill_id", "at", "snapshot_id")
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
@@ -511,26 +613,34 @@ def _point(record: DumpRecord, shrunk: bool) -> dict:
     }
 
 
+def _skipped_while_unhealthy(error: str | None) -> bool:
+    """A skip because the container was crash-looping or dead, not stopped."""
+    match = _NOT_RUNNING_ERROR.match(error or "")
+    return bool(match) and match.group(1).lower() in _UNHEALTHY_CONTAINER_STATES
+
+
 def _health(known: _Known, policy: ShrinkPolicy, since: str | None, latest_upload: str | None) -> dict:
     records = known.records  # newest first
     attempts = [r for r in records if r.status in ("success", "failed")]
     successes = [r for r in records if r.status == "success"]
-    last_attempt = records[0] if records else None
+    last_record = records[0] if records else None
+    # Skips (container not running, excluded) don't say whether dumps work;
+    # the newest real attempt does, so a skip can't hide failures before it.
+    last_attempt = attempts[0] if attempts else None
     last_success = successes[0] if successes else None
+    checked = size_checked(known.entry["db_type"])
 
     baseline = shrink = None
-    if last_success:
+    if last_success and checked:
         previous = _previous_sizes(successes[1:], last_success.format, since)
         baseline = shrink_baseline(previous)
         shrink = detect_shrink(last_success.size_bytes, previous, policy)
 
+    # Each point shows what its run decided; the newest successful dump is
+    # judged again with the current settings and accepted size, like the card.
     trend = []
     for record in attempts[:TREND_POINTS]:
-        flagged = False
-        if record.status == "success":
-            older = [r for r in successes if (r.dumped_at, r.row_id) < (record.dumped_at, record.row_id)]
-            previous = _previous_sizes(older, record.format, since)
-            flagged = detect_shrink(record.size_bytes, previous, policy) is not None
+        flagged = (shrink is not None) if record is last_success else record.flagged
         trend.append(_point(record, flagged))
     trend.reverse()  # oldest first, for charts
 
@@ -546,18 +656,18 @@ def _health(known: _Known, policy: ShrinkPolicy, since: str | None, latest_uploa
         status = "excluded"
     elif last_attempt is None:
         status = "never_dumped"
-        issues.append("No dump recorded yet")
+        issues.append("No dump recorded yet" if last_record is None else "No successful dump recorded")
     elif last_attempt.status == "failed":
         status = "failed"
         issues.append(f"Last dump failed: {(last_attempt.error or 'no error recorded')[:300]}")
-    elif last_success is None:
-        status = "never_dumped"
-        issues.append("No successful dump recorded")
     else:
         status = "ok"
     if not known.excluded:
-        if last_attempt is not None and last_attempt.status == "skipped":
-            notes.append(f"Last run skipped it: {(last_attempt.error or 'skipped')[:300]}")
+        if last_record is not None and last_record.status == "skipped":
+            skipped = f"Last run skipped it: {(last_record.error or 'skipped')[:300]}"
+            (issues if _skipped_while_unhealthy(last_record.error) else notes).append(skipped)
+        if not checked and policy.enabled:
+            notes.append("Dump size is not checked for shrinking: Redis dumps are cache and queue snapshots")
         if shrink:
             issues.append(
                 f"Latest dump is {shrink.drop_percent}% smaller than its recent median "
@@ -585,14 +695,15 @@ def _health(known: _Known, policy: ShrinkPolicy, since: str | None, latest_uploa
         "status": status,
         "issues": issues,
         "notes": notes,
+        # The newest record of any status (a skip included).
         "last_attempt": (
             {
-                "status": last_attempt.status,
-                "at": last_attempt.dumped_at,
-                "run_id": last_attempt.run_id,
-                "error": last_attempt.error,
+                "status": last_record.status,
+                "at": last_record.dumped_at,
+                "run_id": last_record.run_id,
+                "error": last_record.error,
             }
-            if last_attempt
+            if last_record
             else None
         ),
         "last_success_at": last_success.dumped_at if last_success else None,
@@ -625,16 +736,16 @@ async def database_health(db: aiosqlite.Connection) -> dict:
     entries = await _discovered(db)
     excluded = await excluded_identities(db)
     known = {identity(e): _Known(key=identity(e), entry=e, excluded=identity(e) in excluded) for e in entries}
-    matcher = _Matcher(
+    identities = [
         (key, legacy_identity(k.entry["container_name"], k.entry["db_type"], k.entry["db_name"]))
         for key, k in known.items()
-    )
+    ]
+    matcher = _Matcher(identities)
 
+    latest_upload = await _latest_upload(db) if known else None
     if known:
-        for record in await load_dump_history(db):
-            key = matcher.match(record.key, record.legacy)
-            if key:
-                known[key].records.append(record)
+        for key, records in (await load_dump_history(db, identities, uploaded_by=latest_upload)).items():
+            known[key].records = records
         for drill in await _drill_results(db):
             key = matcher.match(
                 dump_file_key(drill["dump_file"]),
@@ -645,7 +756,6 @@ async def database_health(db: aiosqlite.Connection) -> dict:
 
     policy = await read_shrink_policy(db)
     baselines = await read_size_baselines(db)
-    latest_upload = await _latest_upload(db) if known else None
     items = [_health(k, policy, baselines.get(key), latest_upload) for key, k in known.items()]
 
     summary = {"ok": 0, "warning": 0, "failed": 0, "never_dumped": 0, "excluded": 0}
@@ -675,12 +785,12 @@ async def accept_current_size(db: aiosqlite.Connection, key: str) -> dict | None
     if key not in known_keys:
         return None
     target = next(e for e in entries if identity(e) == key)
-    matcher = _Matcher((identity(e), legacy_identity(e["container_name"], e["db_type"], e["db_name"])) for e in entries)
-    history = await load_dump_history(db, containers={target["container_name"]})
-    latest = next(
-        (r for r in history if r.status == "success" and matcher.match(r.key, r.legacy) == key),
-        None,
+    history = await load_dump_history(
+        db,
+        [(identity(e), legacy_identity(e["container_name"], e["db_type"], e["db_name"])) for e in entries],
+        keys={key},
     )
+    latest = next((r for r in history[key] if r.status == "success"), None)
     if latest is None:
         return None
     baselines = {k: v for k, v in (await read_size_baselines(db)).items() if k in known_keys}

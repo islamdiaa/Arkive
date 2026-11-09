@@ -2,20 +2,25 @@
 "restorable as of" (services/database_health.py)."""
 
 import json
+import re
 
 import aiosqlite
 import pytest
 import pytest_asyncio
 
 from app.services.database_health import (
+    HISTORY_RECORDS,
     MIB,
     ShrinkPolicy,
     accept_current_size,
+    check_dump_sizes,
     database_health,
     detect_shrink,
     dump_file_key,
     dump_file_time,
     dump_format,
+    load_dump_history,
+    not_running_error,
     result_key,
     shrink_baseline,
     shrink_warnings,
@@ -69,21 +74,32 @@ async def add_run(
     ext: str = ".sql",
     keyed: bool = True,
     run_status: str = "success",
+    hour: int = 2,
+    flagged: bool = False,
+    error: str | None = None,
 ):
-    """A run on 2026-11-<day> 02:00 dumping (entry, status, size) and uploading."""
-    started = f"2026-11-{day:02d}T02:00:00Z"
+    """A run on 2026-11-<day> <hour>:00 dumping (entry, status, size) and uploading.
+
+    ``flagged``: its successful dumps were flagged as shrinks by the run;
+    ``error``: the error recorded for failed or skipped dumps.
+    """
+    started = f"2026-11-{day:02d}T{hour:02d}:00:00Z"
     await db.execute(
         "INSERT INTO job_runs (id, job_id, status, started_at, completed_at) VALUES (?, 'job', ?, ?, ?)",
-        (run_id, run_status, started, None if run_status == "running" else f"2026-11-{day:02d}T02:30:00Z"),
+        (run_id, run_status, started, None if run_status == "running" else f"2026-11-{day:02d}T{hour:02d}:30:00Z"),
     )
     for entry, status, size in dumps:
-        path = dump_name(entry, day, ext) if status != "skipped" else ""
+        path = dump_name(entry, day, ext, hour) if status != "skipped" else ""
         key = dump_prefix(entry["container_name"], entry["db_type"], entry["db_name"], entry.get("host_path"))
+        if status == "failed":
+            dump_error = error or "pg_dump exited with code 1"
+        else:
+            dump_error = error if status == "skipped" else None
         await db.execute(
             """INSERT INTO job_run_databases
                (run_id, container_name, db_type, db_name, dump_size_bytes, integrity_check, status,
-                host_path, error, db_key, dumped_at)
-               VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?)""",
+                host_path, error, db_key, dumped_at, shrink_flagged)
+               VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?)""",
             (
                 run_id,
                 entry["container_name"],
@@ -92,9 +108,10 @@ async def add_run(
                 size,
                 status,
                 path,
-                "pg_dump exited with code 1" if status == "failed" else None,
+                dump_error,
                 key if keyed else None,
-                f"2026-11-{day:02d}T02:05:00Z" if keyed else None,
+                f"2026-11-{day:02d}T{hour:02d}:05:00Z" if keyed else None,
+                1 if flagged and status == "success" else None,
             ),
         )
     if uploaded is not None:
@@ -238,6 +255,85 @@ async def test_accepting_the_new_size_resets_the_baseline(db):
     assert await accept_current_size(db, "unknown-key") is None
 
 
+async def test_a_lasting_shrink_keeps_warning_until_the_size_returns(db):
+    """Flagged dumps never become the baseline, so the shrink doesn't turn
+    into the new normal after a few runs."""
+    await discover(db, PG)
+    for day in range(1, 6):
+        await add_run(db, f"r{day}", day, [(PG, "success", 400 * MIB)])
+    for day in range(6, 12):  # six runs, all flagged at the time
+        await add_run(db, f"r{day}", day, [(PG, "success", 2 * MIB)], flagged=True)
+
+    warnings = await shrink_warnings(db, "now", [result(PG, 2 * MIB, day=12)])
+    item = (await database_health(db))["items"][0]
+
+    assert len(warnings) == 1 and "dump is 99% smaller" in warnings[0]
+    assert item["status"] == "warning" and item["shrunk"] is True
+    assert item["baseline_bytes"] == 400 * MIB
+    assert [p["shrunk"] for p in item["trend"]] == [False] * 5 + [True] * 6
+    # The data comes back: no warning, and that dump joins the baseline.
+    assert await shrink_warnings(db, "now", [result(PG, 395 * MIB, day=12)]) == []
+
+
+async def test_accepting_a_lasting_shrink_makes_it_the_baseline(db):
+    await discover(db, PG)
+    for day in range(1, 6):
+        await add_run(db, f"r{day}", day, [(PG, "success", 400 * MIB)])
+    for day in range(6, 9):
+        await add_run(db, f"r{day}", day, [(PG, "success", 100 * MIB)], flagged=True)
+
+    assert (await accept_current_size(db, PG_KEY))["accepted_from"] == "2026-11-08T02:05:00Z"
+    for day in range(9, 12):
+        await add_run(db, f"r{day}", day, [(PG, "success", 100 * MIB)])
+
+    item = (await database_health(db))["items"][0]
+    assert item["shrunk"] is False and item["status"] == "ok"
+    # The accepted (flagged) dump counts towards the new baseline.
+    assert item["baseline_bytes"] == 100 * MIB
+    assert await shrink_warnings(db, "now", [result(PG, 100 * MIB, day=12)]) == []
+    assert len(await shrink_warnings(db, "now", [result(PG, 20 * MIB, day=12)])) == 1
+
+
+async def test_redis_dumps_are_not_size_checked(db):
+    """An RDB snapshot of a cache or queue legitimately collapses when the
+    cache empties or the queue drains."""
+    redis = {"container_name": "immich-redis", "db_type": "redis", "db_name": "redis", "host_path": None}
+    await discover(db, redis)
+    for day in range(1, 6):
+        await add_run(db, f"r{day}", day, [(redis, "success", 3 * MIB)])
+    await add_run(db, "r6", 6, [(redis, "success", 10 * 1024)])
+
+    check = await check_dump_sizes(db, "now", [result(redis, 10 * 1024, ext=".rdb")])
+    item = (await database_health(db))["items"][0]
+
+    assert check.warnings == [] and check.flagged == set()
+    assert item["status"] == "ok" and item["shrunk"] is False
+    assert item["baseline_bytes"] is None
+    assert any("not checked for shrinking" in note for note in item["notes"])
+
+
+async def test_flagged_dumps_are_reported_by_key(db):
+    for day in range(1, 6):
+        await add_run(db, f"r{day}", day, [(PG, "success", 200 * MIB)])
+
+    check = await check_dump_sizes(db, "now", [result(PG, 10 * MIB)])
+
+    assert check.flagged == {PG_KEY}
+
+
+async def test_history_read_errors_are_not_empty_history(tmp_path):
+    """A history that can't be read must not look like "nothing shrank"."""
+    from app.core.database import init_db
+
+    path = tmp_path / "old.db"
+    await init_db(path)  # no migrations: job_run_databases lacks the new columns
+    async with aiosqlite.connect(path) as conn:
+        with pytest.raises(aiosqlite.OperationalError):
+            await load_dump_history(conn, [(PG_KEY, ("app-db", "postgres", "app"))])
+        with pytest.raises(aiosqlite.OperationalError):
+            await check_dump_sizes(conn, "now", [result(PG, 10 * MIB)])
+
+
 # --- per-database health --------------------------------------------------------------------
 
 
@@ -342,6 +438,93 @@ async def test_failed_never_dumped_excluded_and_skipped(db):
     assert items["idle"]["status"] == "ok"
     assert items["idle"]["notes"] and items["idle"]["restorable_as_of"] == "2026-11-01T02:05:00Z"
     assert body["summary"] == {"ok": 1, "warning": 0, "failed": 1, "never_dumped": 1, "excluded": 1}
+
+
+async def test_a_skip_does_not_hide_failed_dumps_before_it(db):
+    await discover(db, PG)
+    await add_run(db, "r1", 1, [(PG, "success", 10 * MIB)])
+    await add_run(db, "r2", 2, [(PG, "failed", 0)], error="connection refused")
+    await add_run(db, "r3", 3, [(PG, "failed", 0)], error="connection refused")
+    await add_run(db, "r4", 4, [(PG, "skipped", 0)], error=not_running_error("exited"))
+
+    item = (await database_health(db))["items"][0]
+
+    assert item["status"] == "failed"
+    assert item["issues"][0] == "Last dump failed: connection refused"
+    assert item["last_attempt"]["status"] == "skipped"
+    assert item["last_success_at"] == "2026-11-01T02:05:00Z"
+
+
+async def test_skip_of_a_crash_looping_container_is_a_problem(db):
+    await discover(db, PG)
+    await add_run(db, "r1", 1, [(PG, "success", 10 * MIB)])
+    await add_run(db, "r2", 2, [(PG, "skipped", 0)], error=not_running_error("restarting"))
+
+    item = (await database_health(db))["items"][0]
+
+    assert item["status"] == "warning"
+    assert item["issues"] == ["Last run skipped it: Container is restarting, not running"]
+    assert item["notes"] == []
+
+
+async def test_skip_of_a_stopped_container_is_context(db):
+    await discover(db, PG)
+    await add_run(db, "r1", 1, [(PG, "success", 10 * MIB)])
+    await add_run(db, "r2", 2, [(PG, "skipped", 0)], error=not_running_error("exited"))
+
+    item = (await database_health(db))["items"][0]
+
+    assert item["status"] == "ok" and item["issues"] == []
+    assert item["notes"] == ["Last run skipped it: Container is exited, not running"]
+
+
+async def test_last_good_dump_is_found_however_long_dumps_have_failed(db):
+    """History is read per database, not as the newest N runs: a database
+    failing for longer than any window still shows its last good dump and
+    the snapshot that holds it."""
+    other = {"container_name": "busy", "db_type": "postgres", "db_name": "busy", "host_path": None}
+    await discover(db, PG, other)
+    await add_run(db, "good", 1, [(PG, "success", 10 * MIB), (other, "success", 10 * MIB)])
+    failing_runs = 0
+    for day in range(2, 28):
+        for hour in range(0, 24, 2):
+            failing_runs += 1
+            await add_run(db, f"f{day}-{hour}", day, [(PG, "failed", 0), (other, "success", 10 * MIB)], hour=hour)
+    assert failing_runs > 10 * HISTORY_RECORDS
+
+    item = {i["db_name"]: i for i in (await database_health(db))["items"]}["app"]
+
+    assert item["status"] == "failed"
+    assert item["last_success_at"] == "2026-11-01T02:05:00Z"
+    assert item["size_bytes"] == 10 * MIB
+    assert item["restorable_as_of"] == "2026-11-01T02:05:00Z"
+    assert len(item["trend"]) == 14
+
+
+async def test_restorable_as_of_is_found_after_many_unuploaded_dumps(db):
+    await discover(db, PG)
+    await add_run(db, "r1", 1, [(PG, "success", 10 * MIB)])
+    for day in range(2, 28):
+        await add_run(db, f"r{day}", day, [(PG, "success", 10 * MIB)], uploaded=False)
+
+    item = (await database_health(db))["items"][0]
+
+    assert item["last_success_at"] == "2026-11-27T02:05:00Z"
+    assert item["restorable_as_of"] == "2026-11-01T02:05:00Z"
+    assert "The newest dump is not in a snapshot yet" in item["issues"]
+
+
+async def test_a_lasting_shrink_older_than_the_history_window_still_warns(db):
+    await discover(db, PG)
+    for day in range(1, 6):
+        await add_run(db, f"r{day}", day, [(PG, "success", 400 * MIB)])
+    for day in range(6, 28):
+        await add_run(db, f"r{day}", day, [(PG, "success", 2 * MIB)], flagged=True)
+
+    item = (await database_health(db))["items"][0]
+
+    assert item["shrunk"] is True and item["baseline_bytes"] == 400 * MIB
+    assert len(await shrink_warnings(db, "now", [result(PG, 2 * MIB, day=28)])) == 1
 
 
 async def test_shrunk_latest_dump_is_a_warning_and_marked_in_the_trend(db):
@@ -454,4 +637,18 @@ async def test_no_discovered_databases(db):
 async def test_migration_7_adds_identity_and_dump_time(db):
     cursor = await db.execute("PRAGMA table_info(job_run_databases)")
     columns = {row[1] for row in await cursor.fetchall()}
-    assert {"db_key", "dumped_at"} <= columns
+    assert {"db_key", "dumped_at", "shrink_flagged"} <= columns
+
+
+async def test_history_lookups_use_an_index(db):
+    """History is read per database through an index, so the Databases page
+    and every run stay fast however many runs are recorded."""
+    from app.services.database_health import _HISTORY_SQL
+
+    params = {"key": PG_KEY, "container": "app-db", "name": "app", "exclude_run_id": None, "uploaded_by": "x"}
+    cursor = await db.execute("EXPLAIN QUERY PLAN " + _HISTORY_SQL, params)
+    plan = [row[3] for row in await cursor.fetchall()]
+
+    assert not [step for step in plan if re.match(r"SCAN (TABLE )?jrd", step) or "TEMP B-TREE FOR ORDER BY" in step]
+    assert any("idx_job_run_databases_key" in step for step in plan)
+    assert any("idx_job_run_databases_legacy" in step for step in plan)

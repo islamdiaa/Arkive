@@ -230,7 +230,7 @@
 				/>
 			</div>
 			<p class="text-xs text-text-muted">
-				Each dump is compared with the median of that database's previous 5 successful dumps in the same format (at least 3 are needed). Real databases rarely lose half their data between two backups, so the default of 50% almost only fires when something is wrong. If the data was removed on purpose, accept the new size on the Databases page.
+				Each dump is compared with the median of that database's previous 5 successful dumps in the same format (at least 3 are needed). Real databases rarely lose half their data between two backups, so the default of 50% almost only fires when something is wrong. Flagged dumps never become the new normal on their own: runs stay incomplete until the size comes back, or until you accept the new size on the Databases page if the data was removed on purpose. Redis dumps are not checked, since they are cache and queue snapshots whose size swings.
 			</p>
 		</SectionCard>
 

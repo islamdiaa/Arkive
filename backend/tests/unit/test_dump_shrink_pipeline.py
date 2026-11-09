@@ -38,30 +38,35 @@ async def config(tmp_path):
     return cfg
 
 
-def _db():
+def _db(db_type: str = "postgres"):
+    if db_type == "redis":
+        return DiscoveredDatabase(container_name="pg", db_type="redis", db_name="redis")
     return DiscoveredDatabase(container_name="pg", db_type="postgres", db_name="app")
 
 
-def _dump(size: int, ts: str) -> DumpResult:
+def _dump(size: int, ts: str, db_type: str = "postgres") -> DumpResult:
+    db = _db(db_type)
+    key = dump_prefix(db.container_name, db.db_type, db.db_name)
+    ext = ".rdb" if db_type == "redis" else ".sql"
     return DumpResult(
-        container_name="pg",
-        db_type="postgres",
-        db_name="app",
-        dump_path=f"/config/dumps/{KEY}_{ts}.sql",
+        container_name=db.container_name,
+        db_type=db.db_type,
+        db_name=db.db_name,
+        dump_path=f"/config/dumps/{key}_{ts}{ext}",
         dump_size_bytes=size,
         integrity_check="ok",
         status="success",
-        db_key=KEY,
+        db_key=key,
         started_at=f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}T{ts[9:11]}:{ts[11:13]}:{ts[13:15]}Z",
     )
 
 
-def make_orchestrator(config, dumps: list[DumpResult]):
+def make_orchestrator(config, dumps: list[DumpResult], db_type: str = "postgres"):
     from app.services.orchestrator import BackupOrchestrator
 
     discovery = MagicMock()
     discovery.scan = AsyncMock(
-        return_value=[DiscoveredContainer(name="pg", image="postgres:16", status="running", databases=[_db()])]
+        return_value=[DiscoveredContainer(name="pg", image="postgres:16", status="running", databases=[_db(db_type)])]
     )
     dumper = MagicMock()
     dumper.dump_all = AsyncMock(side_effect=[[d] for d in dumps])
@@ -154,13 +159,70 @@ async def test_dump_records_carry_identity_and_dump_time(config):
 
 
 @pytest.mark.asyncio
-async def test_size_check_failure_does_not_fail_the_backup(config, monkeypatch):
+async def test_size_check_failure_makes_the_run_partial(config, monkeypatch):
+    """A check that could not run is not a check that passed; the backup
+    itself still goes on."""
     import app.services.orchestrator as orchestrator_module
 
-    monkeypatch.setattr(orchestrator_module, "shrink_warnings", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(
+        orchestrator_module, "check_dump_sizes", AsyncMock(side_effect=aiosqlite.OperationalError("disk I/O error"))
+    )
     orch = make_orchestrator(config, [_dump(5 * MIB, "20261101_020000")])
 
-    assert (await orch.run_backup("job", run_id="r1"))["status"] == "success"
+    assert (await orch.run_backup("job", run_id="r1"))["status"] == "partial"
+    run = await _run(config, "r1")
+    assert "could not compare dump sizes with earlier runs: disk I/O error" in run["error_message"]
+    assert run["databases_dumped"] == 1
+    orch.backup_engine.backup.assert_awaited()
+
+
+async def _flags(config) -> list:
+    async with aiosqlite.connect(config.db_path) as db:
+        cursor = await db.execute("SELECT run_id, shrink_flagged FROM job_run_databases ORDER BY id")
+        return await cursor.fetchall()
+
+
+@pytest.mark.asyncio
+async def test_lasting_shrink_keeps_runs_partial_until_accepted(config):
+    """The shrunk dumps don't become the baseline after a few runs: every
+    run stays partial until the user accepts the new size."""
+    from app.services.database_health import accept_current_size
+
+    sizes = [400 * MIB, 401 * MIB, 402 * MIB] + [2 * MIB] * 6
+    orch = make_orchestrator(config, [_dump(size, f"2026110{i + 1}_020000") for i, size in enumerate(sizes)])
+
+    statuses = [(await orch.run_backup("job", run_id=f"r{i}"))["status"] for i in range(8)]
+
+    assert statuses == ["success"] * 3 + ["partial"] * 5
+    assert await _flags(config) == [(f"r{i}", None) for i in range(3)] + [(f"r{i}", 1) for i in range(3, 8)]
+
+    async with aiosqlite.connect(config.db_path) as db:
+        assert await accept_current_size(db, KEY) is not None
+    assert (await orch.run_backup("job", run_id="r8"))["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_size_coming_back_ends_the_warning(config):
+    sizes = [200 * MIB] * 3 + [20 * MIB, 200 * MIB]
+    orch = make_orchestrator(config, [_dump(size, f"2026110{i + 1}_020000") for i, size in enumerate(sizes)])
+
+    statuses = [(await orch.run_backup("job", run_id=f"r{i}"))["status"] for i in range(5)]
+
+    assert statuses == ["success"] * 3 + ["partial", "success"]
+
+
+@pytest.mark.asyncio
+async def test_redis_dump_collapsing_is_not_a_shrink(config):
+    """A Redis RDB is a cache/queue snapshot: emptied caches and drained
+    queues are normal."""
+    sizes = [3 * MIB] * 3 + [10 * 1024]
+    orch = make_orchestrator(
+        config, [_dump(size, f"2026110{i + 1}_020000", "redis") for i, size in enumerate(sizes)], db_type="redis"
+    )
+
+    statuses = [(await orch.run_backup("job", run_id=f"r{i}"))["status"] for i in range(4)]
+
+    assert statuses == ["success"] * 4
 
 
 @pytest.mark.asyncio

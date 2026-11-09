@@ -277,6 +277,9 @@ function _demoDatabaseHealth(): any {
     }),
     _demoHealth(4, [2, 2, 2.1, 2, 2.1, 2.1, 2, 2.1, 2.1, 2.1, 2.2, 2.1, 2.2, 2.2], {
       last_drill: _demoDrill('drill-demo-1', 'skipped', 'redis dumps are not drill-tested'),
+      // Redis dumps aren't size-checked (see services/database_health.py).
+      baseline_bytes: null,
+      notes: ['Dump size is not checked for shrinking: Redis dumps are cache and queue snapshots'],
     }),
     _demoHealth(5, [1180, 1184, 1190, 1195, 1199, 1204, 1210, 1214, 1219, 1224, 1229, 1233, 1238, 392], {
       status: 'warning',

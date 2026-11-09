@@ -19,7 +19,7 @@ from app.core.event_bus import EventBus
 from app.core.security import decrypt_config
 from app.services.backup_engine import EXCLUDE_MARKER, BackupEngine
 from app.services.cloud_manager import CloudManager
-from app.services.database_health import result_key, shrink_warnings
+from app.services.database_health import SizeCheckResult, check_dump_sizes, not_running_error, result_key
 from app.services.db_dumper import (
     PARTIAL_SUFFIX,
     DBDumper,
@@ -571,7 +571,7 @@ class BackupOrchestrator:
                                 dump_size_bytes=0,
                                 integrity_check="skipped",
                                 status="skipped",
-                                error=f"Container is {status}, not running",
+                                error=not_running_error(status),
                                 db_key=db_identity(d),
                             )
                         )
@@ -579,6 +579,9 @@ class BackupOrchestrator:
                         to_dump.append(d)
                 if to_dump:
                     dump_results.extend(await self.db_dumper.dump_all(to_dump))
+                # Compared with earlier runs before this run's records exist;
+                # flagged dumps are recorded so they never become a baseline.
+                size_check = await self._check_dump_sizes(run_id, dump_results)
 
                 # Record dump results
                 async with aiosqlite.connect(self.config.db_path) as db:
@@ -586,8 +589,8 @@ class BackupOrchestrator:
                         await db.execute(
                             """INSERT INTO job_run_databases
                             (run_id, container_name, db_type, db_name, dump_size_bytes, integrity_check, status,
-                             host_path, error, db_key, dumped_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                             host_path, error, db_key, dumped_at, shrink_flagged)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (
                                 run_id,
                                 dr.container_name,
@@ -600,6 +603,7 @@ class BackupOrchestrator:
                                 dr.error,
                                 result_key(dr),
                                 dr.started_at,
+                                1 if dr.status == "success" and result_key(dr) in size_check.flagged else None,
                             ),
                         )
                     # Roles/globals dumps are recorded per run but aren't databases.
@@ -625,7 +629,7 @@ class BackupOrchestrator:
                 ]
                 if undumped:
                     warnings.append("database(s) in stopped containers have never been dumped: " + ", ".join(undumped))
-                warnings.extend(await self._dump_size_warnings(run_id, dump_results))
+                warnings.extend(size_check.warnings)
 
             # Keep only the newest dump per database (older generations live
             # in earlier snapshots) and drop dumps of containers that are gone,
@@ -1094,20 +1098,20 @@ class BackupOrchestrator:
         except OSError:
             return False
 
-    async def _dump_size_warnings(self, run_id: str, dump_results: list[DumpResult]) -> list[str]:
-        """Warnings for dumps that shrank sharply versus their recent history
-        (see services/database_health.py for the threshold and why).
+    async def _check_dump_sizes(self, run_id: str, dump_results: list[DumpResult]) -> SizeCheckResult:
+        """Flag dumps that shrank sharply versus their recent history (see
+        services/database_health.py for the threshold and why).
 
-        The check only reads history; if it cannot (a database error that
-        would also break the rest of the run) it logs and the run is judged
-        on everything else.
+        A check that cannot run is not a check that passed: the run gets a
+        warning (so it is partial) instead of being judged as if nothing
+        shrank. The backup itself goes on.
         """
         try:
             async with aiosqlite.connect(self.config.db_path) as db:
-                return await shrink_warnings(db, run_id, dump_results)
+                return await check_dump_sizes(db, run_id, dump_results)
         except Exception as e:
             logger.warning("Dump size check failed: %s", e)
-            return []
+            return SizeCheckResult(warnings=[f"could not compare dump sizes with earlier runs: {e}"])
 
     async def _record_discovery_outcome(self, run_id: str, ok: bool) -> None:
         """Best effort: freshness bookkeeping must never fail a backup."""

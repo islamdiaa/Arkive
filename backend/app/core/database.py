@@ -311,9 +311,17 @@ MIGRATIONS: dict[int, list[str]] = {
         # dump files and exclusions use; NULL on older rows, derived from the
         # dump file name when read); dumped_at is when the dump began, i.e.
         # the point in time it captures (NULL on older rows: the run start).
+        # shrink_flagged is 1 when the run flagged this dump as a sharp
+        # shrink, else NULL; flagged dumps never become the size baseline, so
+        # a shrink keeps warning until the size returns or it is accepted.
         "ALTER TABLE job_run_databases ADD COLUMN db_key TEXT",
         "ALTER TABLE job_run_databases ADD COLUMN dumped_at TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_job_run_databases_key ON job_run_databases(db_key)",
+        "ALTER TABLE job_run_databases ADD COLUMN shrink_flagged INTEGER",
+        # Per-database history lookups (services/database_health.py), however
+        # many runs there are: by identity, and by name for older rows.
+        "CREATE INDEX IF NOT EXISTS idx_job_run_databases_key ON job_run_databases(db_key, status, shrink_flagged)",
+        """CREATE INDEX IF NOT EXISTS idx_job_run_databases_legacy
+            ON job_run_databases(container_name, status, shrink_flagged) WHERE db_key IS NULL""",
     ],
 }
 
