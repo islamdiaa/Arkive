@@ -436,6 +436,20 @@ Rules that follow from this:
   don't reopen the bootstrap bypass
 - run `pip-audit`, `npm audit` and Trivy on the image before a release tag
 
+### 15. Tailwind CSS 4 (#53)
+
+- No `tailwind.config.ts`: `@tailwindcss/vite` plus CSS config in
+  `frontend/src/app.css`. `@theme inline reference` maps colour utilities to the
+  runtime tokens in `:root`/`.light`, so `bg-danger/10` works on variables
+  without wrappers; `src/app.css.test.ts` checks every token has a light value
+  and every utility colour points at a defined token.
+- `space-x/y-*` now put the margin on the end of every child but the last, and
+  a child's own margin wins. Children with their own margins, inline labels
+  next to inputs, and inline links after blocks render differently from v3.
+- `frontend/scripts/visual-diff.sh` screenshots every route in demo mode (both
+  themes, desktop and phone, plus opened forms and dialogs) from two builds and
+  diffs them. Run it for CSS or frontend dependency changes.
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -491,6 +505,7 @@ Local commands (or the `make` targets: `test`, `test-slow`, `frontend-check`,
 - bandit: `cd backend && bandit -r app -ll`
 - frontend: `cd frontend && npm run check && npx vitest run && npm run build`
 - end-to-end: `frontend/scripts/e2e.sh --docker`
+- visual diff of two frontend builds: `frontend/scripts/visual-diff.sh --docker <baseline-build-dir>`
 
 ## Agent Guidance
 
@@ -599,8 +614,8 @@ At the time this handoff was updated (v0.4.0):
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
-- open follow-up: Tailwind CSS 4 migration (#53); remaining low-severity npm
-  advisories need SvelteKit 3 (build-time only)
+- the frontend is on Tailwind CSS 4 (#53, section 15); remaining low-severity
+  npm advisories need SvelteKit 3 (build-time only)
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still
