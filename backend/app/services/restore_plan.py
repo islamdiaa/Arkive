@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import socket
 import tempfile
 from datetime import UTC, datetime
@@ -95,12 +96,17 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
 <p>Add the same storage target(s) used for backups via the Arkive UI.</p>
 
 <h3>Step 3: List available snapshots</h3>
-<pre>docker exec arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} snapshots</pre>
+<p>restic asks for the encryption password (hence <code>-it</code>).</p>
+<pre>docker exec -it arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} snapshots</pre>
 
 <h3>Step 4: Restore database dumps</h3>
-<pre>docker exec arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} restore SNAPSHOT_ID --target /config/restore/</pre>
+<pre>docker exec -it arkive restic -r {{ targets[0].repo_path if targets else 'rclone:TARGET:arkive-backups' }} restore SNAPSHOT_ID --target /config/restore/</pre>
 
 <h3>Step 5: Restore each database</h3>
+<p>Recreate each database container first (same image and environment as before), then run these
+commands on the host from the restored dump directory: the Arkive config folder's
+<code>restore/config/dumps</code> (e.g. <code>cd /mnt/user/appdata/arkive/restore/config/dumps</code>).
+For Postgres, restore the roles before that server's databases.</p>
 {% for db in databases %}
 <p><strong>{{ db.container_name }} ({{ db.db_type }}):</strong></p>
 <pre>{{ db.full_restore_cmd }}</pre>
@@ -312,15 +318,37 @@ class RestorePlanGenerator:
     @staticmethod
     def _plain_or_gzip(glob: str, ext: str, restore: str) -> str:
         """Restore instructions for a dump written plain (``ext``) or gzipped (``ext``.gz),
-        depending on the dump_compression setting when it was taken."""
-        return f"# plain dump ({ext}):\n{restore} < {glob}\n# gzip dump ({ext}.gz):\ngunzip -c {glob}.gz | {restore}"
+        depending on the dump_compression setting when it was taken.
+
+        The dump is piped in (``cat glob |``) rather than redirected: only bash
+        expands a glob in a ``< glob`` redirection, sh/ash/dash look for a file
+        literally named ``..._[0-9]*.sql``.
+        """
+        return (
+            f"# plain dump ({ext}):\ncat {glob} | {restore}\n# gzip dump ({ext}.gz):\ngunzip -c {glob}.gz | {restore}"
+        )
+
+    @staticmethod
+    def _psql_restore(container: str) -> str:
+        """psql as the container's own bootstrap superuser: POSTGRES_USER is
+        often not "postgres" (and then no role of that name exists)."""
+        return f"docker exec -i {container} sh -c 'exec psql -U \"${{POSTGRES_USER:-postgres}}\" -d postgres'"
+
+    @staticmethod
+    def _mysql_restore(container: str) -> str:
+        """The server's own client as root: MariaDB 11+ images have no "mysql"
+        binary, MySQL images no "mariadb", and root needs its password."""
+        return (
+            f"docker exec -i {container} sh -c "
+            '\'exec "$(command -v mariadb || command -v mysql)" -uroot '
+            '-p"${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}"\''
+        )
 
     def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:
         """Restore commands for a Postgres cluster's roles (run before the database dumps)."""
-        short = "psql -U postgres -d postgres < globals.sql  (restore before the databases)"
-        restore = f"docker exec -i {container} psql -U postgres -d postgres"
+        short = 'psql -U "$POSTGRES_USER" -d postgres < globals.sql  (restore before the databases)'
         glob = self._dump_glob(container, "postgres", GLOBALS_DB_NAME, ".sql", kind="globals")
-        return short, self._plain_or_gzip(glob, ".sql", restore)
+        return short, self._plain_or_gzip(glob, ".sql", self._psql_restore(container))
 
     def _get_restore_commands(
         self, db_type: str, db_name: str, container: str, host_path: str | None = None
@@ -332,22 +360,29 @@ class RestorePlanGenerator:
         the file name used before dump names carried an identity hash.
         """
         if db_type == "postgres":
-            short = "psql -U postgres -d postgres < dump.sql  (gzip: gunzip -c dump.sql.gz | psql ...)"
-            restore = f"docker exec -i {container} psql -U postgres -d postgres"
+            short = 'psql -U "$POSTGRES_USER" -d postgres < dump.sql  (gzip: gunzip -c dump.sql.gz | psql ...)'
             glob = self._dump_glob(container, db_type, db_name, ".sql")
             return short, (
-                self._plain_or_gzip(glob, ".sql", restore) + self._legacy_note(container, db_name, ".sql.gz")
+                self._plain_or_gzip(glob, ".sql", self._psql_restore(container))
+                + self._legacy_note(container, db_name, ".sql.gz")
             )
         elif db_type == "sqlite":
-            short = f"sqlite3 /path/to/{db_name} '.restore backup.sqlite3'"
+            # The dump is a complete database file. Leftover -wal/-shm files of
+            # the old database must go: SQLite would replay the stale
+            # write-ahead log over the restored file.
+            path = shlex.quote(host_path) if host_path else f"/path/to/{shlex.quote(db_name)}"
+            short = f"stop {container}, delete {db_name}-wal/-shm, copy the dump over {db_name}, start {container}"
             glob = self._dump_glob(container, db_type, db_name, ".sqlite3", host_path)
-            full = f"cp {glob} /mnt/user/appdata/{container}/data/{db_name}" + self._legacy_note(
-                container, db_name, ".sqlite3"
-            )
+            full = (
+                f"docker stop {container}\n"
+                f"rm -f {path}-wal {path}-shm {path}-journal\n"
+                f"cp {glob} {path}\n"
+                f"docker start {container}"
+            ) + self._legacy_note(container, db_name, ".sqlite3")
             return short, full
         elif db_type in ("mariadb", "mysql"):
-            short = "mysql -u root < dump.sql  (gzip: gunzip -c dump.sql.gz | mysql -u root)"
-            restore = f"docker exec -i {container} mysql -u root"
+            short = "mariadb -u root -p < dump.sql  (MySQL: mysql; gzip: gunzip -c dump.sql.gz | ...)"
+            restore = self._mysql_restore(container)
             glob = self._dump_glob(container, db_type, db_name, ".sql")
             return short, (
                 self._plain_or_gzip(glob, ".sql", restore) + self._legacy_note(container, db_name, ".sql.gz")
