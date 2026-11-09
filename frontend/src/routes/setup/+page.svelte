@@ -260,7 +260,7 @@
 	}
 </script>
 
-<div class="min-h-screen bg-page flex items-center justify-center p-6">
+<main class="min-h-screen bg-page flex items-center justify-center p-6">
 	<div class="w-full max-w-xl">
 		<!-- Logo -->
 		<div class="flex items-center gap-3 mb-8 justify-center">
@@ -273,15 +273,15 @@
 			</div>
 		</div>
 
-		<!-- Progress -->
-		<div class="flex items-center gap-2 mb-8 justify-center">
+		<!-- Progress (narrower connectors on phones so the six steps fit at 375px) -->
+		<div class="flex items-center gap-1 sm:gap-2 mb-8 justify-center">
 			{#each [1, 2, 3, 4, 5, 6] as s}
-				<div class="flex items-center gap-2">
+				<div class="flex items-center gap-1 sm:gap-2">
 					<div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium {
 						step >= s ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'
-					}">{s}</div>
+					}" aria-current={step === s ? 'step' : undefined}>{s}</div>
 					{#if s < 6}
-						<div class="w-6 h-0.5 {step > s ? 'bg-primary' : 'bg-border'}"></div>
+						<div class="w-3 sm:w-6 h-0.5 {step > s ? 'bg-primary' : 'bg-border'}"></div>
 					{/if}
 				</div>
 			{/each}
@@ -630,4 +630,4 @@
 			{/if}
 		</div>
 	</div>
-</div>
+</main>

@@ -42,15 +42,20 @@
         <div class="flex items-center justify-center py-8 text-text-secondary">No files found</div>
       {:else}
         {#each nodes as node}
-          <div class="flex items-center gap-2 px-2 py-1 hover:bg-surface rounded text-sm cursor-pointer"
-            on:click={() => togglePath(node.path || node.name)}
-            role="button"
-            tabindex="0"
-            on:keydown={(e) => e.key === 'Enter' && togglePath(node.path || node.name)}>
-            <input type="checkbox" checked={selectedPaths.includes(node.path || node.name)} class="rounded" on:click|stopPropagation />
-            <span class="text-text-secondary">{node.type === 'dir' ? '/' : ''}</span>
-            <span class="text-text">{node.name}</span>
-          </div>
+          <!-- A label row: one tab stop (the checkbox), Space toggles it, and
+               the whole row is the click target. The checkbox used to sit
+               inside a role="button" row and swallowed its own clicks, so
+               clicking the box itself never changed the selection. -->
+          <label class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface rounded text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selectedPaths.includes(node.path || node.name)}
+              on:change={() => togglePath(node.path || node.name)}
+              class="h-4 w-4 rounded"
+            />
+            <span class="text-text-secondary" aria-hidden="true">{node.type === 'dir' ? '/' : ''}</span>
+            <span class="text-text">{node.name}{#if node.type === 'dir'}<span class="sr-only"> (folder)</span>{/if}</span>
+          </label>
         {/each}
       {/if}
     </div>

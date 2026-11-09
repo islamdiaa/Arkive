@@ -259,10 +259,10 @@
 							<button
 								on:click={() => removeDir(dir.id)}
 								disabled={removingId === dir.id}
-								class="text-text-secondary hover:text-danger disabled:opacity-50"
-								aria-label="Remove directory"
+								class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-danger disabled:opacity-50"
+								aria-label="Remove {dir.label || dir.path}"
 							>
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
 							</button>
 						</div>
 					</div>
