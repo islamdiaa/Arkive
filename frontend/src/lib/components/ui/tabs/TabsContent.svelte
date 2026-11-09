@@ -11,7 +11,7 @@
 <TabsPrimitive.Content
   {value}
   class={cn(
-    'mt-2 ring-offset-bg-app focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+    'mt-2 ring-offset-bg-app focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
     className
   )}
   {...$$restProps}

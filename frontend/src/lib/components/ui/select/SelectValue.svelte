@@ -8,7 +8,7 @@
 </script>
 
 <span
-  class={cn('pointer-events-none text-text-primary data-[placeholder]:text-text-muted', className)}
+  class={cn('pointer-events-none text-text-primary data-placeholder:text-text-muted', className)}
   {...$$restProps}
 >
   <slot>{placeholder}</slot>

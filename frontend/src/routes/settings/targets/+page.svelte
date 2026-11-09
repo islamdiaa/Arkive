@@ -248,7 +248,7 @@
 				<div class="card">
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-4">
-							<div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+							<div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
 								<svelte:component this={ProviderIcon} size={18} class="text-primary" />
 							</div>
 							<div>

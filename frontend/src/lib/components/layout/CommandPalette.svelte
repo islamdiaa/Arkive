@@ -89,7 +89,7 @@
 {#if open}
 	<!-- Backdrop -->
 	<div
-		class="fixed inset-0 z-modal-backdrop bg-black/60 backdrop-blur-sm"
+		class="fixed inset-0 z-modal-backdrop bg-black/60 backdrop-blur-xs"
 		on:click={close}
 		on:keydown={(e) => e.key === 'Escape' && close()}
 		role="button"
@@ -114,7 +114,7 @@
 				on:keydown={handleInputKeydown}
 				placeholder="Search pages..."
 				aria-label="Search pages"
-				class="w-full bg-transparent text-text placeholder-text-tertiary text-sm outline-none"
+				class="w-full bg-transparent text-text placeholder-text-tertiary text-sm outline-hidden"
 			/>
 		</div>
 		<ul class="py-2 max-h-80 overflow-y-auto" role="listbox">

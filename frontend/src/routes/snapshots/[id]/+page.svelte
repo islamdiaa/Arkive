@@ -232,11 +232,11 @@
               <div class="flex items-center gap-3">
                 <!-- Icon -->
                 {#if isDir(entry.type)}
-                  <svg class="w-4 h-4 text-folder flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
+                  <svg class="w-4 h-4 text-folder shrink-0" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M.5 3l.04.87a1.99 1.99 0 00-.342 1.311l.637 7A2 2 0 002.826 14H13.174a2 2 0 001.991-1.819l.637-7A2 2 0 0013.84 3H9.828a2 2 0 01-1.414-.586l-.828-.828A2 2 0 006.172 1H2.5a2 2 0 00-2 2z"/>
                   </svg>
                 {:else}
-                  <svg class="w-4 h-4 text-text-secondary flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
+                  <svg class="w-4 h-4 text-text-secondary shrink-0" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M4 0a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V4.707A1 1 0 0013.707 4L10 .293A1 1 0 009.293 0H4zm5.5 1.5v2a1 1 0 001 1h2l-3-3z"/>
                   </svg>
                 {/if}

@@ -229,12 +229,12 @@
         <div class="text-xs font-medium mb-1 uppercase tracking-wide">
           {run.status === 'failed' ? 'Backup failed' : run.status === 'partial' ? 'Completed with problems' : `Run ${run.status}`}
         </div>
-        <pre class="text-sm font-mono whitespace-pre-wrap break-words">{run.error_message}</pre>
+        <pre class="text-sm font-mono whitespace-pre-wrap wrap-break-word">{run.error_message}</pre>
       </div>
     {/if}
 
     <!-- Summary -->
-    <h2 class="text-sm font-medium text-text -mb-3">Results</h2>
+    <h2 class="text-sm font-medium text-text">Results</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="results">
       <div class="bg-bg-surface border border-border rounded-lg p-4">
         <div class="text-sm font-medium text-text mb-2">Databases</div>
@@ -294,7 +294,7 @@
                 </div>
               </div>
               {#if t.error}
-                <p class="mt-2 text-xs font-mono whitespace-pre-wrap break-words {t.status === 'success' ? 'text-text-secondary' : 'text-danger'}">{t.error}</p>
+                <p class="mt-2 text-xs font-mono whitespace-pre-wrap wrap-break-word {t.status === 'success' ? 'text-text-secondary' : 'text-danger'}">{t.error}</p>
               {/if}
             </div>
           {/each}
@@ -323,7 +323,7 @@
                 </div>
               </div>
               {#if d.error}
-                <p class="mt-2 text-xs font-mono whitespace-pre-wrap break-words {d.status === 'skipped' ? 'text-warning' : 'text-danger'}">{d.error}</p>
+                <p class="mt-2 text-xs font-mono whitespace-pre-wrap wrap-break-word {d.status === 'skipped' ? 'text-warning' : 'text-danger'}">{d.error}</p>
               {/if}
             </div>
           {/each}

@@ -37,7 +37,7 @@
 {#if open}
   <!-- Backdrop -->
   <div
-    class="fixed inset-0 z-modal-backdrop bg-black/70 backdrop-blur-sm"
+    class="fixed inset-0 z-modal-backdrop bg-black/70 backdrop-blur-xs"
     transition:fade={{ duration: 200 }}
     on:click={handleBackdropClick}
     on:keydown={() => {}}

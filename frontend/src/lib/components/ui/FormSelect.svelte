@@ -29,7 +29,8 @@
     class="w-full h-9 bg-bg-input border rounded-md px-3 text-sm text-text
            focus:border-primary focus:ring-2 focus:ring-primary/30
            disabled:opacity-50 disabled:cursor-not-allowed
-           transition-colors duration-150 outline-none appearance-none
+           transition-colors duration-150 outline-hidden appearance-none
+           {label ? 'mt-1' : ''}
            {error ? 'border-danger ring-2 ring-danger/30' : 'border-border hover:border-border-strong'}"
   >
     {#if placeholder}

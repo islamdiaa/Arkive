@@ -39,7 +39,7 @@
   <div class="flex items-center gap-2 px-4 py-2 border-b border-border">
     <select
       bind:value={filterLevel}
-      class="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:border-primary outline-none"
+      class="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:border-primary outline-hidden"
     >
       <option value="ALL">All Levels</option>
       <option value="DEBUG">Debug</option>

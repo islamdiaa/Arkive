@@ -36,7 +36,7 @@
       role="tab"
       aria-selected={activeTab === tab.id}
       tabindex={activeTab === tab.id ? 0 : -1}
-      class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors duration-[120ms]
+      class="px-4 py-1.5 rounded-md text-sm font-medium transition-colors duration-120
              {activeTab === tab.id
                ? 'bg-bg-elevated text-text shadow-sm'
                : 'text-text-secondary hover:text-text'}"

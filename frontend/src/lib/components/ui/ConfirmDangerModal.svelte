@@ -51,7 +51,7 @@
         on:keydown={(e) => e.key === 'Enter' && handleConfirm()}
         placeholder={confirmText}
         class="w-full h-9 bg-bg-input border border-border rounded-md px-3 text-sm font-mono text-text
-               focus:border-danger focus:ring-2 focus:ring-danger/30 outline-none transition-colors"
+               focus:border-danger focus:ring-2 focus:ring-danger/30 outline-hidden transition-colors"
       />
     </div>
   </div>

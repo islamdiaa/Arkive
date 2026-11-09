@@ -10,7 +10,7 @@
 
 <div class="card relative overflow-hidden {className}">
   <!-- 2px gradient top stripe -->
-  <div class="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r {gradient}"></div>
+  <div class="absolute top-0 inset-x-0 h-0.5 bg-linear-to-r {gradient}"></div>
 
   <p class="text-xs uppercase tracking-wider text-text-secondary mb-2">{label}</p>
   <p class="{mono ? 'font-mono' : ''} text-[28px] font-semibold text-text">{value}</p>

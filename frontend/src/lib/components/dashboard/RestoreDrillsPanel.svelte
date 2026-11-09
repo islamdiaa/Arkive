@@ -244,7 +244,7 @@
 													</td>
 													<td class="py-1.5 pr-3"><StatusBadge status={result.status} size="sm" /></td>
 													<td class="py-1.5 pr-3 text-text-secondary whitespace-nowrap">{seconds(result.duration_seconds)}</td>
-													<td class="py-1.5 text-text-secondary break-words {result.status === 'failed' ? 'text-danger font-mono' : ''}">{result.detail || '—'}</td>
+													<td class="py-1.5 text-text-secondary wrap-break-word {result.status === 'failed' ? 'text-danger font-mono' : ''}">{result.detail || '—'}</td>
 												</tr>
 											{/each}
 										</tbody>

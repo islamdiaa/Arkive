@@ -13,8 +13,8 @@
   {sideOffset}
   {side}
   class={cn(
-    'relative z-dropdown min-w-[8rem] overflow-hidden rounded-md border border-border bg-bg-elevated shadow-lg',
-    'focus:outline-none',
+    'relative z-dropdown min-w-32 overflow-hidden rounded-md border border-border bg-bg-elevated shadow-lg',
+    'focus:outline-hidden',
     className
   )}
   {...$$restProps}

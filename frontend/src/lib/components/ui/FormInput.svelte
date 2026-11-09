@@ -43,7 +43,8 @@
            placeholder:text-text-secondary
            focus:border-primary focus:ring-2 focus:ring-primary/30
            disabled:opacity-50 disabled:cursor-not-allowed
-           transition-colors duration-150 outline-none
+           transition-colors duration-150 outline-hidden
+           {label ? 'mt-1' : ''}
            {mono ? 'font-mono' : ''}
            {touched && error ? 'border-danger ring-2 ring-danger/30' : 'border-border hover:border-border-strong'}"
   />

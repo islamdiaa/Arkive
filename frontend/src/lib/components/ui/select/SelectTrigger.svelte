@@ -9,7 +9,7 @@
 <SelectPrimitive.Trigger
   class={cn(
     'flex h-9 w-full items-center justify-between rounded-md border border-border bg-bg-input px-3 py-2 text-sm text-text-primary shadow-sm',
-    'placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-bg-app',
+    'placeholder:text-text-muted focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-bg-app',
     'disabled:cursor-not-allowed disabled:opacity-50',
     className
   )}

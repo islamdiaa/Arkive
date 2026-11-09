@@ -70,7 +70,7 @@
 <!-- Mobile overlay backdrop -->
 {#if open}
   <div
-    class="fixed inset-0 z-[29] bg-[var(--bg-overlay)] lg:hidden"
+    class="fixed inset-0 z-29 bg-(--bg-overlay) lg:hidden"
     on:click={handleOverlayClick}
     on:keydown={(e) => e.key === 'Escape' && handleOverlayClick()}
     role="button"
@@ -82,7 +82,7 @@
 <!-- Sidebar -->
 <aside
   class={cn(
-    'fixed top-0 left-0 z-[30] h-screen flex flex-col',
+    'fixed top-0 left-0 z-30 h-screen flex flex-col',
     'bg-bg-sidebar border-r border-border',
     'transition-all duration-300 ease-in-out',
     // Mobile: 280px drawer, slide in/out

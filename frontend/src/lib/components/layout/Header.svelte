@@ -33,7 +33,7 @@
 	}));
 </script>
 
-<header class="sticky top-0 z-30 bg-bg-app/80 backdrop-blur-sm border-b border-border-muted">
+<header class="sticky top-0 z-30 bg-bg-app/80 backdrop-blur-xs border-b border-border-muted">
 	<div class="flex items-center justify-between px-6 py-3">
 		<div class="flex items-center gap-4">
 			<button
