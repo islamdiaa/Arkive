@@ -33,6 +33,7 @@ from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
+from app.services.guided_restore import GuidedRestoreEngine
 from app.services.host_identity import resolve_hostname
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
@@ -242,6 +243,15 @@ async def lifespan(app: FastAPI):
         # Docker may be slow right after boot; don't hold up startup for it.
         app.state.drill_sweep = asyncio.create_task(restore_drill.remove_leftover_containers())
 
+    # Guided database restores: a restart mid-restore leaves a 'running' row.
+    guided_restore = GuidedRestoreEngine(
+        config,
+        backup_engine=backup_engine,
+        docker_client=docker_client,
+        lock_manager=orchestrator.lock_manager,
+    )
+    await guided_restore.recover_after_restart()
+
     scheduler = ArkiveScheduler(
         orchestrator,
         config,
@@ -270,6 +280,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     app.state.verify_engine = verify_engine
     app.state.restore_drill = restore_drill
+    app.state.guided_restore = guided_restore
 
     # Step 7b: Auto-unlock stale restic locks (part of self-healing, before scheduler)
     try:

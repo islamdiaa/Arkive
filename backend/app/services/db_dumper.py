@@ -18,6 +18,7 @@ compression, size, integrity), see ``write_dump_manifest``.
 """
 
 import asyncio
+import copy
 import functools
 import gzip
 import hashlib
@@ -1680,6 +1681,23 @@ class DBDumper:
             protect_prefixes=protect_prefixes,
             legacy_prefixes=legacy_prefixes,
         )
+
+    async def dump_to_directory(self, db: DiscoveredDatabase, directory: Path, compression: str = "none") -> DumpResult:
+        """Dump one database into ``directory`` instead of the shared dump dir.
+
+        Used for the safety dump a guided restore takes before it overwrites a
+        database: the file is validated like every dump (completion trailer,
+        ``.partial`` + atomic rename) but never joins the dump manifest or
+        dump-dir cleanup. A failed dump leaves no file behind.
+        """
+        worker = copy.copy(self)  # never retarget the shared instance mid-backup
+        worker.dump_dir = Path(directory)
+        worker.compression = compression if compression in DUMP_COMPRESSIONS else "none"
+        worker.dump_dir.mkdir(parents=True, exist_ok=True)
+        result = await worker._dump_one(db)
+        if result.status != "success":
+            self._remove_dump_file(result.dump_path)
+        return result
 
     async def dump_single(
         self,
