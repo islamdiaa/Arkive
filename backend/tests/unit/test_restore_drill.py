@@ -79,6 +79,31 @@ CREATE TABLE this_is_row_data_not_ddl
 
 """
 
+# pg_dumpall --globals-only of a cluster whose bootstrap superuser is "alice".
+PG_GLOBALS = b"""--
+-- PostgreSQL database cluster dump
+--
+
+SET default_transaction_read_only = off;
+
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+
+--
+-- Roles
+--
+
+CREATE ROLE alice;
+ALTER ROLE alice WITH SUPERUSER INHERIT CREATEROLE CREATEDB LOGIN REPLICATION BYPASSRLS PASSWORD 'SCRAM-SHA-256$4096:x';
+CREATE ROLE app_owner;
+ALTER ROLE app_owner WITH NOSUPERUSER INHERIT NOCREATEROLE NOCREATEDB LOGIN NOREPLICATION NOBYPASSRLS;
+
+--
+-- PostgreSQL database cluster dump complete
+--
+
+"""
+
 MYSQL_DUMP = b"""-- MariaDB dump 10.19  Distrib 10.11.6-MariaDB, for debian-linux-gnu (x86_64)
 --
 -- Host: localhost    Database: appdb
@@ -243,6 +268,9 @@ class FakeDocker:
         }
         self.leftovers: list[FakeContainer] = []
         self.load_code = 0
+        self.globals_code = 0
+        self.load_error = b'psql:/arkive-drill/dump.sql:42: ERROR:  extension "vectors" is not available\n'
+        self.globals_error = b""  # psql's messages from loading the roles dump
         self.table_count = 3
         self.exec_error: Exception | None = None
         self.containers = SimpleNamespace(get=self._get, create=self._create, list=self._list)
@@ -282,9 +310,9 @@ class FakeDocker:
         if cmd[0] == "mariadb-admin":
             return 0, b"mysqld is alive"
         if cmd[:2] == ["sh", "-c"]:
-            return self.load_code, b""
-        if cmd[0] == "tail":
-            return 0, b'psql:/arkive-drill/dump.sql:42: ERROR:  extension "vectors" is not available\n'
+            return (self.globals_code if "globals.sql" in cmd[2] else self.load_code), b""
+        if cmd[0] in ("tail", "head"):
+            return 0, self.globals_error if cmd[-1] == rd.CONTAINER_GLOBALS_ERR else self.load_error
         if cmd[0] in ("psql", "mariadb"):
             return 0, f"{self.table_count}\n".encode()
         return 127, b"executable file not found"
@@ -583,7 +611,7 @@ def _standard_files(tmp_path, pg_bytes=PG_DUMP):
     return {
         PG_FILE: pg_bytes,
         SQLITE_FILE: _sqlite_bytes(tmp_path),
-        "immich_postgres_globals_20261022_030000.sql": b"-- roles\nCREATE ROLE alice;\n",
+        "immich_postgres_globals_20261022_030000.sql": PG_GLOBALS,
         DUMP_MANIFEST_NAME: _manifest(
             [
                 _entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16"),
@@ -660,9 +688,23 @@ async def test_drill_passes_and_is_recorded(tmp_path, monkeypatch):
     assert "volumes" not in kw
     path, members = docker.created[0].archives[0]
     assert path == "/" and members["arkive-drill/dump.sql"] == PG_DUMP
+    # The roles dump travels along, minus the drill server's own bootstrap superuser.
+    roles = members["arkive-drill/globals.sql"]
+    assert b"CREATE ROLE app_owner;" in roles and b"ALTER ROLE app_owner WITH" in roles
+    assert b"CREATE ROLE alice;" not in roles and b"ALTER ROLE alice" not in roles
+    assert b"cluster dump complete" in roles
+    pg_restore = next(paths for paths, _dest in backup.restore_calls if any(PG_FILE in p for p in paths))
+    assert sorted(os.path.basename(p) for p in pg_restore) == [
+        PG_FILE,
+        "immich_postgres_globals_20261022_030000.sql",
+    ]
     assert docker.created[0].removed == {"force": True, "v": True}
-    load = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]][0]
-    assert "ON_ERROR_STOP=1" in load[0][2]
+    loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
+    assert ["globals.sql" in c[0][2] for c in loads] == [True, False]  # roles first
+    load = loads[1]
+    # The database load stops at the first error; the roles load is judged by
+    # its messages afterwards (see test_roles_the_image_already_created_...).
+    assert "ON_ERROR_STOP=1" in load[0][2] and "VERBOSITY=verbose" in loads[0][0][2]
     assert load[1]["ARKIVE_DRILL_USER"] == "alice" and load[1]["ARKIVE_DRILL_MAINTDB"] == "postgres"
     count = [c for c in docker.created[0].execs if c[0][0] == "psql"][0]
     assert count[0][count[0].index("-d") + 1] == "appdb"
@@ -1389,3 +1431,314 @@ async def test_scheduler_job_swallows_engine_errors(tmp_path):
     drill.run_drill = AsyncMock(side_effect=RuntimeError("kaboom"))
     sched = ArkiveScheduler(MagicMock(), cfg, restore_drill=drill)
     await sched._run_restore_drill()
+
+
+# ---------------------------------------------------------------------------
+# Real-engine findings (scripts/restore-roundtrip): roles, routine bodies
+# ---------------------------------------------------------------------------
+
+# pg_dump output for a database with a plpgsql function whose body has a
+# CREATE TABLE at the start of a line (as a Postgres 16 dump writes it).
+PG_DUMP_WITH_FUNCTION = b"""--
+-- PostgreSQL database dump
+--
+
+\\restrict abc123
+SET statement_timeout = 0;
+DROP DATABASE IF EXISTS appdb;
+CREATE DATABASE appdb WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.utf8';
+ALTER DATABASE appdb OWNER TO app_owner;
+\\connect appdb
+CREATE FUNCTION public.ensure_audit_log() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+CREATE TABLE IF NOT EXISTS audit_log (id int);
+END
+$$;
+ALTER FUNCTION public.ensure_audit_log() OWNER TO app_owner;
+CREATE FUNCTION public.other() RETURNS text
+    LANGUAGE sql
+    AS $_$SELECT 'costs $1 and $$ inside'$_$;
+CREATE TABLE public.notes (
+    id integer NOT NULL
+);
+ALTER TABLE public.notes OWNER TO app_owner;
+CREATE FUNCTION public.one_line() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$;
+CREATE TABLE public.tags (
+    name text
+);
+COPY public.notes (id) FROM stdin;
+1
+\\.
+\\unrestrict abc123
+--
+-- PostgreSQL database dump complete
+--
+"""
+
+# mysqldump --routines output: bodies between "DELIMITER ;;" and "DELIMITER ;".
+MYSQL_DUMP_WITH_ROUTINES = b"""-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `appdb` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+USE `appdb`;
+CREATE TABLE `files` (
+  `id` int NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+DELIMITER ;;
+CREATE DEFINER=`root`@`localhost` PROCEDURE `make_scratch`()
+BEGIN
+CREATE TABLE IF NOT EXISTS scratch (id INT);
+END ;;
+DELIMITER ;
+/*!50001 CREATE VIEW `v` AS SELECT 1 AS `id`*/;
+CREATE TABLE `legacy` (
+  `s` varchar(50)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+-- Dump completed on 2026-11-09 21:26:02
+"""
+
+
+class TestRoutineBodiesAreNotTables:
+    def test_postgres_function_body_create_table_not_counted(self, tmp_path):
+        src = tmp_path / "in.sql"
+        src.write_bytes(PG_DUMP_WITH_FUNCTION)
+        prepared = prepare_sql_dump(src, tmp_path / "out.sql", "postgres")
+        # notes + tags; not audit_log (it only exists inside the function body)
+        assert prepared.create_tables == 2
+        assert prepared.database == "appdb" and prepared.trailer_ok
+
+    def test_mysql_routine_body_create_table_not_counted(self, tmp_path):
+        src = tmp_path / "in.sql"
+        src.write_bytes(MYSQL_DUMP_WITH_ROUTINES)
+        prepared = prepare_sql_dump(src, tmp_path / "out.sql", "mariadb")
+        assert prepared.create_tables == 2 and prepared.trailer_ok
+
+    @pytest.mark.parametrize(
+        ("line", "start", "end"),
+        [
+            (b"    AS $$\n", None, b"$$"),
+            (b"$$;\n", b"$$", None),
+            (b"AS $_$SELECT 'costs $1'$_$;\n", None, None),
+            (b"SELECT $$ inside\n", b"$_$", b"$_$"),  # only the opening tag closes
+            (b"SELECT $$ inside $_$ closed\n", b"$_$", None),
+            (b"no quotes here $1 $2\n", None, None),
+        ],
+    )
+    def test_dollar_quote_state(self, line, start, end):
+        assert rd._dollar_quote_state(line, start) == end
+
+
+class TestBootstrapRoleFilter:
+    @pytest.mark.parametrize(
+        ("line", "role", "dropped"),
+        [
+            (b"CREATE ROLE postgres;\n", "postgres", True),
+            (b"ALTER ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'x';\n", "postgres", True),
+            (b'CREATE ROLE "Immich Admin";\n', "Immich Admin", True),
+            (b'ALTER ROLE "Immich Admin" WITH SUPERUSER;\n', "Immich Admin", True),
+            (b"ALTER ROLE postgres SET search_path TO public;\n", "postgres", False),
+            (b"CREATE ROLE postgres_ro;\n", "postgres", False),
+            (b"CREATE ROLE app_owner;\n", "postgres", False),
+            (b"GRANT app_owner TO postgres;\n", "postgres", False),
+        ],
+    )
+    def test_only_bootstrap_create_and_alter_with_are_dropped(self, line, role, dropped):
+        assert rd.is_bootstrap_role_line(line, role) is dropped
+
+    def test_prepare_pg_globals_gzip(self, tmp_path):
+        src = tmp_path / "globals.sql.gz"
+        src.write_bytes(gzip.compress(PG_GLOBALS))
+        dest = tmp_path / "globals.sql"
+        assert rd.prepare_pg_globals(src, dest, "alice") is True
+        text = dest.read_bytes()
+        assert b"alice" not in text and b"CREATE ROLE app_owner;" in text
+        assert not src.exists()
+
+    def test_prepare_pg_globals_detects_truncation(self, tmp_path):
+        src = tmp_path / "globals.sql"
+        src.write_bytes(PG_GLOBALS.split(b"CREATE ROLE app_owner")[0])
+        assert rd.prepare_pg_globals(src, tmp_path / "out.sql", "alice") is False
+
+
+@pytest.mark.asyncio
+async def test_roles_dump_that_does_not_load_fails_clearly(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    # psql without ON_ERROR_STOP exits 0 after an SQL error; the messages decide.
+    docker.globals_error = (
+        b'psql:/arkive-drill/globals.sql:12: ERROR:  42601: syntax error at or near "ROLE"\n'
+        b"LOCATION:  scanner_yyerror, scan.l:1241\n"
+    )
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert "roles dump (pg_dumpall --globals-only) did not load" in result["detail"]
+    assert "syntax error" in result["detail"] and "42601" in result["detail"]
+    # The database dump itself was never attempted.
+    loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
+    assert len(loads) == 1 and "globals.sql" in loads[0][0][2]
+
+
+@pytest.mark.asyncio
+async def test_roles_load_that_exits_nonzero_fails_clearly(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_code = 2
+    docker.globals_error = b'psql: error: connection to server at "127.0.0.1", port 5432 failed: server closed\n'
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert "did not load (psql exited with code 2)" in result["detail"]
+    assert "server closed" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_roles_the_image_already_created_do_not_fail_the_drill(tmp_path):
+    """An image whose own init scripts create roles (supabase/postgres creates
+    anon, authenticated, service_role, ...) gets "role ... already exists" for
+    each of them from pg_dumpall's plain CREATE ROLE. The restore plan's plain
+    psql carries on past that; the drill must not fail where the restore works."""
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_error = (
+        b'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+        b"LOCATION:  CreateRole, user.c:376\n"
+        b'psql:/arkive-drill/globals.sql:20: ERROR:  42710: role "authenticated" already exists\n'
+        b"LOCATION:  CreateRole, user.c:376\n"
+        b'psql:/arkive-drill/globals.sql:32: NOTICE:  00000: role "authenticated" has already been granted '
+        b'membership in role "anon" by role "postgres"\n'
+        b"LOCATION:  AddRoleMems, user.c:1889\n"
+    )
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "passed", result["detail"]
+    assert "2 already existed in the drill server" in result["detail"]
+    loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
+    assert [("globals.sql" in c[0][2]) for c in loads] == [True, False]
+    # The roles load keeps going past errors (judged afterwards) and reports SQLSTATEs.
+    assert "ON_ERROR_STOP" not in loads[0][0][2] and "VERBOSITY=verbose" in loads[0][0][2]
+
+
+@pytest.mark.asyncio
+async def test_roles_load_messages_that_cannot_all_be_read_fail(tmp_path, monkeypatch):
+    """Messages past the read limit are unchecked: that is reported, not passed."""
+    monkeypatch.setattr(rd, "_GLOBALS_ERR_MAX_BYTES", 100)
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_error = b'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n' * 3
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert "the rest was not checked" in result["detail"]
+
+
+class TestPgGlobalsErrors:
+    def test_already_exists_notices_and_warnings_are_harmless(self):
+        stderr = (
+            'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+            "LOCATION:  CreateRole, user.c:376\n"
+            "psql:/arkive-drill/globals.sql:30: NOTICE:  00000: role already granted\n"
+            "psql:/arkive-drill/globals.sql:31: WARNING:  01000: something to note\n"
+            # A server answering in another language: the SQLSTATE still decides.
+            "psql:/arkive-drill/globals.sql:40: FEHLER:  42710: Rolle »x« existiert bereits\n"
+        )
+        assert rd.pg_globals_errors(stderr) == ([], 2)
+
+    def test_other_errors_are_reported_with_their_sqlstate(self):
+        stderr = (
+            'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+            'psql:/arkive-drill/globals.sql:45: ERROR:  58P01: directory "/mnt/ts" does not exist\n'
+            "LOCATION:  create_tablespace_directories, tablespace.c:615\n"
+            "psql:/arkive-drill/globals.sql:3: error: invalid command \\restrict\n"
+        )
+        errors, existing = rd.pg_globals_errors(stderr)
+        assert existing == 1
+        assert errors == [
+            'directory "/mnt/ts" does not exist (SQLSTATE 58P01)',
+            "error: invalid command \\restrict",
+        ]
+
+    def test_no_output_is_a_clean_load(self):
+        assert rd.pg_globals_errors("") == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_missing_role_without_roles_dump_explains_why(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    files = _standard_files(tmp_path)
+    files.pop("immich_postgres_globals_20261022_030000.sql")
+    files[DUMP_MANIFEST_NAME] = _manifest(
+        [
+            _entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16"),
+            _entry(SQLITE_FILE, "vaultwarden", "sqlite", "db.sqlite3"),
+        ]
+    )
+    backup = FakeBackupEngine(cfg.dump_dir, files)
+    docker = _docker_with_source()
+    docker.load_code = 3
+    docker.load_error = b'psql:/arkive-drill/dump.sql:30: ERROR:  role "app_owner" does not exist\n'
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert 'role "app_owner" does not exist' in result["detail"]
+    assert "no roles dump for this server" in result["detail"]
+    loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
+    assert [("globals.sql" in c[0][2]) for c in loads] == [False]
+
+
+@pytest.mark.asyncio
+async def test_roles_dump_is_bound_next_to_the_dump_with_a_host_path(tmp_path, monkeypatch):
+    host_root = "/mnt/user/appdata/arkive/restores"
+    monkeypatch.setattr(rd, "host_path_for", lambda path, client: host_root)
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    seen = {}
+    original = docker.behavior
+
+    def load(container, cmd, env):
+        if cmd[:2] == ["sh", "-c"] and "globals.sql" in cmd[2]:
+            host, bind = next(
+                (h, v) for h, v in container.kwargs["volumes"].items() if v["bind"] == rd.CONTAINER_DUMP_DIR
+            )
+            assert bind["mode"] == "ro"
+            local = Path(str(cfg.restore_dir) + host[len(host_root) :])
+            seen["globals"] = (local / "globals.sql").read_bytes()
+        return original(container, cmd, env)
+
+    docker.behavior = load
+    engine = _engine(cfg, backup, docker)
+    summary = await engine.run_drill()
+    assert summary["status"] == "passed"
+    assert b"CREATE ROLE app_owner;" in seen["globals"] and b"CREATE ROLE alice;" not in seen["globals"]
+
+
+@pytest.mark.asyncio
+async def test_mysql_system_schema_dump_is_counted_in_its_own_schema(tmp_path):
+    """A MariaDB container without MYSQL_DATABASE has its "mysql" schema
+    dumped. Counting only non-system schemas found 0 tables and failed every
+    drill ("load finished but no tables were restored (dump declares 30)")."""
+    cfg = await _make_cfg(tmp_path)
+    name = "mariadb_mysql-0123abcd_20261022_030000.sql"
+    dump = MYSQL_DUMP.replace(b"`appdb`", b"`mysql`")
+    files = {
+        name: dump,
+        DUMP_MANIFEST_NAME: _manifest([_entry(name, "mariadb", "mariadb", "mysql", image="mariadb:11")]),
+    }
+    backup = FakeBackupEngine(cfg.dump_dir, files)
+    docker = FakeDocker()
+    docker.table_count = 31
+    engine = _engine(cfg, backup, docker)
+    summary = await engine.run_drill()
+    assert summary["status"] == "passed"
+    count = [c for c in docker.created[0].execs if c[0][0] == "mariadb" and "-e" in c[0]][0][0]
+    assert count[-1].endswith("AND table_schema = 'mysql'")

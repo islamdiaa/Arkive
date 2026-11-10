@@ -46,9 +46,9 @@
 
 <Header title="Restore" />
 
-<div class="p-6 space-y-6">
+<main class="p-6 space-y-6">
   <div>
-    <h1 class="text-2xl font-semibold text-text">Browse & Restore</h1>
+    <h2 class="text-2xl font-semibold text-text">Browse & Restore</h2>
     <p class="text-sm text-text-secondary mt-1">Select a snapshot to browse files and restore</p>
   </div>
 
@@ -89,7 +89,7 @@
       {/each}
     </div>
   {/if}
-</div>
+</main>
 
 <SnapshotBrowser bind:open={showBrowser} snapshot={selectedSnapshot} nodes={browserNodes} />
 <RestoreModal bind:open={showRestore} snapshot={selectedSnapshot} />
