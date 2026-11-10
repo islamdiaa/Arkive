@@ -311,7 +311,7 @@
 								{step.label}<span class="sr-only"> ({step.status})</span>
 							</p>
 							{#if step.detail}
-								<p class="text-xs text-text-secondary break-words">{step.detail}</p>
+								<p class="text-xs text-text-secondary wrap-break-word">{step.detail}</p>
 							{/if}
 							{#if step.key === 'load' && step.status === 'running' && percent !== null && op.progress}
 								<div class="mt-2 w-64 max-w-full">
@@ -331,7 +331,7 @@
 			{#if op.error_message}
 				<div class="flex items-start gap-2 p-3 bg-danger-bg border border-danger/30 rounded text-danger text-sm" role="alert">
 					<XCircle class="w-4 h-4 shrink-0 mt-0.5" />
-					<p class="break-words">{op.error_message}</p>
+					<p class="wrap-break-word">{op.error_message}</p>
 				</div>
 			{/if}
 

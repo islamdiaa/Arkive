@@ -260,7 +260,7 @@
 				<div class="card {ch.enabled === false ? 'opacity-60' : ''}">
 					<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
 						<div class="flex items-center gap-3 min-w-0">
-							<div class="w-9 h-9 rounded-lg bg-bg-surface border border-border flex items-center justify-center flex-shrink-0">
+							<div class="w-9 h-9 rounded-lg bg-bg-surface border border-border flex items-center justify-center shrink-0">
 								<svelte:component this={ChannelIcon} size={16} class="text-text-secondary" />
 							</div>
 							<div>

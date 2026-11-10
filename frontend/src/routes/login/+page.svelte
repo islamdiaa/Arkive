@@ -64,7 +64,7 @@
 				bind:value={apiKey}
 				type="password"
 				autocomplete="current-password"
-				class="input w-full"
+				class="input w-full mt-2"
 				placeholder="ark_..."
 				on:keydown={(event) => event.key === 'Enter' && login()}
 			/>

@@ -241,7 +241,7 @@
 			<StatCard
 				label="Last Backup"
 				value={lastBackupValue}
-				gradient="from-primary to-primary-hover"
+				gradient="from-(--color-primary) to-(--color-primary-hover)"
 			>
 				{#if getLastBackupStatus(data.status)}
 					<p class="text-xs mt-1">
@@ -261,7 +261,7 @@
 			</StatCard>
 
 			<div class="card relative overflow-hidden">
-				<div class="absolute top-0 inset-x-0 h-0.5 bg-gradient-to-r {trustScore !== null && trustScore >= 80 ? 'from-success to-success' : trustScore !== null && trustScore >= 50 ? 'from-warning to-warning' : trustScore !== null ? 'from-danger to-danger' : 'from-border-muted to-border-muted'}"></div>
+				<div class="absolute top-0 inset-x-0 h-0.5 bg-linear-to-r {trustScore !== null && trustScore >= 80 ? 'from-success to-success' : trustScore !== null && trustScore >= 50 ? 'from-warning to-warning' : trustScore !== null ? 'from-(--color-danger) to-(--color-danger)' : 'from-border-muted to-border-muted'}"></div>
 				<p class="text-xs uppercase tracking-wider text-text-secondary mb-2">Backup Trust Score</p>
 				<div class="flex items-center gap-3">
 					<TrustScoreBadge score={trustScore} {lastVerifiedAt} {verifying} />

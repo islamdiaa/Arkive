@@ -9,7 +9,7 @@
 <div class="fixed bottom-4 left-4 right-4 sm:left-auto z-50 flex flex-col items-stretch sm:items-end gap-2" aria-live="polite" role="status">
 	{#each $toasts as toast (toast.id)}
 		<div class={cn(
-			'px-4 py-3 rounded-lg shadow-lg border text-sm sm:max-w-sm break-words animate-slide-in',
+			'px-4 py-3 rounded-lg shadow-lg border text-sm sm:max-w-sm wrap-break-word animate-slide-in',
 			toast.type === 'success' && 'bg-success-bg border-success/30 text-success',
 			toast.type === 'error' && 'bg-danger-bg border-danger/30 text-danger',
 			toast.type === 'warning' && 'bg-warning-bg border-warning/30 text-warning',

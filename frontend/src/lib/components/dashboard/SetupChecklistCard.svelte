@@ -219,7 +219,7 @@
 								{:else}
 									<p class="mt-0.5 text-xs text-text-secondary">{stepDescription(step)}</p>
 									{#if step.detail}
-										<p class="mt-1 text-xs break-words {step.state === 'attention' ? 'text-warning' : 'text-text-muted'}">
+										<p class="mt-1 text-xs wrap-break-word {step.state === 'attention' ? 'text-warning' : 'text-text-muted'}">
 											{step.detail}
 										</p>
 									{/if}

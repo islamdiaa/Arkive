@@ -64,7 +64,7 @@
     type="text"
     bind:value
     on:input={handleInput}
-    class="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm font-mono text-text focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+    class="mt-2 w-full bg-bg-input border border-border rounded-md px-3 py-2 text-sm font-mono text-text focus:border-primary focus:ring-1 focus:ring-primary outline-hidden"
     placeholder="* * * * *"
   />
   <div class="flex flex-wrap gap-1">

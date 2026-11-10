@@ -1,10 +1,12 @@
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [
+		tailwindcss(),
 		// SvelteKit 3 reads its config from here; svelte.config.js is no longer loaded.
 		sveltekit({
 			preprocess: vitePreprocess(),

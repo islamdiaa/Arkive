@@ -482,6 +482,24 @@ Rules that follow from this:
 - the round-trip harness deletes only a `--workdir` carrying its
   `.arkive-restore-roundtrip` marker, and refuses a non-empty unmarked one
 
+### 16. Tailwind CSS 4 (#53)
+
+- No `tailwind.config.ts`: `@tailwindcss/vite` plus CSS config in
+  `frontend/src/app.css`. `@theme inline reference` maps colour utilities to the
+  runtime tokens in `:root`/`.light`, so `bg-danger/10` works on variables
+  without wrappers; `src/app.css.test.ts` checks every token has a light value
+  and every utility colour points at a defined token.
+- `bg-primary` and `bg-danger` use the darker `--color-*-fill` tokens (white
+  text needs 4.5:1 on them), through `--background-color-*` theme keys.
+  Gradient stops read the same keys, so a gradient that wants the accent
+  itself names the token: `from-(--color-primary)`, not `from-primary`.
+- `space-x/y-*` now put the margin on the end of every child but the last, and
+  a child's own margin wins. Children with their own margins, inline labels
+  next to inputs, and inline links after blocks render differently from v3.
+- `frontend/scripts/visual-diff.sh` screenshots every route in demo mode (both
+  themes, desktop and phone, plus opened forms and dialogs) from two builds and
+  diffs them. Run it for CSS or frontend dependency changes.
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -537,6 +555,7 @@ Local commands (or the `make` targets: `test`, `test-slow`, `frontend-check`,
 - bandit: `cd backend && bandit -r app -ll`
 - frontend: `cd frontend && npm run check && npx vitest run && npm run build`
 - end-to-end: `frontend/scripts/e2e.sh --docker`
+- visual diff of two frontend builds: `frontend/scripts/visual-diff.sh --docker <baseline-build-dir>`
 
 ## Agent Guidance
 
@@ -645,7 +664,7 @@ At the time this handoff was updated (v0.4.0):
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
-- open follow-up: Tailwind CSS 4 migration (#53)
+- the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
 - the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
   (there is no svelte.config.js), `$lib` still works through the deprecated
   `alias` option (moving to `#lib` subpath imports is a follow-up), and `$:`

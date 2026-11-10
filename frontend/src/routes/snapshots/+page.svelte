@@ -86,6 +86,7 @@
   </div>
 
   <FilterBar
+    class="mb-6"
     searchPlaceholder="Search by ID, host, or target…"
     bind:searchValue={filterSearch}
     bind:filterValues
