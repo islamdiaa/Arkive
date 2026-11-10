@@ -1,4 +1,4 @@
-.PHONY: dev test test-slow test-e2e frontend-check lint build clean
+.PHONY: dev test test-slow test-e2e test-upgrade frontend-check lint build clean
 
 dev:
 	docker compose -f docker-compose.dev.yml up --build
@@ -20,6 +20,12 @@ test-integration:
 # Playwright end-to-end suite (runs in the official Playwright image).
 test-e2e:
 	frontend/scripts/e2e.sh --docker
+
+# Upgrade path: set up 0.2.4, back up, then run an image built from this tree
+# on the same /config (Docker; uses a private dind daemon). See
+# docs/upgrade-path-test.md. Pass options with ARGS="--keep ...".
+test-upgrade:
+	python3 scripts/upgrade-path-test.py $(ARGS)
 
 frontend-check:
 	cd frontend && npm run check && npx vitest run && npm run build

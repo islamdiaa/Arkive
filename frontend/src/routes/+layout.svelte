@@ -15,6 +15,7 @@
 	import { onMount } from 'svelte';
 	import { cn } from '$lib/utils/cn';
 	import ConnectionBanner from '$lib/components/shared/ConnectionBanner.svelte';
+	import Footer from '$lib/components/layout/Footer.svelte';
 
 	let commandPaletteOpen = false;
 
@@ -92,6 +93,17 @@
 		};
 	});
 
+	// Skip link: each page renders its own <main>, so focus that when there is
+	// one (past the page header), else the #main-content wrapper.
+	function skipToMain(event: MouseEvent) {
+		const target = document.querySelector<HTMLElement>('main') ?? document.getElementById('main-content');
+		if (!target) return;
+		event.preventDefault();
+		if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+		target.focus();
+		target.scrollIntoView();
+	}
+
 	$: isSetupPage = $page.url.pathname === '/setup';
 	$: isLoginPage = $page.url.pathname === '/login';
 
@@ -112,17 +124,26 @@
 	<slot />
 {:else}
 	<div class="min-h-screen bg-page">
+		<a
+			href="#main-content"
+			on:click={skipToMain}
+			class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-toast focus:rounded focus:bg-bg-elevated focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-text focus:shadow-lg"
+		>
+			Skip to main content
+		</a>
 		<Sidebar />
-		<div class={cn('transition-all duration-300', $sidebarOpen ? 'lg:ml-64' : '')}>
+		<div id="main-content" tabindex="-1" class={cn('flex min-h-screen flex-col transition-all duration-300 focus:outline-none', $sidebarOpen ? 'lg:ml-64' : '')}>
 			<ConnectionBanner />
 			{#key $page.url.pathname}
 				<div
+					class="flex-1"
 					in:fly={{ y: 6, duration: 180, delay: 60 }}
 					out:fade={{ duration: 80 }}
 				>
 					<slot />
 				</div>
 			{/key}
+			<Footer />
 		</div>
 	</div>
 {/if}

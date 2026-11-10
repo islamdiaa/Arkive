@@ -6,8 +6,9 @@ import { writable } from 'svelte/store';
 // The mock at src/tests/mocks/app/stores.ts provides the default,
 // but the Sidebar component imports from $app/stores which is aliased in vitest config.
 
+import { tick } from 'svelte';
 import Sidebar from './Sidebar.svelte';
-import { systemStatus } from '$lib/stores/app';
+import { sidebarOpen, systemStatus } from '$lib/stores/app';
 
 describe('Sidebar', () => {
 	beforeEach(() => {
@@ -76,6 +77,33 @@ describe('Sidebar', () => {
 	it('renders Community badge', () => {
 		render(Sidebar);
 		expect(screen.getByText('Community')).toBeInTheDocument();
+	});
+
+	it('marks only the current page with aria-current', () => {
+		render(Sidebar);
+		// The default mock page URL is http://localhost (pathname = '/').
+		expect(screen.getByText('Dashboard').closest('a')).toHaveAttribute('aria-current', 'page');
+		expect(screen.getByText('Backups').closest('a')).not.toHaveAttribute('aria-current');
+	});
+
+	it('takes the closed sidebar out of the tab order and accessibility tree', async () => {
+		// Svelte sets `inert` as a DOM property; browsers reflect it to the
+		// attribute, jsdom (no inert support) keeps it as a plain property.
+		const isInert = (el: Element | null) => Boolean((el as HTMLElement & { inert?: boolean })?.inert);
+		sidebarOpen.set(false);
+		const { container } = render(Sidebar);
+		expect(isInert(container.querySelector('nav'))).toBe(true);
+		sidebarOpen.set(true);
+		await tick();
+		expect(isInert(container.querySelector('nav'))).toBe(false);
+	});
+
+	it('keeps the version footer outside the scrolling nav so it cannot cover links', () => {
+		systemStatus.set({ version: '0.4.0' });
+		const { container } = render(Sidebar);
+		const nav = container.querySelector('nav');
+		expect(nav?.contains(screen.getByText('v0.4.0'))).toBe(false);
+		systemStatus.set(null);
 	});
 
 	it('highlights active route for Dashboard (default)', () => {

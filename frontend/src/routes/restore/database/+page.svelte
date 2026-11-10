@@ -259,7 +259,7 @@
 
 <main class="p-6 space-y-6 max-w-5xl">
 	<div>
-		<h1 class="text-2xl font-semibold text-text">Restore a database</h1>
+		<h2 class="text-2xl font-semibold text-text">Restore a database</h2>
 		<p class="text-sm text-text-secondary mt-1">
 			Put one database back the way it was in a snapshot. Arkive takes a safety dump of the current database first, so the
 			restore can be undone. To restore files instead, use <a href="/restore/browse" class="btn-link">Browse &amp; Restore</a>.

@@ -10,15 +10,18 @@ class TestDbDumper:
     """DB Dumper service tests."""
 
     def test_postgres_dump_command_construction(self):
-        """Postgres dumps should be portable to a fresh instance."""
-        user = "testuser"
-        db_name = "testdb"
-        cmd = f"pg_dump --clean --create --if-exists --no-owner --no-privileges -U {user} -d {db_name}"
-        assert f"-U {user}" in cmd
-        assert f"-d {db_name}" in cmd
-        assert "pg_dump" in cmd
-        assert "--create" in cmd
-        assert "--no-owner" in cmd
+        """Postgres dumps recreate the database and keep owners and grants.
+
+        --no-owner/--no-privileges made every restored object belong to the
+        restoring superuser: an app connecting as its own role then got
+        "permission denied" on its own tables (found by
+        scripts/restore-roundtrip).
+        """
+        from app.services.db_dumper import PG_DUMP_COMMAND
+
+        assert PG_DUMP_COMMAND[:1] == ["pg_dump"]
+        assert {"--create", "--clean", "--if-exists"} <= set(PG_DUMP_COMMAND)
+        assert "--no-owner" not in PG_DUMP_COMMAND and "--no-privileges" not in PG_DUMP_COMMAND
 
     def test_postgres_dump_uses_portable_flags(self, tmp_path):
         """The real postgres dumper should emit restore-friendly pg_dump flags."""
@@ -50,8 +53,6 @@ class TestDbDumper:
             "--clean",
             "--create",
             "--if-exists",
-            "--no-owner",
-            "--no-privileges",
             "-U",
             "paperless",
             "-d",
@@ -88,6 +89,10 @@ class TestDbDumper:
             "-u",
             "root",
             "--single-transaction",
+            "--routines",
+            "--events",
+            "--no-tablespaces",
+            "--default-character-set=utf8mb4",
             "--databases",
             "appdb",
         ]

@@ -59,3 +59,7 @@ class StatusResponse(BaseModel):
     # Latest finished restore drill: {"id", "status", "started_at", "completed_at",
     # "databases_tested", "databases_passed", "databases_failed"} or None.
     last_drill: dict | None = None
+    # 3-2-1 awareness (services/offsite.py): {"has_offsite_copy", "warning",
+    # "enabled_targets", "offsite_targets", "local_targets": [{"id", "name",
+    # "type", "reason"}], "message"}. A warning only; never changes ``status``.
+    offsite: dict | None = None

@@ -53,7 +53,7 @@
 	}
 </script>
 
-<div class="min-h-screen bg-page flex items-center justify-center p-6">
+<main class="min-h-screen bg-page flex items-center justify-center p-6">
 	<div class="w-full max-w-md card p-8 space-y-6">
 		<div class="space-y-2 text-center">
 			<h1 class="text-2xl font-bold text-text">Sign in to Arkive</h1>
@@ -79,4 +79,4 @@
 			{loading ? 'Signing In...' : 'Sign In'}
 		</button>
 	</div>
-</div>
+</main>

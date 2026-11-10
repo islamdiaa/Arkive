@@ -342,6 +342,17 @@ MIGRATIONS: dict[int, list[str]] = {
         # databases, which must not read as "this system has no databases".
         "ALTER TABLE job_runs ADD COLUMN discovery_ok INTEGER",
     ],
+    7: [
+        # "No offsite copy" (backup.no_offsite) is a new event; channels that
+        # asked for backup failures hear about it too, as in migrations 5 and 6.
+        """UPDATE notification_channels
+            SET events = json_insert(events, '$[#]', 'backup.no_offsite')
+            WHERE json_valid(events)
+              AND EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                          WHERE value = 'backup.failed')
+              AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
+                              WHERE value = 'backup.no_offsite')""",
+    ],
 }
 
 
