@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Arkive</Name>
-  <!-- ":0" follows every final 0.x release (":latest" is rebuilt from every commit to main). Change it to ":1" only
+  <!-- ":0" follows every final 0.x release (":latest" would also cross into the next major version). Change it to ":1" only
        after the v1.0.0 image has been published: before that, ":1" doesn't exist and installs fail to pull. -->
   <Repository>islamdiaa/arkive:0</Repository>
   <Registry>https://hub.docker.com/r/islamdiaa/arkive</Registry>
