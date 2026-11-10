@@ -9,10 +9,44 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
+Arkive 0.5.0 answers the questions that come after "do my backups work?": is there a copy somewhere else, is each database healthy, what is still missing after setup, and how do I get one database back without doing it by hand. It is also the first release prepared for Unraid Community Applications.
+
+Upgrade by recreating the container with the same `/config` volume; database migrations run on start.
+- If every storage target your jobs upload to is on the server itself, the dashboard now says there is no offsite copy. It is a warning only: it does not change the system status or the heartbeat. Notification channels that already get backup failures also get the new "No offsite copy" event.
+- A database whose dump suddenly shrinks to half its usual size or less now makes that run `partial` until the size comes back or you accept the new size on the Databases page.
+- PostgreSQL dumps now carry owners and grants. Restore the roles dump (`globals`) before a database dump, as the restore plan describes.
+- The Unraid template and the example Compose file follow release tags (`islamdiaa/arkive:0` and `latest`), no longer every build of `main`.
+
+### Added
+- **Offsite warning (3-2-1).** Arkive works out where each job's backups actually go and warns when no copy leaves the server: a local folder, or an SFTP or S3 endpoint that turns out to be this machine or one of its containers. Event: `backup.no_offsite`.
+- **Per-database health.** The Databases page shows, for every database, when it was last dumped successfully, how large the dump was and whether anything is wrong, instead of one overall count.
+- **Dump-shrink warning.** A dump at least 50% smaller than that database's recent dumps is flagged and the run becomes `partial`. The thresholds are under Settings → Monitoring.
+- **Guided database restore** (Restore a database, on the Restore page). Pick a database and a snapshot; Arkive checks the dump, takes a safety dump of the current database, can stop the apps that use it, loads the dump and starts them again. A restore can be undone from the safety dump. PostgreSQL, MariaDB and MySQL are restored in place. SQLite files are restored, integrity-checked and left for you to swap in, with the exact steps, because Arkive does not write to your app data.
+- **"Finish protecting this server" checklist** on the dashboard after setup: a clean first backup, a passed restore test, an offsite target, a notification channel and a saved recovery kit. Each step is judged from what actually happened, not from a checkbox.
+- **Unraid Community Applications template**, with read-only data mounts by default.
+- **User guide** in `docs/`: quick start, storage providers, restore, restore drills, monitoring, notifications, recovery kit, security, upgrading and troubleshooting.
+- Keyboard and screen-reader support across the interface: a skip link, labelled controls and dialogs, visible focus, readable contrast in both themes, and layouts that work on a phone.
+- A footer with the running version and links to the source.
+- An automated upgrade test from 0.2.4 to the current version, and a restore round trip against real PostgreSQL, MariaDB, MySQL and SQLite, for people working on Arkive.
+
 ### Changed
+- **Database dumps restore completely.** PostgreSQL dumps keep owners and grants. MariaDB and MySQL dumps include stored procedures, functions and events, and every application database on the server is dumped, not only `MYSQL_DATABASE`. MariaDB 11 images, which ship `mariadb-dump` instead of `mysqldump`, are supported.
 - The `islamdiaa/arkive:latest` image now moves only when a new version is released. Until now every push to `main` republished `latest`, so the Unraid template and the example Compose file could pull unreleased code. Builds of `main` are still published as `main` and as the commit SHA.
 - GitHub releases are created from this changelog when a version is tagged.
-- Dependency updates: click 8.5.0, and the Inter and JetBrains Mono fonts.
+- A local storage target on a read-only mount is rejected when you add it, instead of failing at the first backup.
+- The frontend moved to SvelteKit 3 and Tailwind CSS 4. Nothing should look or behave differently.
+- Dependency updates: apprise 2.1.0, click 8.5.0, and the Inter and JetBrains Mono fonts.
+
+### Fixed
+- Restore-plan commands now run as written: they use the container's own database user and client, no longer rely on bash-only syntax, and handle SQLite write-ahead logs.
+- Restore drills no longer fail on a `CREATE TABLE` inside a function body or on a MySQL system-schema dump.
+- Log redaction no longer mangles container names such as `immich-postgres`.
+
+### Known limitations
+- MariaDB and MySQL user accounts and grants are not part of the dumps yet. After restoring onto a fresh server, re-create the application's database user.
+- Guided restore does not cover MongoDB or Redis; restore those dumps by hand as described in the user guide.
 
 ## [0.4.0] - 2026-10-30
 
@@ -118,7 +152,8 @@ If you run 0.2.x on a network others can reach, upgrade.
 ### Added
 - First public release: discovery of Docker containers and their databases with app profiles; dumps of PostgreSQL, MariaDB/MySQL, MongoDB, SQLite and Redis; encrypted restic snapshots of the dumps, watched directories and Unraid flash configuration on local disk, Backblaze B2, S3-compatible, Wasabi, SFTP, Google Drive and Dropbox targets; cron schedules and retention; notifications; a snapshot browser, granular restore and a restore-plan PDF; a setup wizard, dashboard, REST API and CLI.
 
-[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/islamdiaa/Arkive/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/islamdiaa/Arkive/compare/v0.2.4...v0.4.0
 [0.2.4]: https://github.com/islamdiaa/Arkive/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/islamdiaa/Arkive/compare/v0.2.2...v0.2.3

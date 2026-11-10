@@ -1,6 +1,8 @@
 # Restoring backups
 
-Arkive never restores over your live data. A restore writes the files into a separate folder, and you copy what you need back into place. That keeps a restore from overwriting something by accident, and it lets Arkive mount the data it protects read-only.
+A file restore never writes over your live data. It puts the files into a separate folder, and you copy what you need back into place. That keeps a restore from overwriting something by accident, and it lets Arkive mount the data it protects read-only.
+
+The one exception is a [guided database restore](#restore-one-database-guided), which loads a dump back into a running PostgreSQL, MariaDB or MySQL database after you confirm it by typing the database's name.
 
 The commands on this page run in the Unraid terminal. They assume the container is called `Arkive` (the name the Unraid template gives it) and that you have your API key in a variable:
 
@@ -71,6 +73,21 @@ Arkive's mounts of your data are read-only, so you copy restored files back from
 restic restores file owners and permissions when it runs as root, which it does with the template's `--user 0:0`.
 
 Restoring an app's folder brings back its database files as they were on disk during the backup, possibly in the middle of a write. For an app with a database, also restore the database from its dump (next section).
+
+## Restore one database (guided)
+
+**Restore a database**, on the **Restore** page, puts a single database back the way it was in a snapshot, without the manual steps in the next section. You can also start it from a database's row on the **Databases** page.
+
+1. **Choose a database.** Each one shows how it will be restored:
+    - PostgreSQL, MariaDB and MySQL are restored in place: Arkive loads the dump into the running database container.
+    - SQLite is prepared for you: Arkive restores the file and checks its integrity, keeps a safety copy of the current file, and gives you the exact commands to swap it in. Arkive does not write to your app data itself.
+    - MongoDB and Redis are not supported here. Restore their dumps by hand, as described below.
+2. **Choose a restore point** and click **Check snapshot**. Arkive finds that database's dump in the snapshot and checks the container. Nothing is changed yet.
+3. **Review and confirm.** You see what will happen and which apps use the database. Arkive can stop those apps for the restore and start them again afterwards. For an in-place restore you type the database's name to confirm.
+
+Before it changes anything, Arkive takes a safety dump of the database as it is now. If the result is not what you wanted, **Undo this restore** loads that safety dump back the same way. The restored dump and the safety dump are kept in `/config/restores/guided-<id>/`; delete the folder when you no longer need them.
+
+No backup, restore drill or other restore runs while a guided restore is in progress. Scheduled backups wait for it.
 
 ## Restore a database from its dump
 
