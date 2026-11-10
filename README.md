@@ -30,6 +30,12 @@ Copying `appdata` while databases are running produces backups that may not rest
 
 Arkive is under active development. Backup, snapshot, restore, cloud targets and verification are implemented and covered by unit, integration and end-to-end tests.
 
+## Documentation
+
+The [user guide](docs/index.md) covers installing on Unraid, the setup wizard, every storage provider, notifications, the recovery kit, restoring (including disaster recovery on a fresh server), restore drills, overdue-backup alerts and the heartbeat, troubleshooting, upgrading, and the security model. Start with the [quick start](docs/quick-start.md).
+
+To explore the interface with sample data before you configure anything, open any Arkive page with `?demo=true`, for example `http://your-server:8200/?demo=true`.
+
 ## Features
 
 **Backup**
@@ -84,7 +90,7 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 
 ### Unraid
 
-Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts app data read-only and keeps Arkive's own state in `/mnt/user/appdata/arkive`.
+Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; `latest` is rebuilt from every commit to `main`.
 
 ### Docker Compose
 
@@ -138,6 +144,8 @@ The browser may then ask for the admin API key once, to create a session.
 ### Upgrading
 
 Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
+
+`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.4.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -261,8 +269,9 @@ scripts/e2e.sh --docker                               # Playwright suite in Dock
 backend/      FastAPI app (api/, core/, models/, services/) and pytest suites
 frontend/     SvelteKit 2 + Svelte 5 + Tailwind; Vitest and Playwright tests
 profiles/     YAML app profiles used by discovery
-docs/         Deployment notes (homeserver smoke test)
+docs/         User guide (MkDocs site: mkdocs.yml) and deployment notes
 CLAUDE.md     Architecture notes and invariants for contributors and coding agents
+CHANGELOG.md  Release notes; RELEASING.md has the release checklist
 ```
 
 ## Contributing

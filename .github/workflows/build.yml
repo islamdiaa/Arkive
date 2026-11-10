@@ -44,6 +44,14 @@ jobs:
       - name: Run ruff format check
         run: cd backend && ruff format --check .
 
+      # CHANGELOG.md is the source of the GitHub release notes (release job).
+      # On a version tag this also requires the tag's section and version
+      # files that match the tag, before any image is built or pushed.
+      - name: Check CHANGELOG.md and version files
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: python scripts/release.py check --tag "$RELEASE_TAG"
+
   sast:
     runs-on: ubuntu-24.04
     defaults:
@@ -282,18 +290,32 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # "latest" follows the newest stable version tag only. Pushes to main get
+      # "main" and the commit sha; a pre-release tag gets just its version; a
+      # fix tagged on an older line (v0.4.1 after v0.5.0) moves neither
+      # "latest" nor the major-version tag. This fails closed: `shell: bash`
+      # sets pipefail, and tag-info refuses a listing without this tag in it,
+      # so a failed ls-remote stops the job instead of reading as "no tags".
+      - name: Compare this tag with the existing version tags
+        id: release_tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: git ls-remote --tags --refs origin | python3 scripts/release.py tag-info "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKERHUB_IMAGE }}
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}},enable=${{ steps.release_tag.outputs.newest_in_major == 'true' }}
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ steps.release_tag.outputs.latest == 'true' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
@@ -319,3 +341,42 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+
+  # On a version tag, once the image is pushed and has passed Trivy, publish
+  # the GitHub release with the tag's CHANGELOG.md section as its notes (lint
+  # already checked the section exists). A release that already exists, for
+  # example one written by hand, is left as it is.
+  release:
+    needs: [build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Prepare release notes
+        id: info
+        shell: bash
+        run: |
+          git ls-remote --tags --refs origin | python3 scripts/release.py tag-info "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          python3 scripts/release.py notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.info.outputs.version }}
+          PRERELEASE: ${{ steps.info.outputs.prerelease }}
+          LATEST: ${{ steps.info.outputs.latest }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::A release for $GITHUB_REF_NAME already exists; its notes were not changed."
+            exit 0
+          fi
+          args=(--repo "$GITHUB_REPOSITORY" --verify-tag --title "Arkive $VERSION"
+                --notes-file "$RUNNER_TEMP/release-notes.md" --latest="$LATEST")
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}"
