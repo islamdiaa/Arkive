@@ -7,12 +7,17 @@ stream dumps with completion trailers, receive loads over a real socket with
 Docker's stream framing, and keep the rows a restore leaves behind.
 """
 
+import asyncio
 import gzip
 import json
 import os
+import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
@@ -24,11 +29,13 @@ from app.models.guided_restore import GuidedRestoreStart, GuidedRestoreUndo
 from app.services.backup_engine import ResticError
 from app.services.db_dumper import DUMP_MANIFEST_NAME, DumpResult, dump_prefix, legacy_dump_prefix
 from app.services.guided_restore import (
+    MIB,
     WORK_MARKER,
     DatabaseRef,
     GuidedRestoreEngine,
     GuidedRestoreError,
     exec_with_stdin,
+    interruption_message,
     mysql_dump_databases,
     mysql_prelude,
     pg_ident,
@@ -40,6 +47,7 @@ from app.services.guided_restore import (
     validate_ref,
 )
 from app.services.lock_manager import BackupLockManager
+from app.services.scheduler import SYSTEM_JOB_GUIDED_RESTORE_CLEANUP, ArkiveScheduler
 from tests.fakes.fake_db_server import (
     FakeAppContainer,
     FakeDockerForRestore,
@@ -413,11 +421,11 @@ async def test_safety_dump_failure_stops_before_anything_changes(config):
 
     assert op["status"] == "failed"
     assert step_status(op)["safety_dump"] == "failed"
-    assert "nothing was changed" in op["error_message"]
+    assert "appdb was not changed" in op["error_message"]
     assert not [e for e in pg.client.api.execs.values() if e["stdin"]]  # never loaded
     assert app.calls == []  # never stopped
     assert pg.databases["appdb"]["rows"] == ["current-1"]
-    assert op["can_undo"] is False
+    assert op["database_changed"] is False and op["can_undo"] is False
 
 
 async def test_original_owner_is_restored(config):
@@ -663,7 +671,7 @@ class FakeSqliteDumper:
         self.ok = ok
         self.calls = []
 
-    async def dump_to_directory(self, db, directory):
+    async def dump_to_directory(self, db, directory, **kwargs):
         self.calls.append((db, directory))
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "vaultwarden_db.sqlite3-0123abcd_20261109_120000.sqlite3"
@@ -848,6 +856,41 @@ async def test_recover_after_restart_marks_running_as_failed(config):
     assert [s["status"] for s in op["steps"]] == ["failed", "skipped"]
 
 
+async def test_recover_after_restart_before_the_load_says_nothing_changed(config):
+    engine = make_engine(config, {})
+    async with aiosqlite.connect(config.db_path) as db:
+        for op_id, phase in (("e" * 32, "safety_dump"), ("f" * 32, "stop_apps")):
+            await db.execute(
+                """INSERT INTO guided_restores (id, method, container_name, db_type, db_name, phase,
+                       stop_containers, safety_dump_path, steps)
+                   VALUES (?, 'load', 'pg', 'postgres', 'appdb', ?, ?, ?, ?)""",
+                (
+                    op_id,
+                    phase,
+                    json.dumps(["app-server"]),
+                    str(config.restore_dir / f"guided-{op_id}" / "safety" / "x.sql"),
+                    json.dumps([{"key": phase, "status": "running"}, {"key": "load", "status": "pending"}]),
+                ),
+            )
+            work = config.restore_dir / f"guided-{op_id}"
+            (work / "safety").mkdir(parents=True)
+            (work / WORK_MARKER).write_text(op_id)
+            (work / "safety" / "x.sql").write_text("-- safety dump\n")
+        await db.commit()
+
+    await engine.recover_after_restart()
+
+    early = await engine.get("e" * 32)
+    assert early["status"] == "failed" and "appdb was not changed" in early["error_message"]
+    assert early["database_changed"] is False
+    # A safety dump exists, but the database was never touched: no undo.
+    assert early["safety_dump"]["available"] is True and early["can_undo"] is False
+    with pytest.raises(GuidedRestoreError):
+        await engine.start_undo("e" * 32, GuidedRestoreUndo(confirm="appdb"))
+    stopping = await engine.get("f" * 32)
+    assert "may have been stopped by the restore: app-server" in stopping["error_message"]
+
+
 async def test_retention_only_removes_old_marked_dirs(config):
     engine = make_engine(config, {})
     root = config.restore_dir
@@ -883,6 +926,351 @@ async def test_undo_refused_when_safety_dump_is_gone(config):
     with pytest.raises(GuidedRestoreError) as exc:
         await engine.start_undo(op["id"], GuidedRestoreUndo(confirm="appdb"))
     assert exc.value.status_code == 410
+
+
+async def test_expired_safety_dumps_are_removed_without_another_restore(config):
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+    op = await run_to_end(engine, engine.start(body()))
+    work = config.restore_dir / f"guided-{op['id']}"
+    past = time.time() - 15 * 86400
+    os.utime(work, (past, past))
+
+    # The daily system job (and startup) prune; no new guided restore needed.
+    scheduler = ArkiveScheduler(orchestrator=MagicMock(), config=config, guided_restore=engine)
+    scheduler._register_system_jobs()
+    assert scheduler.scheduler.get_job(SYSTEM_JOB_GUIDED_RESTORE_CLEANUP) is not None
+    await scheduler._run_guided_restore_cleanup()
+
+    assert not work.exists()
+    after = await engine.get(op["id"])
+    assert after["can_undo"] is False and after["safety_dump"]["available"] is False
+    assert await engine.prune() == 0
+
+    plain = ArkiveScheduler(orchestrator=MagicMock(), config=config)
+    plain._register_system_jobs()
+    assert plain.scheduler.get_job(SYSTEM_JOB_GUIDED_RESTORE_CLEANUP) is None
+
+
+# ---------------------------------------------------------------------------
+# Failures before the load leave nothing to undo
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_failure_leaves_database_unchanged_and_no_undo(config):
+    async with aiosqlite.connect(config.db_path) as db:
+        # A dependent that discovery still lists but Docker no longer has.
+        await db.execute(
+            "INSERT INTO discovered_containers (name, image, status, databases, compose_project) "
+            "VALUES ('app-worker', 'img', 'running', '[]', 'app')"
+        )
+        await db.commit()
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+
+    op = await run_to_end(engine, engine.start(body(stop=["app-server", "app-worker"])))
+
+    assert op["status"] == "failed"
+    assert "container app-worker not found" in op["error_message"]
+    assert "appdb was not changed" in op["error_message"]
+    assert op["database_changed"] is False
+    # The safety dump was taken, but there is nothing to undo.
+    assert op["safety_dump"]["available"] is True and op["can_undo"] is False
+    with pytest.raises(GuidedRestoreError) as exc:
+        await engine.start_undo(op["id"], GuidedRestoreUndo(confirm="appdb"))
+    assert exc.value.status_code == 400
+    # The app stopped before the failure is running again; nothing was loaded.
+    assert [c["cmd"][0] for c in app.calls] == ["<stop>", "<start>"] and app.status == "running"
+    assert not [e for e in pg.client.api.execs.values() if e["stdin"]]
+    assert pg.databases["appdb"]["rows"] == ["current-1"]
+
+
+# ---------------------------------------------------------------------------
+# Disk space: sized on the uncompressed SQL, guarded while writing
+# ---------------------------------------------------------------------------
+
+
+def fake_disk_usage(free_by_path):
+    def usage(path):
+        return SimpleNamespace(total=0, used=0, free=free_by_path(str(path)))
+
+    return usage
+
+
+async def test_safety_dump_space_check_uses_the_uncompressed_size(config):
+    pg, app, _files = postgres_setup(config, rows=[f"current-{i}" for i in range(2000)])
+    sql = pg_dump_text("appdb", [f"row-{i}" for i in range(20000)])
+    name = pg_file("sql.gz")
+    files = {name: gzip.compress(sql), DUMP_MANIFEST_NAME: manifest(entry(name))}
+    engine = make_engine(config, files, pg, app)
+    requests = []
+    original = engine._require_free_space
+
+    async def spy(needed, action):
+        requests.append((action, needed))
+        return await original(needed, action)
+
+    engine._require_free_space = spy
+
+    op = await run_to_end(engine, engine.start(body()))
+
+    assert op["status"] == "completed", op
+    sizes = dict(requests)
+    assert sizes["restore the dump"] == len(files[name])  # the compressed file restic writes
+    assert sizes["take a safety dump"] == len(sql)  # the SQL it expands to
+    assert len(sql) > 3 * len(files[name])
+
+
+async def test_safety_dump_stops_before_the_disk_fills(config, monkeypatch):
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+    engine.min_free_bytes = MIB
+    # Plenty of room for the step checks; the disk "fills" once the safety dump writes.
+    monkeypatch.setattr(
+        shutil, "disk_usage", fake_disk_usage(lambda p: 1000 if p.endswith("/safety") else 100 * 1024 * MIB)
+    )
+
+    op = await run_to_end(engine, engine.start(body(stop=["app-server"])))
+
+    assert op["status"] == "failed"
+    assert step_status(op)["safety_dump"] == "failed"
+    assert "free disk space" in op["error_message"] and "appdb was not changed" in op["error_message"]
+    assert list((config.restore_dir / f"guided-{op['id']}" / "safety").iterdir()) == []  # partial removed
+    assert app.calls == [] and app.status == "running"
+    assert not [e for e in pg.client.api.execs.values() if e["stdin"]]
+    assert op["can_undo"] is False
+
+
+async def test_undo_links_the_safety_dump_instead_of_copying_it(config, monkeypatch):
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+    first = await run_to_end(engine, engine.start(body()))
+    safety = Path(first["safety_dump"]["path"])
+    before = safety.read_bytes()
+    links = []
+    real_link = os.link
+
+    def spy(src, dst, *args, **kwargs):
+        links.append((Path(src), Path(dst)))
+        return real_link(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", spy)
+    # No room for a second copy: only a link works.
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage(lambda p: len(before) // 2))
+
+    undo = await run_to_end(engine, engine.start_undo(first["id"], GuidedRestoreUndo(confirm="appdb")))
+
+    assert undo["status"] == "completed_with_warnings", undo  # its own safety dump had no room
+    assert links == [(safety, config.restore_dir / f"guided-{undo['id']}" / "undo-source.sql")]
+    assert pg.databases["appdb"]["rows"] == ["current-1"]
+    assert safety.read_bytes() == before and (await engine.get(first["id"]))["can_undo"] is True
+
+
+async def test_undo_copy_without_room_fails_before_anything_changes(config, monkeypatch):
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+    first = await run_to_end(engine, engine.start(body()))
+    size = Path(first["safety_dump"]["path"]).stat().st_size
+
+    def no_links(src, dst, *args, **kwargs):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage(lambda p: size - 1))
+
+    undo = await run_to_end(engine, engine.start_undo(first["id"], GuidedRestoreUndo(confirm="appdb")))
+
+    assert undo["status"] == "failed"
+    assert step_status(undo)["verify_dump"] == "failed"
+    assert "to copy the safety dump" in undo["error_message"] and "appdb was not changed" in undo["error_message"]
+    assert pg.databases["appdb"]["rows"] == ["alice", "bob"]
+    assert not [p for p in (config.restore_dir / f"guided-{undo['id']}").iterdir() if p.suffix == ".sql"]
+
+    # With room, the copy is used instead of a link.
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage(lambda p: 100 * 1024 * MIB))
+    retry = await run_to_end(engine, engine.start_undo(first["id"], GuidedRestoreUndo(confirm="appdb")))
+    assert retry["status"] == "completed", retry
+    assert pg.databases["appdb"]["rows"] == ["current-1"]
+
+
+async def test_preview_warns_when_a_compressed_dump_may_not_fit(config, monkeypatch):
+    pg, app, _files = postgres_setup(config)
+    name = pg_file("sql.gz")
+    compressed = gzip.compress(pg_dump_text("appdb", [f"row-{i}" for i in range(20000)]))
+    engine = make_engine(config, {name: compressed, DUMP_MANIFEST_NAME: manifest(entry(name))}, pg, app)
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage(lambda p: len(compressed) * 3))
+
+    preview = await engine.preview(body())
+
+    assert preview["blockers"] == []  # room for the compressed file twice over
+    assert any("The dump is compressed" in w for w in preview["warnings"])
+
+    monkeypatch.setattr(shutil, "disk_usage", fake_disk_usage(lambda p: len(compressed) * 20))
+    assert not any("compressed" in w for w in (await engine.preview(body()))["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Arkive shutting down mid-operation
+# ---------------------------------------------------------------------------
+
+
+class BlockingLoadPostgres(FakePostgres):
+    """psql that holds the load until released (a large restore in progress)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.load_entered = threading.Event()
+        self.release_load = threading.Event()
+
+    def _load(self, script):
+        self.load_entered.set()
+        self.release_load.wait(20)
+        return super()._load(script)
+
+
+class SlowRestoreBackupEngine(FakeSnapshotBackupEngine):
+    """restic restore of the dump file that takes until released."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def restore(self, target, snapshot_id, paths=None, restore_to=None):
+        if not any(p.endswith(DUMP_MANIFEST_NAME) for p in paths or []):
+            self.entered.set()
+            await self.release.wait()
+        return await super().restore(target, snapshot_id, paths, restore_to)
+
+
+async def drain_background_tasks() -> None:
+    """Let leftover worker-thread tasks (an abandoned load) finish before the loop closes."""
+    others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if others:
+        await asyncio.wait(others, timeout=10)
+
+
+def blocking_postgres_setup(config):
+    pg = BlockingLoadPostgres(databases={"appdb": {"rows": ["current-1"]}})
+    app = FakeAppContainer("app-server")
+    files = {pg_file(): pg_dump_text("appdb", ["alice", "bob"]), DUMP_MANIFEST_NAME: manifest(entry(pg_file()))}
+    return pg, app, make_engine(config, files, pg, app)
+
+
+async def test_shutdown_mid_load_records_what_may_be_left_behind(config):
+    pg, app, engine = blocking_postgres_setup(config)
+    started = await engine.start(body(stop=["app-server"]))
+    assert await asyncio.to_thread(pg.load_entered.wait, 10)
+
+    await engine.shutdown(wait_seconds=0.2)  # the load outlasts the wait
+
+    try:
+        op = await engine.get(started["id"])
+        assert op["status"] == "failed"
+        message = op["error_message"]
+        assert message.startswith("Interrupted because Arkive was shut down while loading the dump.")
+        assert "appdb may be partially restored" in message and "Use Undo" in message
+        assert "may still be stopped: app-server" in message
+        statuses = step_status(op)
+        assert statuses["load"] == "failed" and statuses["verify"] == "skipped"
+        assert statuses["start_apps"] == "skipped"
+        assert "interrupted" in next(s["detail"] for s in op["steps"] if s["key"] == "load")
+        assert "not started again: app-server" in next(s["detail"] for s in op["steps"] if s["key"] == "start_apps")
+        assert op["database_changed"] is True and op["can_undo"] is True
+        assert app.status == "exited"  # left stopped on a possibly half-loaded database
+        assert not BackupLockManager(config.config_dir).is_backup_running()
+        assert (await activity(config))[-1][1] == "error"
+        # No new restore starts while Arkive is stopping.
+        with pytest.raises(GuidedRestoreError) as exc:
+            await engine.start(body())
+        assert exc.value.status_code == 503
+
+        # The next start finds nothing left to fix and keeps the explanation.
+        await make_engine(config, {}).recover_after_restart()
+        assert (await engine.get(started["id"]))["error_message"] == message
+    finally:
+        pg.release_load.set()
+        await drain_background_tasks()
+
+
+async def test_shutdown_lets_a_load_in_progress_finish(config):
+    pg, app, engine = blocking_postgres_setup(config)
+    started = await engine.start(body(stop=["app-server"]))
+    assert await asyncio.to_thread(pg.load_entered.wait, 10)
+
+    asyncio.get_running_loop().call_later(0.2, pg.release_load.set)
+    await engine.shutdown(wait_seconds=10)
+
+    op = await engine.get(started["id"])
+    assert op["status"] == "completed", op
+    assert pg.databases["appdb"]["rows"] == ["alice", "bob"] and app.status == "running"
+
+
+async def test_shutdown_before_anything_changed_stops_right_away(config):
+    pg, app, files = postgres_setup(config)
+    engine = make_engine(config, files, pg, app)
+    engine.backup_engine = SlowRestoreBackupEngine(config.dump_dir, files, FULL_ID)
+    started = await engine.start(body(stop=["app-server"]))
+    await asyncio.wait_for(engine.backup_engine.entered.wait(), 10)
+
+    began = time.monotonic()
+    await engine.shutdown(wait_seconds=10)
+
+    assert time.monotonic() - began < 5  # cancelled, not waited for
+    op = await engine.get(started["id"])
+    assert op["status"] == "failed"
+    assert "before the database was touched. appdb was not changed." in op["error_message"]
+    assert step_status(op)["restore_dump"] == "failed" and step_status(op)["load"] == "skipped"
+    assert op["database_changed"] is False and op["can_undo"] is False
+    assert app.calls == [] and pg.databases["appdb"]["rows"] == ["current-1"]
+    assert not BackupLockManager(config.config_dir).is_backup_running()
+
+
+async def test_shutdown_while_apps_stop_does_not_start_the_load(config):
+    class SlowStopApp(FakeAppContainer):
+        def __init__(self, name):
+            super().__init__(name)
+            self.stop_entered = threading.Event()
+            self.release_stop = threading.Event()
+
+        def stop(self, timeout=None):
+            self.stop_entered.set()
+            self.release_stop.wait(20)
+            super().stop(timeout)
+
+    pg, _app, files = postgres_setup(config)
+    app = SlowStopApp("app-server")
+    engine = make_engine(config, files, pg, app)
+    started = await engine.start(body(stop=["app-server"]))
+    assert await asyncio.to_thread(app.stop_entered.wait, 10)
+
+    shutdown = asyncio.create_task(engine.shutdown(wait_seconds=10))
+    await asyncio.sleep(0.05)
+    app.release_stop.set()
+    await shutdown
+
+    op = await engine.get(started["id"])
+    assert op["status"] == "failed"
+    assert "Arkive is shutting down, so the dump was not loaded" in op["error_message"]
+    assert "appdb was not changed" in op["error_message"]
+    assert op["can_undo"] is False
+    assert not [e for e in pg.client.api.execs.values() if e["stdin"]]
+    assert app.status == "running"  # started again: the database was never touched
+
+
+def test_interruption_message():
+    message, changed = interruption_message(
+        "Interrupted", kind="undo", method="load", phase="load", db_name="appdb", stopped=["a"], stop_requested=["a"]
+    )
+    assert changed is True and "safety dump taken before the undo" in message and "may still be stopped: a" in message
+    message, changed = interruption_message(
+        "Interrupted", kind="restore", method="load", phase="verify", db_name="appdb", stopped=[], stop_requested=[]
+    )
+    assert changed is True and "after the dump was loaded" in message
+    message, changed = interruption_message(
+        "Interrupted", kind="restore", method="manual", phase="restore_dump", db_name="x", stopped=[], stop_requested=[]
+    )
+    assert changed is None and "nothing was changed" in message
 
 
 # ---------------------------------------------------------------------------

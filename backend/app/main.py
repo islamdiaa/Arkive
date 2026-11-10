@@ -251,6 +251,7 @@ async def lifespan(app: FastAPI):
         lock_manager=orchestrator.lock_manager,
     )
     await guided_restore.recover_after_restart()
+    await guided_restore.prune()
 
     scheduler = ArkiveScheduler(
         orchestrator,
@@ -262,6 +263,7 @@ async def lifespan(app: FastAPI):
         verify_engine=verify_engine,
         event_bus=event_bus,
         restore_drill=restore_drill,
+        guided_restore=guided_restore,
     )
 
     # Wire services to app.state
@@ -371,6 +373,10 @@ async def lifespan(app: FastAPI):
                 )
         else:
             logger.warning("Backup still running after 5 min, forcing shutdown")
+
+    # A guided restore mid-load gets the same 5 minutes, before Docker is closed;
+    # one that has not touched anything yet is stopped and recorded right away.
+    await guided_restore.shutdown(wait_seconds=300)
 
     if scheduler:
         await scheduler.stop()

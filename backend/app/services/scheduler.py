@@ -30,6 +30,7 @@ SYSTEM_JOB_INTEGRITY_CHECK = "system_integrity_check"
 SYSTEM_JOB_INTEGRITY_VERIFY = "system_integrity_verify"
 SYSTEM_JOB_FRESHNESS = "system_backup_freshness"
 SYSTEM_JOB_RESTORE_DRILL = "system_restore_drill"
+SYSTEM_JOB_GUIDED_RESTORE_CLEANUP = "system_guided_restore_cleanup"
 
 # Repeat the "backups overdue" alert this often while a job stays stale.
 STALE_REMINDER_SECONDS = 24 * 3600
@@ -52,6 +53,7 @@ class ArkiveScheduler:
         verify_engine=None,
         event_bus=None,
         restore_drill=None,
+        guided_restore=None,
     ):
         self.orchestrator = orchestrator
         self.config = config
@@ -62,6 +64,7 @@ class ArkiveScheduler:
         self.cloud_manager = cloud_manager
         self.notifier = notifier
         self.restore_drill = restore_drill
+        self.guided_restore = guided_restore
         self.scheduler = AsyncIOScheduler(
             job_defaults={
                 "misfire_grace_time": 3600,
@@ -213,6 +216,17 @@ class ArkiveScheduler:
                 name="Backup Freshness",
             )
             logger.info("Registered system job: Backup Freshness (every 15m)")
+
+        # 8. Guided-restore safety dumps past their retention — daily at 2:30 AM
+        if self.guided_restore is not None and not self.scheduler.get_job(SYSTEM_JOB_GUIDED_RESTORE_CLEANUP):
+            self.scheduler.add_job(
+                self._run_guided_restore_cleanup,
+                trigger=CronTrigger(hour=2, minute=30),
+                id=SYSTEM_JOB_GUIDED_RESTORE_CLEANUP,
+                replace_existing=True,
+                name="Guided Restore Cleanup",
+            )
+            logger.info("Registered system job: Guided Restore Cleanup (daily 2:30 AM)")
 
     async def _run_freshness_check(self) -> None:
         """System job: alert on jobs without a recent good backup; send the heartbeat
@@ -533,6 +547,12 @@ class ArkiveScheduler:
             logger.info("System job: activity log prune complete — %d entries removed", deleted)
         except Exception as e:
             logger.error("System job: activity log prune failed: %s", e)
+
+    async def _run_guided_restore_cleanup(self) -> None:
+        """System job: remove guided-restore safety dumps older than their retention period."""
+        removed = await self.guided_restore.prune()
+        if removed:
+            logger.info("System job: removed %d expired guided-restore folder(s)", removed)
 
     async def _run_integrity_check(self) -> None:
         """System job: run restic repository integrity check on all enabled targets.

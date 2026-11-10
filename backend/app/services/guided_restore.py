@@ -134,6 +134,14 @@ _LOAD_STEPS = (
 )
 _UNDO_STEPS = ("check_container", "verify_dump", "safety_dump", "stop_apps", "load", "verify", "start_apps")
 _MANUAL_STEPS = ("locate_dump", "restore_dump", "verify_dump", "safety_dump", "instructions")
+# From these steps on, stopping an operation can leave apps stopped or the
+# database half-loaded; before them nothing outside the work dir has changed.
+_CHANGING_STEPS = frozenset({"stop_apps", "load", "verify", "start_apps"})
+_LOADED_STEPS = frozenset({"verify", "start_apps"})
+
+# A gzipped SQL dump is often 5-10 times smaller than the SQL it holds. Only
+# used to warn in the preview; the steps check the real sizes.
+GZIP_SQL_EXPANSION = 5
 
 # Restored-table count in a Postgres database (user tables, no extension members).
 _PG_COUNT_SQL = (
@@ -174,6 +182,44 @@ def _clip(text: str, limit: int = 600) -> str:
 def _sentence(text: str) -> str:
     text = text.strip()
     return text if text.endswith((".", "!", "?")) else text + "."
+
+
+def _undo_hint(kind: str) -> str:
+    what = "the restore" if kind == "restore" else "the undo"
+    return f"Use Undo to load the safety dump taken before {what}."
+
+
+def interruption_message(
+    opening: str,
+    *,
+    kind: str,
+    method: str,
+    phase: str | None,
+    db_name: str,
+    stopped: list[str],
+    stop_requested: list[str],
+) -> tuple[str, bool | None]:
+    """Error message for an operation cut short at ``phase``, and whether the database changed.
+
+    Used when Arkive is shut down mid-operation and, after a hard kill, by the
+    startup recovery, so both say the same thing about what may be left behind.
+    """
+    if method != METHOD_LOAD:
+        return f"{opening}; nothing was changed. Start the restore again.", None
+    if phase == "load":
+        message = f"{opening} while loading the dump. {db_name} may be partially restored. {_undo_hint(kind)}"
+        changed: bool | None = True
+    elif phase in _LOADED_STEPS:
+        message = f"{opening} after the dump was loaded; the restored {db_name} was not checked."
+        changed = True
+    else:
+        message = f"{opening} before the database was touched. {db_name} was not changed."
+        changed = False
+    if stopped:
+        message += f" These apps were stopped by the restore and may still be stopped: {', '.join(stopped)}."
+    elif phase == "stop_apps" and stop_requested:
+        message += f" These apps may have been stopped by the restore: {', '.join(stop_requested)}."
+    return message, changed
 
 
 class GuidedRestoreError(Exception):
@@ -916,12 +962,46 @@ class GuidedRestoreEngine:
         self._dumper_factory = dumper_factory
         self._running_id: str | None = None
         self._task: asyncio.Task | None = None
+        self._op: _Operation | None = None
+        self._stopping = False
 
     # ---- public API ----
 
     @property
     def running_id(self) -> str | None:
         return self._running_id
+
+    async def shutdown(self, wait_seconds: float = 300) -> None:
+        """Arkive is stopping: let a load in progress finish, cancel anything else.
+
+        Before the apps are stopped nothing outside the work dir has changed,
+        so the operation is cancelled right away. From then on it gets up to
+        ``wait_seconds`` to finish (a database cut off mid-load is the worst
+        place to stop) and no new load starts. Whatever is still running then
+        is cancelled; the record says what may be left behind. A hard kill
+        leaves that to ``recover_after_restart``.
+        """
+        self._stopping = True
+        task, op = self._task, self._op
+        if task is None or task.done():
+            return
+        if op is None or op.method != METHOD_LOAD or op.phase not in _CHANGING_STEPS:
+            task.cancel()
+        else:
+            logger.info("Waiting up to %ds for guided restore %s to finish (%s)", wait_seconds, op.id, op.phase)
+        done, _ = await asyncio.wait({task}, timeout=wait_seconds)
+        if not done:
+            logger.warning("Guided restore %s still running after %ds; stopping it", op.id if op else "?", wait_seconds)
+            task.cancel()
+            await asyncio.wait({task}, timeout=30)
+
+    async def prune(self) -> int:
+        """Delete work dirs (safety dumps) past the retention period; run at startup and daily."""
+        try:
+            return await asyncio.to_thread(self._prune_work_dirs)
+        except Exception as exc:
+            logger.warning("Could not remove expired guided-restore files: %s", exc)
+            return 0
 
     async def options(self) -> list[dict]:
         """Discovered databases with how each would be restored."""
@@ -994,11 +1074,23 @@ class GuidedRestoreEngine:
 
         warnings: list[str] = []
         free = await asyncio.to_thread(lambda: shutil.disk_usage(self.config.restore_dir).free)
+        # The restored dump and the (always uncompressed) safety dump sit side
+        # by side. The listed size is the file in the snapshot: for a gzipped
+        # dump the SQL is larger, but how much larger is only known once it is
+        # restored, so that case is a warning and the steps check again.
         needed = location.size_bytes * 2 + self.min_free_bytes
+        likely_needed = location.size_bytes * GZIP_SQL_EXPANSION * 2 + self.min_free_bytes
         if free < needed:
             blockers.append(
                 f"not enough free space in {self.config.restore_dir} ({_mb(free)} MB free, ~{_mb(needed)} MB needed "
                 "for the dump and a safety dump)"
+            )
+        elif location.file.endswith(".gz") and free < likely_needed:
+            warnings.append(
+                f"The dump is compressed ({_size(location.size_bytes)}). Uncompressed it is often "
+                f"{GZIP_SQL_EXPANSION} to 10 times larger, and the safety dump about as large again, so "
+                f"{_size(free)} free in {self.config.restore_dir} may not be enough. Arkive checks the real "
+                "sizes before each step and stops before the database or the apps are touched."
             )
         if self.lock_manager.is_backup_running() or self.lock_manager.is_restore_running():
             warnings.append("A backup or restore is running right now; start the restore when it has finished.")
@@ -1074,7 +1166,9 @@ class GuidedRestoreEngine:
             raise GuidedRestoreError("Only restores that loaded a database can be undone")
         if parent["status"] == STATUS_RUNNING:
             raise GuidedRestoreError("That restore is still running", 409)
-        if parent["database_changed"] == 0:
+        if not parent["database_changed"]:
+            # Loading the safety dump over a database the restore never touched
+            # would only throw away what was written since.
             raise GuidedRestoreError("That restore did not change the database; there is nothing to undo")
         safety = self._owned_safety_dump(parent)
         if safety is None:
@@ -1137,28 +1231,30 @@ class GuidedRestoreEngine:
             async with aiosqlite.connect(self.config.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
-                    "SELECT id, phase, method, db_name, stopped_containers, steps FROM guided_restores "
-                    "WHERE status = 'running'"
+                    "SELECT id, kind, phase, method, db_name, stop_containers, stopped_containers, steps, "
+                    "database_changed FROM guided_restores WHERE status = 'running'"
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
-                    message = "Interrupted by a restart of Arkive"
-                    if row["phase"] == "load":
-                        message += f" while loading; {row['db_name']} may be partially restored (use Undo)"
-                    stopped = json.loads(row["stopped_containers"] or "[]")
-                    if stopped:
-                        message += (
-                            f". These apps were stopped by the restore and may still be stopped: {', '.join(stopped)}"
-                        )
+                    message, changed = interruption_message(
+                        "Interrupted by a restart of Arkive",
+                        kind=row["kind"],
+                        method=row["method"],
+                        phase=row["phase"],
+                        db_name=row["db_name"],
+                        stopped=json.loads(row["stopped_containers"] or "[]"),
+                        stop_requested=json.loads(row["stop_containers"] or "[]"),
+                    )
+                    if changed is None:
+                        changed = None if row["database_changed"] is None else bool(row["database_changed"])
                     steps = json.loads(row["steps"] or "[]")
                     for step in steps:
                         if step.get("status") in ("pending", "running"):
                             step["status"] = "failed" if step.get("status") == "running" else "skipped"
                     await db.execute(
-                        "UPDATE guided_restores SET status = 'failed', error_message = ?, completed_at = ?, "
-                        "steps = ?, database_changed = CASE WHEN phase = 'load' THEN 1 ELSE database_changed END "
-                        "WHERE id = ?",
-                        (message, _now(), json.dumps(steps), row["id"]),
+                        "UPDATE guided_restores SET status = 'failed', phase = NULL, error_message = ?, "
+                        "completed_at = ?, steps = ?, database_changed = ? WHERE id = ?",
+                        (message, _now(), json.dumps(steps), None if changed is None else int(changed), row["id"]),
                     )
                 await db.commit()
                 if rows:
@@ -1299,6 +1395,8 @@ class GuidedRestoreEngine:
         return [{"key": k, "label": _STEP_LABELS[k], "status": "pending", "detail": None} for k in keys]
 
     async def _launch(self, op: _Operation) -> dict:
+        if self._stopping:
+            raise GuidedRestoreError("Arkive is shutting down; start the restore once it is back", 503)
         if self._running_id is not None:
             raise GuidedRestoreError("A guided restore is already running", 409)
         await asyncio.to_thread(self._prune_work_dirs)
@@ -1315,6 +1413,7 @@ class GuidedRestoreEngine:
             self.lock_manager.release_backup_lock()
             await asyncio.to_thread(shutil.rmtree, op.work_dir, True)
             raise
+        self._op = op
         self._task = asyncio.create_task(self._run(op))
         return {"id": op.id, "status": STATUS_RUNNING}
 
@@ -1344,12 +1443,17 @@ class GuidedRestoreEngine:
             op.status = STATUS_FAILED
             op.error_message = op.error_message or f"Unexpected error: {_clip(str(exc), 800)}"
         finally:
+            # Also on cancellation (Arkive shutting down): _mark_interrupted has
+            # filled in the record. Should this write not make it, the row stays
+            # 'running' and recover_after_restart says the same at the next start.
             try:
                 await self._finish(op)
             finally:
                 self.lock_manager.release_backup_lock()
                 if self._running_id == op.id:
                     self._running_id = None
+                if self._op is op:
+                    self._op = None
 
     async def _set_step(self, op: _Operation, key: str, status: str, detail: str | None = None) -> None:
         step = op.step(key)
@@ -1385,6 +1489,9 @@ class GuidedRestoreEngine:
     async def _run_load(self, op: _Operation) -> None:
         driver = _driver_for(op.ref, op.db_owner if op.kind == "undo" else None)
         prepared = None
+        # Only the load step changes the database (it sets this to True); a
+        # failure before it must not offer an undo.
+        op.database_changed = False
         try:
             await self._run_step(op, "check_container", self._step_check_container, driver)
             if op.kind == "restore":
@@ -1417,8 +1524,39 @@ class GuidedRestoreEngine:
             op.status = STATUS_FAILED
             op.error_message = _sentence(f"{_STEP_LABELS.get(op.phase or '', 'Restore')} failed: {exc}"[:1000])
             await self._after_failure(op)
+        except asyncio.CancelledError:
+            self._mark_interrupted(op)
+            raise
         finally:
             await asyncio.to_thread(self._discard_restored_copy, op, prepared)
+
+    @staticmethod
+    def _mark_interrupted(op: _Operation) -> None:
+        """Arkive is shutting down mid-operation: record what may be left behind.
+
+        Nothing is awaited here (the task is being cancelled); ``_run`` saves
+        it. Stopped apps are not started again: the database may be
+        incomplete, and Docker is about to be closed.
+        """
+        op.status = STATUS_FAILED
+        op.error_message, changed = interruption_message(
+            "Interrupted because Arkive was shut down",
+            kind=op.kind,
+            method=op.method,
+            phase=op.phase,
+            db_name=op.ref.db_name,
+            stopped=op.stopped_containers,
+            stop_requested=op.stop_containers,
+        )
+        if changed is not None:
+            op.database_changed = changed
+        for step in op.steps:
+            if step["status"] == "running":
+                step["status"], step["detail"] = "failed", "interrupted: Arkive was shut down"
+            elif step["status"] == "pending":
+                step["status"] = "skipped"
+                if step["key"] == "start_apps" and op.stopped_containers:
+                    step["detail"] = f"not started again: {', '.join(op.stopped_containers)}"
 
     async def _after_failure(self, op: _Operation) -> None:
         for step in op.steps:
@@ -1465,6 +1603,9 @@ class GuidedRestoreEngine:
             for step in op.steps:
                 if step["status"] == "pending":
                     step["status"] = "skipped"
+        except asyncio.CancelledError:
+            self._mark_interrupted(op)
+            raise
 
     # ---- steps ----
 
@@ -1527,8 +1668,15 @@ class GuidedRestoreEngine:
         dest = op.work_dir / "load.sql"
         if op.kind == "undo":
             # Never consume the safety dump itself: undo must stay repeatable.
+            # A hard link costs no space (the file is only read, then unlinked);
+            # where links don't work, a copy needs room for a second one.
             copy = op.work_dir / ("undo-source.sql.gz" if source.name.endswith(".gz") else "undo-source.sql")
-            await asyncio.to_thread(shutil.copyfile, source, copy)
+            try:
+                await asyncio.to_thread(os.link, source, copy)
+            except OSError:
+                size = (await asyncio.to_thread(source.stat)).st_size
+                await self._require_free_space(size, "copy the safety dump")
+                await asyncio.to_thread(shutil.copyfile, source, copy)
             source = copy
         try:
             prepared = await asyncio.to_thread(prepare_sql_dump, source, dest, op.ref.db_type, self.min_free_bytes)
@@ -1565,13 +1713,18 @@ class GuidedRestoreEngine:
     async def _step_safety_dump(self, op: _Operation, driver) -> str:
         if driver is not None and not driver.exists:
             raise _StepSkipped(f"{op.ref.db_name} does not exist yet; nothing to keep")
-        await self._require_free_space(op.dump_size_bytes or op.bytes_total, "take a safety dump")
+        # The safety dump is plain SQL: expect it about as large as the
+        # uncompressed dump being restored (bytes_total, measured after
+        # gunzipping), not the compressed file in the snapshot. The current
+        # database may have grown since, so the dump also stops itself when
+        # free space runs low.
+        await self._require_free_space(max(op.bytes_total, op.dump_size_bytes), "take a safety dump")
         dumper = self._dumper_factory() if self._dumper_factory else DBDumper(self.docker_client, self.config)
-        result = await dumper.dump_to_directory(op.ref.discovered(), op.work_dir / "safety")
+        result = await dumper.dump_to_directory(
+            op.ref.discovered(), op.work_dir / "safety", min_free_bytes=self.min_free_bytes
+        )
         if result.status != "success" or not result.dump_path:
-            raise _StepFailed(
-                f"could not dump the current database ({result.error or 'dump failed'}); nothing was changed"
-            )
+            raise _StepFailed(f"could not dump the current database ({result.error or 'dump failed'})")
         op.safety_dump_path = result.dump_path
         op.safety_dump_size_bytes = result.dump_size_bytes
         return (
@@ -1614,6 +1767,9 @@ class GuidedRestoreEngine:
         return detail
 
     async def _step_load(self, op: _Operation, driver, prepared) -> str:
+        if self._stopping:
+            # Shutdown waited for the apps to be stopped; don't start a load it may cut off.
+            raise _StepFailed("Arkive is shutting down, so the dump was not loaded")
         op.database_changed = True  # pessimistic from the first byte on
         op.bytes_done = 0
         prelude = driver.prelude()
@@ -2047,7 +2203,7 @@ class GuidedRestoreEngine:
 
     def _public(self, row: dict) -> dict:
         safety = self._owned_safety_dump(row) if row.get("method") == METHOD_LOAD else None
-        can_undo = bool(safety is not None and row["status"] != STATUS_RUNNING and row.get("database_changed") != 0)
+        can_undo = bool(safety is not None and row["status"] != STATUS_RUNNING and row.get("database_changed"))
         running = row["status"] == STATUS_RUNNING
         return {
             "id": row["id"],
