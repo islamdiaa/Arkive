@@ -1,0 +1,81 @@
+# User guide, built with MkDocs Material and published to GitHub Pages by
+# .github/workflows/docs.yml (main branch only). Build locally with:
+#   pip install -r docs/requirements.txt && mkdocs serve
+# Keep this file plain YAML (no !!python tags): backend/tests/unit/test_docs_site.py
+# reads it with yaml.safe_load.
+site_name: Arkive
+site_description: User guide for Arkive, backup and disaster recovery for Unraid Docker workloads
+site_url: https://islamdiaa.github.io/Arkive/
+repo_url: https://github.com/islamdiaa/Arkive
+repo_name: islamdiaa/Arkive
+edit_uri: edit/main/docs/
+copyright: Arkive is MIT licensed.
+
+docs_dir: docs
+exclude_docs: |
+  requirements.txt
+
+theme:
+  name: material
+  language: en
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+# Turn broken links and pages missing from the nav into warnings, which
+# `mkdocs build --strict` (used by the deploy workflow) treats as errors.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quick start on Unraid: quick-start.md
+      - Setup wizard: setup-wizard.md
+  - Configure:
+      - Storage providers: storage-providers.md
+      - Notifications: notifications.md
+      - Overdue backups and heartbeat: monitoring.md
+  - Recover:
+      - Recovery kit: recovery-kit.md
+      - Restoring backups: restore.md
+      - Restore drills: restore-drills.md
+  - Operate:
+      - Troubleshooting: troubleshooting.md
+      - Upgrading: upgrading.md
+      - Security and deployment model: security.md
+      - Smoke test after deploying: homeserver-smoke-test.md
+  - Maintainers:
+      - Upgrade-path test: upgrade-path-test.md
+      - Unraid Community Applications: unraid-community-apps.md

@@ -108,6 +108,12 @@ export default defineConfig({
       name: 'sidebar-security',
       testMatch: 'sidebar-security.spec.ts',
     },
+    {
+      // axe-core + keyboard checks; demo mode with every /api/ call answered
+      // in the browser, so it does not use the backend.
+      name: 'a11y',
+      testMatch: 'a11y.spec.ts',
+    },
   ],
 
   webServer: [

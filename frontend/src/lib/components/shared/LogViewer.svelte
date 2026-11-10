@@ -39,7 +39,8 @@
   <div class="flex items-center gap-2 px-4 py-2 border-b border-border">
     <select
       bind:value={filterLevel}
-      class="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:border-primary outline-none"
+      aria-label="Filter log entries by level"
+      class="bg-bg-input border border-border rounded px-2 py-1 text-xs text-text focus:border-primary"
     >
       <option value="ALL">All Levels</option>
       <option value="DEBUG">Debug</option>
@@ -59,7 +60,10 @@
     </label>
   </div>
 
-  <div bind:this={container} class="flex-1 overflow-y-auto bg-bg-base">
+  <!-- Focusable so keyboard users can scroll it; not role="log", which would
+       read every streamed line aloud. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div bind:this={container} class="flex-1 overflow-y-auto bg-bg-base" role="region" aria-label="Log entries" tabindex="0">
     {#each filteredEntries as entry, i}
       {@const borderClass = levelBorderClass[entry.level] || ''}
       <div class="flex gap-3 px-4 py-0.5 hover:bg-bg-surface/40 border-b border-border/10 border-l-[3px] {borderClass || 'border-l-transparent'} transition-colors">

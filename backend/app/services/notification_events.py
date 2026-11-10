@@ -23,6 +23,11 @@ NOTIFICATION_EVENTS: list[dict[str, str]] = [
         "description": "A job has not produced a good backup within its schedule window",
     },
     {
+        "value": "backup.no_offsite",
+        "label": "No offsite copy",
+        "description": "Every target the backup jobs upload to is on this server, so losing it loses the backups too (sent once)",
+    },
+    {
         "value": "verification.failed",
         "label": "Verification failed",
         "description": "A repository integrity check or restore test failed",
@@ -49,6 +54,7 @@ DEFAULT_EVENTS: list[str] = [
     "backup.failed",
     "backup.partial",
     "backup.stale",
+    "backup.no_offsite",
     "verification.failed",
     "drill.failed",
     "target.error",

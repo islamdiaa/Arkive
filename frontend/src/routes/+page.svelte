@@ -10,6 +10,7 @@
 	import CommandStrip from '$lib/components/dashboard/CommandStrip.svelte';
 	import StaleBackupsAlert from '$lib/components/dashboard/StaleBackupsAlert.svelte';
 	import RecoveryKitBanner from '$lib/components/dashboard/RecoveryKitBanner.svelte';
+	import OffsiteWarningBanner from '$lib/components/dashboard/OffsiteWarningBanner.svelte';
 	import RestoreDrillsPanel from '$lib/components/dashboard/RestoreDrillsPanel.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
@@ -200,6 +201,7 @@
 		<StaleBackupsAlert freshness={data?.status?.backup_freshness} />
 		<!-- The unauthenticated minimal status payload defaults this to false; ignore it there. -->
 		<RecoveryKitBanner confirmed={data?.status?.authenticated === false ? undefined : data?.status?.recovery_kit_confirmed} />
+		<OffsiteWarningBanner offsite={data?.status?.offsite} />
 	{/if}
 
 	{#if loading}

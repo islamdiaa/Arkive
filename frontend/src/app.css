@@ -38,18 +38,25 @@
 		--text: #e6edf3;
 		--text-primary: #e6edf3;
 		--text-secondary: #8b949e;
-		--text-tertiary: #6e7681;
-		--text-muted: #6e7681;
+		/* tertiary/muted: at least 4.5:1 on every surface up to --bg-overlay */
+		--text-tertiary: #848d97;
+		--text-muted: #848d97;
 		--text-disabled: #484f58;
 		--text-link: #58a6ff;
 		--text-on-primary: #ffffff;
 
-		/* === Primary Blue (5 stops) === */
+		/* === Primary Blue (5 stops) ===
+		   --color-primary is the text/border/ring colour: light enough for
+		   4.5:1 on the dark surfaces and on bg-primary/10-20 tints. Filled
+		   backgrounds (bg-primary, .btn-primary) use --color-primary-fill
+		   (see tailwind.config.ts), dark enough for white text. */
 		--color-primary-bg: #0d2045;
 		--color-primary-muted: #1a3a6e;
-		--color-primary: #388bfd;
-		--color-primary-hover: #58a6ff;
-		--color-primary-strong: #79c0ff;
+		--color-primary: #58a6ff;
+		--color-primary-hover: #79c0ff;
+		--color-primary-strong: #a5d6ff;
+		--color-primary-fill: #1f6feb;
+		--color-primary-fill-hover: #1158c7;
 		--primary: var(--color-primary);
 		--primary-hover: var(--color-primary-hover);
 
@@ -75,6 +82,9 @@
 		--color-danger: #f85149;
 		--color-danger-hover: #ff7b72;
 		--color-danger-strong: #ffa198;
+		/* Filled danger backgrounds (bg-danger, .btn-danger-solid) under white text */
+		--color-danger-fill: #da3633;
+		--color-danger-fill-hover: #b62324;
 		--danger: var(--color-danger);
 		--color-error: var(--color-danger);
 		--color-error-bg: var(--color-danger-bg);
@@ -124,40 +134,46 @@
 		--text: #1f2328;
 		--text-primary: #1f2328;
 		--text-secondary: #59636e;
-		--text-tertiary: #6e7781;
-		--text-muted: #6e7781;
+		--text-tertiary: #636c76;
+		--text-muted: #636c76;
 		--text-disabled: #8c959f;
 		--text-link: #0969da;
 		--text-on-primary: #ffffff;
 
-		/* === Accents: "hover" and "strong" get darker, for text on light backgrounds === */
+		/* === Accents: "hover" and "strong" get darker, for text on light backgrounds ===
+		   The base accent values are dark enough for 4.5:1 on white and on the
+		   10-20% tints of themselves that badges and alerts use. */
 		--color-primary-bg: #ddf4ff;
 		--color-primary-muted: #b6e3ff;
-		--color-primary: #0969da;
+		--color-primary: #085bbf;
 		--color-primary-hover: #0550ae;
 		--color-primary-strong: #033d8b;
+		--color-primary-fill: #0969da;
+		--color-primary-fill-hover: #0550ae;
 
 		--color-success-bg: #dafbe1;
 		--color-success-muted: #aceebb;
-		--color-success: #1a7f37;
+		--color-success: #156b2d;
 		--color-success-hover: #116329;
 		--color-success-strong: #044f1e;
 
 		--color-warning-bg: #fff8c5;
 		--color-warning-muted: #f5e0a0;
-		--color-warning: #9a6700;
-		--color-warning-hover: #7d4e00;
+		--color-warning: #805300;
+		--color-warning-hover: #704700;
 		--color-warning-strong: #633c01;
 
 		--color-danger-bg: #ffebe9;
 		--color-danger-muted: #ffcecb;
-		--color-danger: #d1242f;
+		--color-danger: #b91c27;
 		--color-danger-hover: #a40e26;
 		--color-danger-strong: #82071e;
+		--color-danger-fill: #cf222e;
+		--color-danger-fill-hover: #a40e26;
 
 		--color-info-bg: #ddf8fa;
 		--color-info-muted: #a8e6ec;
-		--color-info: #1b7c83;
+		--color-info: #166a70;
 		--color-info-hover: #136061;
 		--color-info-strong: #0f4d52;
 
@@ -172,6 +188,14 @@
 		font-family: 'Inter', system-ui, -apple-system, sans-serif;
 		-webkit-font-smoothing: antialiased;
 		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/* Keyboard focus: one consistent, theme-aware ring (3:1+ against both
+	   themes' surfaces) for every control that doesn't draw its own ring via
+	   focus:ring-* utilities, which come later and win. */
+	:focus-visible {
+		outline: 2px solid var(--border-focus);
+		outline-offset: 2px;
 	}
 
 	/* Scrollbar styling */
@@ -241,14 +265,16 @@
 	.btn-secondary {
 		@apply bg-surface hover:bg-surface-hover text-text border border-border px-4 py-2 rounded font-medium transition-colors;
 	}
+	/* Tinted buttons and badges use each theme's -bg token rather than a fixed
+	   dark-theme rgba(), which left light-theme text under 4.5:1. */
 	.btn-danger {
-		background-color: rgba(248, 81, 73, 0.1);
+		background-color: var(--color-danger-bg);
 		color: var(--color-danger);
-		border: 1px solid rgba(248, 81, 73, 0.3);
+		border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent);
 		@apply px-4 py-2 rounded font-medium transition-colors;
 	}
 	.btn-danger:hover {
-		background-color: rgba(248, 81, 73, 0.2);
+		border-color: var(--color-danger);
 	}
 	.input {
 		@apply bg-page border border-border rounded px-3 py-2 text-text placeholder-text-secondary focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors w-full;
@@ -258,22 +284,22 @@
 	}
 	.badge-success {
 		@apply badge;
-		background-color: rgba(63, 185, 80, 0.15);
+		background-color: var(--color-success-bg);
 		color: var(--color-success);
 	}
 	.badge-warning {
 		@apply badge;
-		background-color: rgba(210, 153, 34, 0.15);
+		background-color: var(--color-warning-bg);
 		color: var(--color-warning);
 	}
 	.badge-danger {
 		@apply badge;
-		background-color: rgba(248, 81, 73, 0.15);
+		background-color: var(--color-danger-bg);
 		color: var(--color-danger);
 	}
 	.badge-info {
 		@apply badge;
-		background-color: rgba(56, 139, 253, 0.15);
+		background-color: var(--color-primary-bg);
 		color: var(--color-primary);
 	}
 

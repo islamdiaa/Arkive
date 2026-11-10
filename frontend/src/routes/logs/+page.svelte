@@ -25,7 +25,10 @@
 		error = '';
 		try {
 			const result = await api.getLogs(500);
-			logs = result.items || result.logs || [];
+			const items = result?.items ?? result?.logs;
+			// Anything but a list would throw in the filter below and leave the
+			// page on "Loading logs…".
+			logs = Array.isArray(items) ? items : [];
 		} catch (e: any) {
 			console.error(e);
 			error = e.message || 'Failed to load logs';
@@ -104,8 +107,10 @@
 			]}
 		/>
 
-		<!-- Terminal log area -->
-		<div class="bg-bg-base rounded-lg border border-border overflow-auto max-h-[65vh]">
+		<!-- Terminal log area. It scrolls, so it is focusable for keyboard users;
+		     not role="log", which would read every refreshed line aloud. -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+		<div class="bg-bg-base rounded-lg border border-border overflow-auto max-h-[65vh]" role="region" aria-label="Log entries" aria-busy={loading} tabindex="0">
 			{#if loading}
 				<div class="p-4 font-mono text-[13px] text-text-secondary">Loading logs…</div>
 			{:else if filteredLogs.length === 0}
@@ -116,11 +121,13 @@
 				{#each filteredLogs as entry, i}
 					{@const level = (entry.level || 'INFO').toUpperCase()}
 					{@const borderClass = levelBorderClass[level] || ''}
-					<div class="flex gap-3 px-4 py-0.5 hover:bg-bg-surface/40 border-b border-border/10 border-l-[3px] {borderClass || 'border-l-transparent'} transition-colors">
+					<!-- Phones: the fixed columns are wider than the box, so the row
+					     wraps and the message takes its own line. -->
+					<div class="flex flex-wrap sm:flex-nowrap gap-x-3 px-4 py-0.5 hover:bg-bg-surface/40 border-b border-border/10 border-l-[3px] {borderClass || 'border-l-transparent'} transition-colors">
 						<span class="font-mono text-[13px] text-text-tertiary text-right w-[3ch] shrink-0 select-none">{i + 1}</span>
-						<span class="font-mono text-[13px] text-text-secondary shrink-0 w-40 truncate">{entry.timestamp || ''}</span>
-						<span class="font-mono text-[13px] shrink-0 w-16 {levelTextClass[level] || 'text-text-secondary'}">{level}</span>
-						<span class="font-mono text-[13px] text-text break-all">{entry.message || JSON.stringify(entry)}</span>
+						<span class="font-mono text-[13px] text-text-secondary min-w-0 max-w-full sm:shrink-0 sm:w-40 truncate">{entry.timestamp || ''}</span>
+						<span class="font-mono text-[13px] shrink-0 sm:w-16 {levelTextClass[level] || 'text-text-secondary'}">{level}</span>
+						<span class="font-mono text-[13px] text-text break-all basis-full sm:basis-auto min-w-0">{entry.message || JSON.stringify(entry)}</span>
 					</div>
 				{/each}
 			{/if}

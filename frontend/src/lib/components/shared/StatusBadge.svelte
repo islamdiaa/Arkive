@@ -46,7 +46,10 @@
   $: sizeClasses = size === 'sm' ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-xs';
 </script>
 
+<!-- The glyph is decoration for sighted users (it keeps the status readable
+     without relying on colour); screen readers get the status word only,
+     not "ok success" or "tilde partial". -->
 <span class="inline-flex items-center gap-1 rounded-full font-medium {sizeClasses} {resolvedStyle} {className}">
-  <span class="text-[10px] leading-none">{resolvedIcon}</span>
+  <span class="text-[10px] leading-none" aria-hidden="true">{resolvedIcon}</span>
   {status}
 </span>

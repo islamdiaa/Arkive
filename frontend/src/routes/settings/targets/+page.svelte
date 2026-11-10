@@ -9,6 +9,7 @@
 	import { formatBytes } from '$lib/utils/format';
 	import { timeAgo } from '$lib/utils/date';
 	import { onMount } from 'svelte';
+	import { page } from '$lib/stores/page';
 	import { Cloud, Folder, Server, HardDrive } from 'lucide-svelte';
 	import ConfirmDangerModal from '$lib/components/ui/ConfirmDangerModal.svelte';
 	import { isHealthyTargetStatus } from '$lib/utils/run-status';
@@ -84,6 +85,8 @@
 	}
 
 	onMount(() => {
+		// /settings/targets?add=1 (the dashboard's "no offsite copy" warning) opens the add form.
+		if ($page.url.searchParams.has('add')) showAdd = true;
 		fetchTargets();
 	});
 
@@ -246,15 +249,15 @@
 			{#each targets as target}
 				{@const ProviderIcon = getProviderIcon(target.type)}
 				<div class="card">
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-4">
+					<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+						<div class="flex items-center gap-4 min-w-0">
 							<div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
 								<svelte:component this={ProviderIcon} size={18} class="text-primary" />
 							</div>
 							<div>
 								{#if editingId === target.id}
 									<div class="flex items-center gap-2">
-										<input type="text" bind:value={editName} class="input text-sm py-1 px-2 w-48" on:keydown={(e) => e.key === 'Enter' && saveEdit()} />
+										<input type="text" bind:value={editName} aria-label="Target name" class="input text-sm py-1 px-2 w-48" on:keydown={(e) => e.key === 'Enter' && saveEdit()} />
 										<button on:click={saveEdit} class="btn-primary text-xs py-1 px-2">Save</button>
 										<button on:click={cancelEdit} class="btn-secondary text-xs py-1 px-2">Cancel</button>
 									</div>
@@ -272,15 +275,15 @@
 								</p>
 							</div>
 						</div>
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-3 shrink-0">
 							<button on:click={() => testTarget(target.id)} disabled={testing === target.id} class="btn-secondary text-xs disabled:opacity-50">
 								{testing === target.id ? 'Testing...' : 'Test'}
 							</button>
-							<button on:click={() => startEdit(target)} class="text-text-secondary hover:text-primary" aria-label="Edit target">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+							<button on:click={() => startEdit(target)} class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-primary" aria-label="Edit {target.name}">
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
 							</button>
-							<button on:click={() => openDeleteConfirm(target)} class="text-text-secondary hover:text-danger" aria-label="Delete target">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+							<button on:click={() => openDeleteConfirm(target)} class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-danger" aria-label="Delete {target.name}">
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
 							</button>
 						</div>
 					</div>

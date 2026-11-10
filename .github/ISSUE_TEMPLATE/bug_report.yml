@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in Arkive is broken or behaves differently from the docs
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Do not paste API keys, encryption passwords, storage credentials or your recovery kit.**
+        For security vulnerabilities, use [private reporting](https://github.com/islamdiaa/Arkive/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Arkive version
+      description: Shown at the bottom of the sidebar, or the Docker image tag.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Unraid version (or other Docker host) and CPU architecture.
+      placeholder: "Unraid 7.1, amd64"
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Setup wizard
+        - Discovery
+        - Database dumps
+        - Backup / snapshots
+        - Storage targets
+        - Restore
+        - Restore drills / verification
+        - Notifications
+        - Dashboard / UI
+        - CLI / API
+        - Other
+  - type: input
+    id: target
+    attributes:
+      label: Storage target type (if relevant)
+      placeholder: "local, B2, S3, SFTP, …"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: From `docker logs arkive` or the run's error message in Activity. Remove anything private (host names, bucket names, paths).
+      render: shell

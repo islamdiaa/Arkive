@@ -37,15 +37,18 @@
 	<div class="flex items-center justify-between px-6 py-3">
 		<div class="flex items-center gap-4">
 			<button
+				id="sidebar-toggle"
 				on:click={() => sidebarOpen.update(v => !v)}
-				class="text-text-secondary hover:text-text lg:hidden"
+				class="-m-2 p-2.5 rounded text-text-secondary hover:text-text lg:hidden"
 				aria-label="Toggle sidebar"
+				aria-controls="app-sidebar"
+				aria-expanded={$sidebarOpen}
 			>
-				<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+				<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
 				</svg>
 			</button>
-			<div>
+			<div class="min-w-0">
 				<h2 class="text-lg font-semibold text-text leading-tight">{title}</h2>
 				{#if breadcrumbs.length > 0}
 					<nav class="flex items-center gap-1 text-xs text-text-tertiary mt-0.5" aria-label="Breadcrumb">
@@ -66,10 +69,12 @@
 			<span
 				class="w-2 h-2 rounded-full shrink-0 {$connected ? 'bg-success' : 'bg-danger animate-pulse'}"
 				title={$connected ? 'Live updates connected' : 'Live updates disconnected'}
+				role="img"
+				aria-label={$connected ? 'Live updates connected' : 'Live updates disconnected'}
 			></span>
 			{#if $backupRunning}
 				<div class="flex items-center gap-2 text-sm text-primary">
-					<div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+					<div class="w-2 h-2 rounded-full bg-primary animate-pulse" aria-hidden="true"></div>
 					Backup Running
 				</div>
 			{/if}

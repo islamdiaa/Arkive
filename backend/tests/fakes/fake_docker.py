@@ -269,6 +269,8 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 "MYSQL_ROOT_PASSWORD=secret",
             ],
             exec_handlers={
+                # Database enumeration during discovery (mariadb -N -B -e ...).
+                "SELECT schema_name FROM information_schema.schemata": (0, b"appdb\n"),
                 "mariadb-dump": (0, MARIADB_DUMP),
             },
         ),
