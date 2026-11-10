@@ -1427,7 +1427,7 @@ class TestRestorePlanFileNames:
 
         gen = RestorePlanGenerator(mock_config)
         _, pg_full = gen._get_restore_commands("postgres", "app", "pg")
-        assert f"< {dump_prefix('pg', 'postgres', 'app')}_[0-9]*.sql\n" in pg_full
+        assert f"cat {dump_prefix('pg', 'postgres', 'app')}_[0-9]*.sql |" in pg_full
         assert f"gunzip -c {dump_prefix('pg', 'postgres', 'app')}_[0-9]*.sql.gz |" in pg_full
         assert "pg_app_[0-9]*.sql.gz" in pg_full  # Arkive 0.3 name
 

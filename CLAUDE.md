@@ -436,6 +436,45 @@ Rules that follow from this:
   don't reopen the bootstrap bypass
 - run `pip-audit`, `npm audit` and Trivy on the image before a release tag
 
+### 15. Restore path review with real engines
+
+`scripts/restore-roundtrip/restore_roundtrip.py` runs dump -> backup ->
+restore -> load (following the generated restore plan) and a drill against
+Postgres 16/17, MariaDB 11.4, MySQL 8.4 and WAL-mode SQLite inside a
+throwaway Docker-in-Docker daemon (see its README). Its first run found:
+- pg_dump ran with `--no-owner --no-privileges`: a database owned by an app
+  role came back owned by the restoring superuser, and the app got
+  "permission denied" on its own tables. Dumps now keep owners and GRANTs;
+  roles come from the globals dump, restored first (the drill loads it too,
+  minus its own bootstrap superuser's CREATE/ALTER ROLE lines).
+- mysqldump without `--routines --events` silently dropped procedures,
+  functions and events; MySQL 5.7's default utf8 turned emoji into `?`.
+- Only `MYSQL_DATABASE` was dumped from a MariaDB/MySQL server; every
+  application database is now listed (like Postgres since v0.4.0).
+- Drill false failures: a `CREATE TABLE` inside a function/procedure body was
+  counted as a table, and a `mysql` system-schema dump (no `MYSQL_DATABASE`)
+  was counted outside its own schema.
+- Restore plan commands: `psql -U postgres` (fails when POSTGRES_USER is
+  another role), `mysql -u root` (no such binary in MariaDB 11, no password),
+  `< glob` (only bash expands it), SQLite copied to a guessed path while the
+  old `-wal` stayed (SQLite replays it over the restored file), restic without
+  `-it` (cannot ask for the password).
+- `redact_credentials` turned `immich-postgres/...` into `immich-p[REDACTED]`.
+
+Rules that follow from this:
+- a restore must bring back what the app needs to run, not only its rows:
+  owners, grants, roles, routines, events
+- restore plan commands are executed by the round trip; keep them runnable
+  in POSIX sh against the container's own environment (and never pass a bare
+  `-p` to a MySQL client: with no TTY it reads the password from the piped dump)
+- the drill must not be stricter than the restore it checks: the roles dump
+  is loaded without ON_ERROR_STOP and judged by SQLSTATE afterwards, so roles
+  the image's own init scripts created ("already exists", 42710) don't fail it
+- database-name validation rejects argv hazards only (leading `-`, control
+  characters); MySQL names may contain dots (`example.com`) and slashes
+- the round-trip harness deletes only a `--workdir` carrying its
+  `.arkive-restore-roundtrip` marker, and refuses a non-empty unmarked one
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
