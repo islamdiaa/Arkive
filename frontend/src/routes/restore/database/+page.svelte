@@ -307,7 +307,7 @@
 							{/if}
 						</span>
 						<div class="min-w-0">
-							<p class="text-text {step.status === 'pending' || step.status === 'skipped' ? 'opacity-60' : ''}">
+							<p class={step.status === 'pending' || step.status === 'skipped' ? 'text-text-secondary' : 'text-text'}>
 								{step.label}<span class="sr-only"> ({step.status})</span>
 							</p>
 							{#if step.detail}
@@ -448,7 +448,7 @@
 		</section>
 
 		<!-- ── 2. Snapshot ── -->
-		<section class="card space-y-4" class:opacity-60={!selected}>
+		<section class="card space-y-4">
 			<h2 class="text-base font-semibold text-text">2. Choose a restore point</h2>
 			{#if sortedSnapshots.length === 0}
 				<p class="text-sm text-text-secondary">No snapshots yet. Run a backup first.</p>
