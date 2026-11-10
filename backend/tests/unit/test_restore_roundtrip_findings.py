@@ -3,11 +3,13 @@
 MySQL 8.4, SQLite in WAL mode, dumped -> backed up -> restored -> loaded).
 """
 
+import importlib.util
 import os
 import shlex
 import shutil
 import stat
 import subprocess  # nosec B404 - runs the generated restore commands against stub binaries
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -79,10 +81,29 @@ class TestMysqlDumps:
         container, _calls = _mysql_container(tags=tags, config_image=config_image, probe=probe)
         assert DBDumper._mysql_dump_binary(container) == expected
 
-    @pytest.mark.parametrize("name", ["-x", "", "a/b", "a.b", "bad\nname", "x" * 65])
+    @pytest.mark.parametrize("name", ["-x", "", "a\\b", "bad\nname", "tab\tname", "x" * 65])
     def test_unsafe_database_names_are_refused(self, name):
         with pytest.raises(ValueError):
             DBDumper._sanitize_mysql_dbname(name)
+
+    @pytest.mark.parametrize("name", ["example.com", "blog.example.com", "a/b", "my db", "café", "x" * 64])
+    def test_legal_database_names_are_accepted(self, name):
+        """MySQL/MariaDB allow dots and slashes in quoted database names (on
+        disk "example.com" is the folder "example@002ecom"); checked against
+        MariaDB 11.4, where mariadb-dump --databases example.com and a/b both
+        succeed. The name is one argv element, so neither is an injection risk."""
+        assert DBDumper._sanitize_mysql_dbname(name) == name
+
+    def test_dotted_database_name_is_dumped(self, tmp_path):
+        container, calls = _mysql_container(tags=["mariadb:11.4"], env=["MARIADB_ROOT_PASSWORD=pw"])
+        docker = MagicMock()
+        docker.containers.get.return_value = container
+        dumper = DBDumper(docker, SimpleNamespace(dump_dir=tmp_path))
+        db = DiscoveredDatabase(container_name="db", db_type="mariadb", db_name="example.com")
+        result = dumper._dump_mariadb_blocking(db)
+        assert result.status == "success", result.error
+        cmd = calls[-1]
+        assert cmd[cmd.index("--databases") + 1] == "example.com"
 
     def test_credentials(self):
         assert mysql_credentials_from_env({"MARIADB_ROOT_PASSWORD": "r", "MARIADB_USER": "a"}) == ("root", "r")
@@ -255,6 +276,11 @@ class TestRestorePlanCommands:
             (("mariadb",), {"MARIADB_ROOT_PASSWORD": "s3cret"}, "mariadb -uroot -ps3cret"),
             (("mysql",), {"MYSQL_ROOT_PASSWORD": "s3cret"}, "mysql -uroot -ps3cret"),
             (("mariadb", "mysql"), {"MYSQL_ROOT_PASSWORD": "s3cret"}, "mariadb -uroot -ps3cret"),
+            # No root password (MYSQL_ALLOW_EMPTY_PASSWORD, the dumper's
+            # root-without-password fallback): no bare -p, which would make
+            # the client read the dump's first line as the password.
+            (("mariadb",), {}, "mariadb -uroot"),
+            (("mysql",), {"MYSQL_ALLOW_EMPTY_PASSWORD": "yes", "MYSQL_ROOT_PASSWORD": ""}, "mysql -uroot"),
         ],
     )
     def test_mysql_command_uses_the_servers_client_and_root_password(self, tmp_path, binaries, env, expected):
@@ -262,6 +288,16 @@ class TestRestorePlanCommands:
         _short, full = RestorePlanGenerator(SimpleNamespace())._get_restore_commands("mariadb", "appdb", "maria")
         out = _run_plain_restore(full, tmp_path, _stub_bin(tmp_path, *binaries), env)
         assert out == [expected, "-- the dump"]
+
+    def test_mysql_root_password_is_one_argument(self, tmp_path):
+        """A root password with spaces or quotes reaches the client as one -p argument."""
+        bindir = _stub_bin(tmp_path)
+        stub = bindir / "mariadb"
+        stub.write_text('#!/bin/sh\nfor a in "$@"; do echo "arg:$a"; done\ncat\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        _short, full = RestorePlanGenerator(SimpleNamespace())._get_restore_commands("mariadb", "appdb", "maria")
+        out = _run_plain_restore(full, tmp_path, bindir, {"MARIADB_ROOT_PASSWORD": "p a$s\"w'x"})
+        assert out == ["arg:-uroot", "arg:-pp a$s\"w'x", "-- the dump"]
 
     def test_sqlite_restore_targets_the_real_file_and_drops_stale_wal(self, tmp_path):
         """The old plan copied to a guessed /mnt/user/appdata/<container>/data/
@@ -312,3 +348,88 @@ class TestRedactionKeepsNames:
     )
     def test_password_flags_are_still_redacted(self, text, secret):
         assert secret not in redact_credentials(text)
+
+
+HARNESS_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "restore-roundtrip" / "restore_roundtrip.py"
+
+
+@pytest.fixture
+def harness_module():
+    """The round-trip harness script, imported as a module (stdlib only)."""
+    if not HARNESS_SCRIPT.is_file():
+        pytest.skip("scripts/restore-roundtrip is not part of this checkout")
+    name = "arkive_restore_roundtrip_harness"
+    spec = importlib.util.spec_from_file_location(name, HARNESS_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclasses look their module up by name
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        sys.modules.pop(name, None)
+
+
+class TestRoundTripHarnessWorkdir:
+    """Teardown deletes the workdir's contents as root; it must only ever
+    delete a directory the harness marked as its own."""
+
+    @staticmethod
+    def _harness(module, workdir, prefix="arkive-rt"):
+        harness = module.Harness(SimpleNamespace(workdir=str(workdir), prefix=prefix, port=8320))
+        calls = []
+        harness.host = lambda *args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0)
+        return harness, calls
+
+    def test_non_empty_foreign_directory_is_refused_and_kept(self, harness_module, tmp_path):
+        workdir = tmp_path / "scratch"
+        workdir.mkdir()
+        (workdir / "precious.txt").write_text("keep me")
+        harness, calls = self._harness(harness_module, workdir)
+        with pytest.raises(RuntimeError, match="refusing to use --workdir"):
+            harness.claim_workdir()
+        harness.down()
+        assert (workdir / "precious.txt").read_text() == "keep me"
+        assert not (workdir / harness_module.WORKDIR_MARKER).exists()
+        assert all(call[0] != "run" for call in calls)  # no root rm -rf container
+
+    def test_marker_of_another_prefix_is_not_ownership(self, harness_module, tmp_path):
+        workdir = tmp_path / "state"
+        other, _ = self._harness(harness_module, workdir, prefix="other-rt")
+        other.claim_workdir()
+        (workdir / "data").write_text("x")
+        harness, calls = self._harness(harness_module, workdir)
+        with pytest.raises(RuntimeError):
+            harness.claim_workdir()
+        harness.down()
+        assert (workdir / "data").exists() and all(call[0] != "run" for call in calls)
+
+    def test_own_workdir_is_claimed_reused_and_removed(self, harness_module, tmp_path):
+        workdir = tmp_path / "new" / "state"
+        harness, calls = self._harness(harness_module, workdir)
+        harness.claim_workdir()
+        assert harness.owns_workdir()
+        (workdir / "docker").mkdir()
+        harness.claim_workdir()  # a later run (or --reuse) on the same marked directory
+        harness.down()
+        assert not workdir.exists()
+        assert any(call[0] == "run" for call in calls)
+
+    def test_aborted_run_leaves_a_foreign_workdir_alone(self, harness_module, tmp_path, monkeypatch):
+        """The reported scenario: an existing directory with files plus a
+        mistyped image. The run aborts and teardown must not empty the directory."""
+        workdir = tmp_path / "scratch"
+        workdir.mkdir()
+        (workdir / "precious.txt").write_text("keep me")
+        calls = []
+        monkeypatch.setattr(
+            harness_module.Harness,
+            "host",
+            staticmethod(lambda *args, **kwargs: calls.append(args) or SimpleNamespace(returncode=1)),
+        )
+        monkeypatch.setattr(harness_module.shutil, "which", lambda name: "/usr/bin/docker")
+        monkeypatch.setattr(
+            sys, "argv", ["restore_roundtrip.py", "--workdir", str(workdir), "--image", "arkive-rt:typo"]
+        )
+        assert harness_module.main() == 2
+        assert (workdir / "precious.txt").read_text() == "keep me"
+        assert all(call[0] != "run" for call in calls)

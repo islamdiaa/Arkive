@@ -337,11 +337,16 @@ class RestorePlanGenerator:
     @staticmethod
     def _mysql_restore(container: str) -> str:
         """The server's own client as root: MariaDB 11+ images have no "mysql"
-        binary, MySQL images no "mariadb", and root needs its password."""
+        binary, MySQL images no "mariadb", and root needs its password.
+
+        ``-p`` is passed only when a root password is set. A bare ``-p``
+        (MYSQL_ALLOW_EMPTY_PASSWORD setups) makes the client ask for one, and
+        with no TTY it reads the "password" from stdin: the dump's first line.
+        """
         return (
             f"docker exec -i {container} sh -c "
-            '\'exec "$(command -v mariadb || command -v mysql)" -uroot '
-            '-p"${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}"\''
+            '\'p="${MARIADB_ROOT_PASSWORD:-$MYSQL_ROOT_PASSWORD}"; '
+            'exec "$(command -v mariadb || command -v mysql)" -uroot ${p:+"-p$p"}\''
         )
 
     def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:

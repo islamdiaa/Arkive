@@ -1125,14 +1125,19 @@ class DBDumper:
         """Validate a MariaDB/MySQL database name passed as one argv element.
 
         No shell is involved; the hazards are a leading "-" (read as an
-        option) and characters MySQL never allows in a database name. Names
-        listed from information_schema may contain spaces or Unicode.
+        option) and control characters (a newline would end the
+        "-- Current Database:" comment line mysqldump writes). Any other
+        character is legal in a quoted MySQL identifier: names listed from
+        information_schema may contain dots ("example.com", stored on disk as
+        "example@002ecom"), slashes, spaces or Unicode, and dump fine.
+        A backslash is refused: the batch-mode listing escapes it, so a listed
+        name containing one names a different database.
         """
         if (
             not value
             or len(value) > 64
             or value.startswith("-")
-            or any(ch in value for ch in "/\\.")
+            or "\\" in value
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
         ):
             raise ValueError("Invalid database name: contains disallowed characters")

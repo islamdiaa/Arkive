@@ -31,7 +31,8 @@ every check passed. ``--keep`` leaves the environment running for inspection
 
 Every container, file and port it uses is derived from ``--prefix``
 (default ``arkive-rt``) and ``--port`` (default 8320); state lives in
-``--workdir`` (default ``/tmp/<prefix>``).
+``--workdir`` (default ``/tmp/<prefix>``), which must be new or empty: the
+harness marks it as its own, and teardown removes only a marked directory.
 """
 
 from __future__ import annotations
@@ -66,6 +67,12 @@ ARKIVE_CONFIG = f"{APPDATA}/arkive-rt"
 SQLITE_APP_DATA = f"{APPDATA}/sqliteapp"
 BACKUPS = "/mnt/backups"
 ENCRYPTION_PASSWORD = "roundtrip-encryption-password"
+
+# Ownership marker of the state directory. The harness only uses a --workdir
+# that is new, empty or already carries this marker for the same --prefix, and
+# teardown (which deletes as root, from a container) only removes a workdir
+# that carries it.
+WORKDIR_MARKER = ".arkive-restore-roundtrip"
 
 # Bootstrap users of the two Postgres clusters: pg17 deliberately does not
 # have a "postgres" role (like an Immich-style POSTGRES_USER=immich setup).
@@ -206,7 +213,36 @@ class Harness:
 
     # ---- environment ----
 
+    def marker_text(self) -> str:
+        return f"arkive restore round trip state directory (prefix {self.prefix})\n"
+
+    def owns_workdir(self) -> bool:
+        """Whether the workdir carries this harness's marker for this prefix."""
+        try:
+            return (self.workdir / WORKDIR_MARKER).read_text() == self.marker_text()
+        except OSError:
+            return False
+
+    def claim_workdir(self) -> None:
+        """Mark the workdir as the harness's own before anything is put in it.
+
+        Teardown deletes the workdir's contents as root, so a directory that
+        already holds anything else is refused rather than claimed.
+        """
+        if self.workdir.exists() and not self.owns_workdir():
+            if not self.workdir.is_dir():
+                raise RuntimeError(f"--workdir {self.workdir} exists and is not a directory")
+            if any(self.workdir.iterdir()):
+                raise RuntimeError(
+                    f"refusing to use --workdir {self.workdir}: it is not empty and has no {WORKDIR_MARKER} "
+                    f"marker from a run with --prefix {self.prefix} (teardown deletes everything in it); "
+                    "pass a new or empty directory"
+                )
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        (self.workdir / WORKDIR_MARKER).write_text(self.marker_text())
+
     def up(self) -> None:
+        self.claim_workdir()
         print(f"== starting Docker-in-Docker ({self.name('dind')}, state in {self.workdir})", flush=True)
         for sub in ("docker", "run", "mnt-user", "backups"):
             (self.workdir / sub).mkdir(parents=True, exist_ok=True)
@@ -331,12 +367,17 @@ class Harness:
         self.wait_for("the Arkive API", lambda: self.api("GET", "/api/status", auth=False, check=False) is not None)
 
     def down(self) -> None:
-        print(f"== removing {self.name('dind')} and {self.workdir}", flush=True)
+        print(f"== removing {self.name('dind')}", flush=True)
         self.host("rm", "-f", "-v", self.name("dind"), check=False)
-        if self.workdir.is_dir():
-            # Files created by root inside DinD: remove them from a container.
-            self.host("run", "--rm", "-v", f"{self.workdir}:/w", "alpine:3.20", "sh", "-c", "rm -rf /w/*", check=False)
-            shutil.rmtree(self.workdir, ignore_errors=True)
+        if not self.workdir.is_dir():
+            return
+        if not self.owns_workdir():
+            print(f"== leaving {self.workdir} alone: it has no {WORKDIR_MARKER} marker for this --prefix", flush=True)
+            return
+        print(f"== removing {self.workdir}", flush=True)
+        # Files created by root inside DinD: remove them from a container.
+        self.host("run", "--rm", "-v", f"{self.workdir}:/w", "alpine:3.20", "sh", "-c", "rm -rf /w/*", check=False)
+        shutil.rmtree(self.workdir, ignore_errors=True)
 
     # ---- Arkive API ----
 
@@ -694,7 +735,7 @@ def main() -> int:
     parser.add_argument("--image", default="arkive-rt:dev", help="Arkive image to test (must exist on the host)")
     parser.add_argument("--prefix", default="arkive-rt", help="name prefix of everything created")
     parser.add_argument("--port", type=int, default=8320, help="127.0.0.1 port for the Arkive API")
-    parser.add_argument("--workdir", help="state directory (default /tmp/<prefix>)")
+    parser.add_argument("--workdir", help="state directory, new or empty; removed on teardown (default /tmp/<prefix>)")
     parser.add_argument("--memory", default="12g", help="memory limit of the DinD container")
     parser.add_argument("--live-code", action="store_true", help="mount this checkout's backend/ into the image")
     parser.add_argument(

@@ -270,6 +270,7 @@ class FakeDocker:
         self.load_code = 0
         self.globals_code = 0
         self.load_error = b'psql:/arkive-drill/dump.sql:42: ERROR:  extension "vectors" is not available\n'
+        self.globals_error = b""  # psql's messages from loading the roles dump
         self.table_count = 3
         self.exec_error: Exception | None = None
         self.containers = SimpleNamespace(get=self._get, create=self._create, list=self._list)
@@ -310,8 +311,8 @@ class FakeDocker:
             return 0, b"mysqld is alive"
         if cmd[:2] == ["sh", "-c"]:
             return (self.globals_code if "globals.sql" in cmd[2] else self.load_code), b""
-        if cmd[0] == "tail":
-            return 0, self.load_error
+        if cmd[0] in ("tail", "head"):
+            return 0, self.globals_error if cmd[-1] == rd.CONTAINER_GLOBALS_ERR else self.load_error
         if cmd[0] in ("psql", "mariadb"):
             return 0, f"{self.table_count}\n".encode()
         return 127, b"executable file not found"
@@ -701,7 +702,9 @@ async def test_drill_passes_and_is_recorded(tmp_path, monkeypatch):
     loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
     assert ["globals.sql" in c[0][2] for c in loads] == [True, False]  # roles first
     load = loads[1]
-    assert "ON_ERROR_STOP=1" in load[0][2] and "ON_ERROR_STOP=1" in loads[0][0][2]
+    # The database load stops at the first error; the roles load is judged by
+    # its messages afterwards (see test_roles_the_image_already_created_...).
+    assert "ON_ERROR_STOP=1" in load[0][2] and "VERBOSITY=verbose" in loads[0][0][2]
     assert load[1]["ARKIVE_DRILL_USER"] == "alice" and load[1]["ARKIVE_DRILL_MAINTDB"] == "postgres"
     count = [c for c in docker.created[0].execs if c[0][0] == "psql"][0]
     assert count[0][count[0].index("-d") + 1] == "appdb"
@@ -1521,17 +1524,109 @@ async def test_roles_dump_that_does_not_load_fails_clearly(tmp_path):
     cfg = await _make_cfg(tmp_path)
     backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
     docker = _docker_with_source()
-    docker.globals_code = 3
-    docker.load_error = b'psql:/arkive-drill/globals.sql:12: ERROR:  syntax error at or near "ROLE"\n'
+    # psql without ON_ERROR_STOP exits 0 after an SQL error; the messages decide.
+    docker.globals_error = (
+        b'psql:/arkive-drill/globals.sql:12: ERROR:  42601: syntax error at or near "ROLE"\n'
+        b"LOCATION:  scanner_yyerror, scan.l:1241\n"
+    )
     engine = _engine(cfg, backup, docker)
     await engine.run_drill()
     result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
     assert result["status"] == "failed"
     assert "roles dump (pg_dumpall --globals-only) did not load" in result["detail"]
-    assert "syntax error" in result["detail"]
+    assert "syntax error" in result["detail"] and "42601" in result["detail"]
     # The database dump itself was never attempted.
     loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
     assert len(loads) == 1 and "globals.sql" in loads[0][0][2]
+
+
+@pytest.mark.asyncio
+async def test_roles_load_that_exits_nonzero_fails_clearly(tmp_path):
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_code = 2
+    docker.globals_error = b'psql: error: connection to server at "127.0.0.1", port 5432 failed: server closed\n'
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert "did not load (psql exited with code 2)" in result["detail"]
+    assert "server closed" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_roles_the_image_already_created_do_not_fail_the_drill(tmp_path):
+    """An image whose own init scripts create roles (supabase/postgres creates
+    anon, authenticated, service_role, ...) gets "role ... already exists" for
+    each of them from pg_dumpall's plain CREATE ROLE. The restore plan's plain
+    psql carries on past that; the drill must not fail where the restore works."""
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_error = (
+        b'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+        b"LOCATION:  CreateRole, user.c:376\n"
+        b'psql:/arkive-drill/globals.sql:20: ERROR:  42710: role "authenticated" already exists\n'
+        b"LOCATION:  CreateRole, user.c:376\n"
+        b'psql:/arkive-drill/globals.sql:32: NOTICE:  00000: role "authenticated" has already been granted '
+        b'membership in role "anon" by role "postgres"\n'
+        b"LOCATION:  AddRoleMems, user.c:1889\n"
+    )
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "passed", result["detail"]
+    assert "2 already existed in the drill server" in result["detail"]
+    loads = [c for c in docker.created[0].execs if c[0][:2] == ["sh", "-c"]]
+    assert [("globals.sql" in c[0][2]) for c in loads] == [True, False]
+    # The roles load keeps going past errors (judged afterwards) and reports SQLSTATEs.
+    assert "ON_ERROR_STOP" not in loads[0][0][2] and "VERBOSITY=verbose" in loads[0][0][2]
+
+
+@pytest.mark.asyncio
+async def test_roles_load_messages_that_cannot_all_be_read_fail(tmp_path, monkeypatch):
+    """Messages past the read limit are unchecked: that is reported, not passed."""
+    monkeypatch.setattr(rd, "_GLOBALS_ERR_MAX_BYTES", 100)
+    cfg = await _make_cfg(tmp_path)
+    backup = FakeBackupEngine(cfg.dump_dir, _standard_files(tmp_path))
+    docker = _docker_with_source()
+    docker.globals_error = b'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n' * 3
+    engine = _engine(cfg, backup, docker)
+    await engine.run_drill()
+    result = (await _rows(cfg, "SELECT * FROM restore_drill_results WHERE dump_file = ?", (PG_FILE,)))[0]
+    assert result["status"] == "failed"
+    assert "the rest was not checked" in result["detail"]
+
+
+class TestPgGlobalsErrors:
+    def test_already_exists_notices_and_warnings_are_harmless(self):
+        stderr = (
+            'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+            "LOCATION:  CreateRole, user.c:376\n"
+            "psql:/arkive-drill/globals.sql:30: NOTICE:  00000: role already granted\n"
+            "psql:/arkive-drill/globals.sql:31: WARNING:  01000: something to note\n"
+            # A server answering in another language: the SQLSTATE still decides.
+            "psql:/arkive-drill/globals.sql:40: FEHLER:  42710: Rolle »x« existiert bereits\n"
+        )
+        assert rd.pg_globals_errors(stderr) == ([], 2)
+
+    def test_other_errors_are_reported_with_their_sqlstate(self):
+        stderr = (
+            'psql:/arkive-drill/globals.sql:16: ERROR:  42710: role "anon" already exists\n'
+            'psql:/arkive-drill/globals.sql:45: ERROR:  58P01: directory "/mnt/ts" does not exist\n'
+            "LOCATION:  create_tablespace_directories, tablespace.c:615\n"
+            "psql:/arkive-drill/globals.sql:3: error: invalid command \\restrict\n"
+        )
+        errors, existing = rd.pg_globals_errors(stderr)
+        assert existing == 1
+        assert errors == [
+            'directory "/mnt/ts" does not exist (SQLSTATE 58P01)',
+            "error: invalid command \\restrict",
+        ]
+
+    def test_no_output_is_a_clean_load(self):
+        assert rd.pg_globals_errors("") == ([], 0)
 
 
 @pytest.mark.asyncio

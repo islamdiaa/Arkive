@@ -95,6 +95,7 @@ CONTAINER_DUMP_DIR = "/arkive-drill"
 CONTAINER_DUMP_FILE = "/arkive-drill/dump.sql"
 CONTAINER_GLOBALS_FILE = "/arkive-drill/globals.sql"
 CONTAINER_LOAD_ERR = "/tmp/arkive-drill-load.err"  # nosec B108 - inside the throwaway drill container
+CONTAINER_GLOBALS_ERR = "/tmp/arkive-drill-globals.err"  # nosec B108 - inside the throwaway drill container
 
 # Fixed shell scripts: variable parts arrive through the exec environment and
 # are only ever expanded inside double quotes.
@@ -102,11 +103,21 @@ _PG_LOAD_SCRIPT = (
     'psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
     '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_DUMP_FILE + " >/dev/null 2>" + CONTAINER_LOAD_ERR
 )
-# Roles first, as in a real restore: the database dump assigns its objects to them.
+# Roles first, as in a real restore: the database dump assigns its objects to
+# them. No ON_ERROR_STOP: like the restore plan's plain psql, every statement
+# runs, and the errors are judged afterwards (pg_globals_errors). pg_dumpall
+# writes a plain "CREATE ROLE x;", which fails with "already exists" for every
+# role the image's own init scripts created in the drill server; that is
+# harmless (the "ALTER ROLE x WITH ..." after it still applies the dumped
+# attributes). VERBOSITY=verbose adds the SQLSTATE to each message, so the
+# check does not depend on the server's message language.
 _PG_GLOBALS_SCRIPT = (
-    'psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
-    '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_GLOBALS_FILE + " >/dev/null 2>" + CONTAINER_LOAD_ERR
+    'psql -X -q -v VERBOSITY=verbose -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
+    '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_GLOBALS_FILE + " >/dev/null 2>" + CONTAINER_GLOBALS_ERR
 )
+# psql's messages from the roles load are read back in full (two lines per
+# role that already existed); more than this is reported, not skipped.
+_GLOBALS_ERR_MAX_BYTES = 1024 * 1024
 _MYSQL_LOAD_SCRIPT = (
     '"$ARKIVE_DRILL_CLIENT" -h 127.0.0.1 --protocol=tcp -uroot <'
     + CONTAINER_DUMP_FILE
@@ -295,6 +306,44 @@ def is_bootstrap_role_line(line: bytes, role: str) -> bool:
             rest = rest.strip()
             return rest == b";" if prefix == b"CREATE ROLE " else rest.startswith(b"WITH ")
     return False
+
+
+# "psql:<file>:<line>: <SEVERITY>:  <SQLSTATE>: <message>" (VERBOSITY=verbose).
+_PSQL_SCRIPT_MESSAGE_RE = re.compile(r"^psql:.*?:\d+: (.*)$")
+_PSQL_SQLSTATE_RE = re.compile(r"^[^\s:]+:\s+([0-9A-Z]{5}): (.*)$")
+_SQLSTATE_DUPLICATE_OBJECT = "42710"  # "role ... already exists"
+_SQLSTATE_NOT_ERROR_CLASSES = ("00", "01", "02")  # notices, warnings, no data
+
+
+def pg_globals_errors(stderr: str) -> tuple[list[str], int]:
+    """Judge psql's messages from loading a roles dump (``_PG_GLOBALS_SCRIPT``).
+
+    Returns ``(errors, existing)``: the messages that mean a role (or grant)
+    was not restored, and how many objects already existed in the drill
+    server. "already exists" (SQLSTATE 42710) is harmless: the image's own
+    init scripts created that role, and the following ``ALTER ROLE ... WITH``
+    applies the dumped attributes to it. Notices and warnings are ignored.
+    A message without a SQLSTATE (psql's own errors) counts as an error.
+    """
+    errors: list[str] = []
+    existing = 0
+    for line in stderr.splitlines():
+        script_message = _PSQL_SCRIPT_MESSAGE_RE.match(line.strip())
+        if not script_message:
+            continue  # DETAIL/HINT/LOCATION lines belong to the message above
+        text = script_message.group(1)
+        coded = _PSQL_SQLSTATE_RE.match(text)
+        if coded is None:
+            errors.append(text)
+            continue
+        code, message = coded.groups()
+        if code[:2] in _SQLSTATE_NOT_ERROR_CLASSES:
+            continue
+        if code == _SQLSTATE_DUPLICATE_OBJECT:
+            existing += 1
+            continue
+        errors.append(f"{message} (SQLSTATE {code})")
+    return errors, existing
 
 
 def _mb(size_bytes: int) -> int:
@@ -1456,6 +1505,7 @@ class RestoreDrillEngine:
     ) -> tuple[str, str]:
         timeout = self._load_timeout(prepared.size_bytes)
         load_started = time.monotonic()
+        roles_note = ""
         if spec.is_postgres:
             # The manifest / history name is authoritative; the dump's own
             # \\connect line is the fallback.
@@ -1469,12 +1519,7 @@ class RestoreDrillEngine:
                 "ARKIVE_DRILL_MAINTDB": maintenance_db,
             }
             if prepared.globals_path is not None:
-                code = self._exec_long(container, ["sh", "-c", _PG_GLOBALS_SCRIPT], env, self.min_load_timeout_seconds)
-                if code != 0:
-                    raise DrillFailure(
-                        f"the roles dump (pg_dumpall --globals-only) did not load (psql exited with code "
-                        f"{code}): {self._load_errors(container)}"
-                    )
+                roles_note = self._load_pg_globals(container, env)
             code = self._exec_long(container, ["sh", "-c", _PG_LOAD_SCRIPT], env, timeout)
             tool = "psql"
         else:
@@ -1519,7 +1564,7 @@ class RestoreDrillEngine:
             raise DrillFailure(f"could not count restored tables: {output.strip()[-300:] or code}")
         restored = int(numbers[-1])
         expected = prepared.create_tables
-        size_note = f"{_human_size(prepared.size_bytes)} loaded in {load_seconds}s into {spec.image}"
+        size_note = f"{_human_size(prepared.size_bytes)} loaded in {load_seconds}s into {spec.image}{roles_note}"
         if expected == 0:
             return "passed", f"dump declares no tables; loaded cleanly ({size_note})"
         if restored == 0:
@@ -1529,9 +1574,37 @@ class RestoreDrillEngine:
         extra = f" (dump declares {expected})" if restored != expected else ""
         return "passed", f"{restored} tables restored{extra}; {size_note}"
 
-    def _load_errors(self, container) -> str:
+    def _load_pg_globals(self, container, env: dict) -> str:
+        """Load the roles dump ahead of the database dump (see
+        ``_PG_GLOBALS_SCRIPT``). Raises DrillFailure when a role or grant did
+        not load; returns a note for the result detail."""
+        code = self._exec_long(container, ["sh", "-c", _PG_GLOBALS_SCRIPT], env, self.min_load_timeout_seconds)
+        if code != 0:
+            raise DrillFailure(
+                f"the roles dump (pg_dumpall --globals-only) did not load (psql exited with code "
+                f"{code}): {self._load_errors(container, CONTAINER_GLOBALS_ERR)}"
+            )
+        # Not knowing what went wrong is not "nothing went wrong".
+        code, output = self._exec(container, ["head", "-c", str(_GLOBALS_ERR_MAX_BYTES + 1), CONTAINER_GLOBALS_ERR])
+        if code != 0:
+            raise DrillFailure(f"could not read psql's messages from loading the roles dump (exit code {code})")
+        errors, existing = pg_globals_errors(output)
+        if len(output.encode()) > _GLOBALS_ERR_MAX_BYTES:
+            errors.append(f"more than {_GLOBALS_ERR_MAX_BYTES // 1024} KiB of messages; the rest was not checked")
+        if errors:
+            more = f" (and {len(errors) - 3} more)" if len(errors) > 3 else ""
+            raise DrillFailure(
+                "the roles dump (pg_dumpall --globals-only) did not load cleanly: "
+                + redact_credentials(" | ".join(errors[:3]))[:600]
+                + more
+            )
+        if existing:
+            return f"; roles dump loaded ({existing} already existed in the drill server, created by its image)"
+        return "; roles dump loaded"
+
+    def _load_errors(self, container, path: str = CONTAINER_LOAD_ERR) -> str:
         try:
-            _code, output = self._exec(container, ["tail", "-c", "1500", CONTAINER_LOAD_ERR])
+            _code, output = self._exec(container, ["tail", "-c", "1500", path])
         except Exception:
             output = ""
         lines = [ln for ln in output.strip().splitlines() if ln.strip()]

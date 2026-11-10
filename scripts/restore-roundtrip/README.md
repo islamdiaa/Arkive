@@ -34,7 +34,10 @@ Requirements: Python 3.9+, a Docker host that can run a privileged
 (about 2 GB; `--load-local-images` copies them from the host instead). A run
 takes 10-20 minutes. Everything it creates is named after `--prefix`
 (default `arkive-rt`) and lives in `--workdir` (default `/tmp/<prefix>`); the
-API listens on `127.0.0.1:--port` (default 8320).
+API listens on `127.0.0.1:--port` (default 8320). The workdir must be new or
+empty: the harness marks it with a `.arkive-restore-roundtrip` file, refuses a
+non-empty directory without that marker, and teardown deletes only a marked
+directory (its contents are removed as root).
 
 It is not part of CI: it needs a privileged container and pulls several
 database images. The problems it found are covered by unit tests

@@ -465,7 +465,15 @@ Rules that follow from this:
 - a restore must bring back what the app needs to run, not only its rows:
   owners, grants, roles, routines, events
 - restore plan commands are executed by the round trip; keep them runnable
-  in POSIX sh against the container's own environment
+  in POSIX sh against the container's own environment (and never pass a bare
+  `-p` to a MySQL client: with no TTY it reads the password from the piped dump)
+- the drill must not be stricter than the restore it checks: the roles dump
+  is loaded without ON_ERROR_STOP and judged by SQLSTATE afterwards, so roles
+  the image's own init scripts created ("already exists", 42710) don't fail it
+- database-name validation rejects argv hazards only (leading `-`, control
+  characters); MySQL names may contain dots (`example.com`) and slashes
+- the round-trip harness deletes only a `--workdir` carrying its
+  `.arkive-restore-roundtrip` marker, and refuses a non-empty unmarked one
 
 ## Validation Summary
 
