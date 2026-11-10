@@ -260,7 +260,7 @@
 	}
 </script>
 
-<div class="min-h-screen bg-page flex items-center justify-center p-6">
+<main class="min-h-screen bg-page flex items-center justify-center p-6">
 	<div class="w-full max-w-xl">
 		<!-- Logo -->
 		<div class="flex items-center gap-3 mb-8 justify-center">
@@ -273,15 +273,15 @@
 			</div>
 		</div>
 
-		<!-- Progress -->
-		<div class="flex items-center gap-2 mb-8 justify-center">
+		<!-- Progress (narrower connectors on phones so the six steps fit at 375px) -->
+		<div class="flex items-center gap-1 sm:gap-2 mb-8 justify-center">
 			{#each [1, 2, 3, 4, 5, 6] as s}
-				<div class="flex items-center gap-2">
+				<div class="flex items-center gap-1 sm:gap-2">
 					<div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium {
 						step >= s ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'
-					}">{s}</div>
+					}" aria-current={step === s ? 'step' : undefined}>{s}</div>
 					{#if s < 6}
-						<div class="w-6 h-0.5 {step > s ? 'bg-primary' : 'bg-border'}"></div>
+						<div class="w-3 sm:w-6 h-0.5 {step > s ? 'bg-primary' : 'bg-border'}"></div>
 					{/if}
 				</div>
 			{/each}
@@ -562,12 +562,14 @@
 				<!-- Step 5: Directories -->
 				<h2 class="text-lg font-semibold text-text mb-2">Directories to Watch</h2>
 				<p class="text-sm text-text-secondary mb-6">Add directories to include in backups. Arkive will also auto-discover container volumes.</p>
+				<!-- -bg tokens, not /10 tints: secondary text on a 10% tint of the
+				     card is under 4.5:1 in the dark theme. -->
 				{#if setupCoverageHint}
-					<div class="mb-4 rounded-lg border border-success/30 bg-success/10 px-4 py-3 text-sm text-text-secondary">
+					<div class="mb-4 rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm text-text-secondary">
 						{setupCoverageHint}
 					</div>
 				{:else if directoryScanPlatform === 'unraid'}
-					<div class="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-text-secondary">
+					<div class="mb-4 rounded-lg border border-warning/30 bg-warning-bg px-4 py-3 text-sm text-text-secondary">
 						For full Unraid recovery, include <span class="font-mono text-text">/mnt/user/appdata</span>. Database dumps and flash backup alone are not enough for an identical server rebuild.
 					</div>
 				{/if}
@@ -604,7 +606,7 @@
 					<h2 class="text-lg font-semibold text-text mb-2">Setup Complete!</h2>
 					<p class="text-sm text-text-secondary mb-6">Save your API key below. It won't be shown again.</p>
 					{#if targetCreated === false}
-						<div class="mb-6 rounded-lg border border-danger/40 bg-danger/10 p-4 text-left" role="alert">
+						<div class="mb-6 rounded-lg border border-danger/40 bg-danger-bg p-4 text-left" role="alert">
 							<p class="text-sm font-semibold text-danger">Your storage destination was NOT saved</p>
 							<p class="text-sm text-text-secondary mt-1">
 								Backups have nowhere to go until you add a storage target. The server rejected the configuration:
@@ -630,4 +632,4 @@
 			{/if}
 		</div>
 	</div>
-</div>
+</main>

@@ -397,24 +397,43 @@ const DEMO_DIR_SUGGESTIONS = [
   { path: '/mnt/user/photos', priority: 'optional', size_bytes: 107374182400, file_count: 24000, reason: 'Personal photos (irreplaceable)' },
 ];
 
+// Same shape as GET /api/logs (backend/app/api/logs.py): parsed JSON log
+// lines, newest first, under `items` with `logs` as an alias.
+const DEMO_LOG_ITEMS = ([
+  ['2026-02-26T03:00:00Z', 'INFO', 'orchestrator', 'Starting daily backup run...'],
+  ['2026-02-26T03:00:01Z', 'INFO', 'discovery', 'Discovery: scanning Docker socket...'],
+  ['2026-02-26T03:00:02Z', 'INFO', 'discovery', 'Found 14 containers, 6 databases'],
+  ['2026-02-26T03:00:03Z', 'INFO', 'db_dumper', 'Dumping postgres: immich (2.0 GB)'],
+  ['2026-02-26T03:00:45Z', 'INFO', 'db_dumper', 'Dumping postgres: vaultwarden (50 MB)'],
+  ['2026-02-26T03:00:50Z', 'INFO', 'db_dumper', 'Dumping postgres: paperless (1.0 GB)'],
+  ['2026-02-26T03:01:20Z', 'INFO', 'db_dumper', 'Dumping mariadb: nextcloud (3.0 GB)'],
+  ['2026-02-26T03:02:00Z', 'INFO', 'db_dumper', 'Dumping redis: authelia (10 MB)'],
+  ['2026-02-26T03:02:05Z', 'INFO', 'db_dumper', 'Dumping influxdb: homeassistant (5.0 GB)'],
+  ['2026-02-26T03:03:30Z', 'INFO', 'backup_engine', 'Creating restic snapshot...'],
+  ['2026-02-26T03:04:00Z', 'INFO', 'backup_engine', 'Snapshot created: abc123def'],
+  ['2026-02-26T03:04:01Z', 'INFO', 'backup_engine', 'Syncing to Backblaze B2...'],
+  ['2026-02-26T03:04:30Z', 'WARNING', 'backup_engine', 'B2 upload slow: retrying part 14 of 96'],
+  ['2026-02-26T03:05:42Z', 'INFO', 'orchestrator', 'Backup complete. Duration: 5m42s. Size: 12.0 GB'],
+  ['2026-02-26T03:05:43Z', 'INFO', 'notifier', 'Notification sent to Discord'],
+  ['2026-02-26T03:05:44Z', 'INFO', 'backup_engine', 'Retention: pruned 2 old snapshots'],
+] as const)
+  .map(([timestamp, level, component, message]) => ({
+    timestamp,
+    level,
+    run_id: 'run-demo-1',
+    component: `app.services.${component}`,
+    message,
+  }))
+  .reverse();
+
 const DEMO_LOGS = {
-  logs: [
-    `[2026-02-26T03:00:00Z] INFO  Starting daily backup run...`,
-    `[2026-02-26T03:00:01Z] INFO  Discovery: scanning Docker socket...`,
-    `[2026-02-26T03:00:02Z] INFO  Found 14 containers, 6 databases`,
-    `[2026-02-26T03:00:03Z] INFO  Dumping postgres: immich (2.0 GB)`,
-    `[2026-02-26T03:00:45Z] INFO  Dumping postgres: vaultwarden (50 MB)`,
-    `[2026-02-26T03:00:50Z] INFO  Dumping postgres: paperless (1.0 GB)`,
-    `[2026-02-26T03:01:20Z] INFO  Dumping mariadb: nextcloud (3.0 GB)`,
-    `[2026-02-26T03:02:00Z] INFO  Dumping redis: authelia (10 MB)`,
-    `[2026-02-26T03:02:05Z] INFO  Dumping influxdb: homeassistant (5.0 GB)`,
-    `[2026-02-26T03:03:30Z] INFO  Creating restic snapshot...`,
-    `[2026-02-26T03:04:00Z] INFO  Snapshot created: abc123def`,
-    `[2026-02-26T03:04:01Z] INFO  Syncing to Backblaze B2...`,
-    `[2026-02-26T03:05:42Z] INFO  Backup complete. Duration: 5m42s. Size: 12.0 GB`,
-    `[2026-02-26T03:05:43Z] INFO  Notification sent to Discord`,
-    `[2026-02-26T03:05:44Z] INFO  Retention: pruned 2 old snapshots`,
-  ].join('\n'),
+  items: DEMO_LOG_ITEMS,
+  logs: DEMO_LOG_ITEMS,
+  total: DEMO_LOG_ITEMS.length,
+  limit: 500,
+  offset: 0,
+  has_more: false,
+  truncated: false,
 };
 
 // Simulate a short delay

@@ -228,4 +228,22 @@ describe('Mock API contract validation', () => {
     expect(Array.isArray(result.targets)).toBe(true);
     expect(result.targets.length).toBeGreaterThan(0);
   });
+
+  it('logs response matches GET /api/logs: a list of parsed entries, newest first', async () => {
+    // It used to be one newline-joined string, which the logs page could not
+    // render, so demo mode (and the a11y gate) only ever saw "Loading logs…".
+    for (const result of [await mockApi.getLogs(), await mockApi.get('/logs?lines=500')]) {
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.logs).toEqual(result.items);
+      expect(result.total).toBe(result.items.length);
+      expect(result.items.length).toBeGreaterThan(0);
+      for (const entry of result.items) {
+        for (const field of ['timestamp', 'level', 'run_id', 'component', 'message']) {
+          expect(entry).toHaveProperty(field);
+        }
+      }
+      const stamps = result.items.map((e: any) => e.timestamp);
+      expect(stamps).toEqual([...stamps].sort().reverse());
+    }
+  });
 });

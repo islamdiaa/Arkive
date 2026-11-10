@@ -258,8 +258,8 @@
 			{#each channels as ch}
 				{@const ChannelIcon = getChannelIcon(ch.type)}
 				<div class="card {ch.enabled === false ? 'opacity-60' : ''}">
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-3">
+					<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+						<div class="flex items-center gap-3 min-w-0">
 							<div class="w-9 h-9 rounded-lg bg-bg-surface border border-border flex items-center justify-center flex-shrink-0">
 								<svelte:component this={ChannelIcon} size={16} class="text-text-secondary" />
 							</div>
@@ -292,19 +292,20 @@
 								{/if}
 							</div>
 						</div>
-						<div class="flex items-center gap-3">
+						<div class="flex items-center gap-3 shrink-0">
 							<FormToggle
 								checked={ch.enabled !== false}
+								ariaLabel="Enable {ch.name}"
 								on:change={(e) => toggleChannel(ch, e.detail.checked)}
 							/>
 							<button on:click={() => testChannel(ch.id)} disabled={testing === ch.id} class="btn-secondary text-xs disabled:opacity-50">
 								{testing === ch.id ? 'Sending...' : 'Test'}
 							</button>
-							<button on:click={() => startEditChannel(ch)} class="text-text-secondary hover:text-primary" aria-label="Edit channel">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+							<button on:click={() => startEditChannel(ch)} class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-primary" aria-label="Edit {ch.name}">
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
 							</button>
-							<button on:click={() => openDeleteConfirm(ch)} class="text-text-secondary hover:text-danger" aria-label="Delete channel">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+							<button on:click={() => openDeleteConfirm(ch)} class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-danger" aria-label="Delete {ch.name}">
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
 							</button>
 						</div>
 					</div>

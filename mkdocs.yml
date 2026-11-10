@@ -76,3 +76,6 @@ nav:
       - Upgrading: upgrading.md
       - Security and deployment model: security.md
       - Smoke test after deploying: homeserver-smoke-test.md
+  - Maintainers:
+      - Upgrade-path test: upgrade-path-test.md
+      - Unraid Community Applications: unraid-community-apps.md

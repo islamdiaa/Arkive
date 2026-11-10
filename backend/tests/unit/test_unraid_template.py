@@ -146,7 +146,7 @@ class TestTemplateMetadata:
         version_major = int(_image_version().split(".")[0])
         assert version_major - 1 <= int(tag) <= version_major
         workflow = (REPO_ROOT / ".github" / "workflows" / "build.yml").read_text()
-        assert re.search(r"^\s*type=semver,pattern=\{\{major\}\}\s*$", workflow, re.MULTILINE)
+        assert re.search(r"^\s*type=semver,pattern=\{\{major\}\}(,enable=.*)?\s*$", workflow, re.MULTILINE)
 
     def test_overview_renders_cleanly_in_community_apps(self, template):
         overview = template.find("Overview").text

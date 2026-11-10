@@ -97,9 +97,9 @@
 
 <Header title="Recovery Kit" />
 
-<div class="p-6 space-y-6">
+<main class="p-6 space-y-6">
 	<div>
-		<h1 class="text-2xl font-semibold text-text">Recovery Kit</h1>
+		<h2 class="text-2xl font-semibold text-text">Recovery Kit</h2>
 		<p class="text-sm text-text-secondary mt-1">Everything you need to restore your backups if this server is gone</p>
 	</div>
 
@@ -201,7 +201,9 @@
 					{#if kit.targets.length === 0}
 						<p class="text-sm text-text-secondary">No storage targets are configured yet.</p>
 					{:else}
-						<div class="overflow-x-auto rounded-md border border-border">
+						<!-- Scrolls sideways on phones; focusable so it can be scrolled from the keyboard. -->
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+						<div class="overflow-x-auto rounded-md border border-border" role="region" aria-label="Repositories" tabindex="0">
 							<table class="w-full text-sm">
 								<thead>
 									<tr class="text-left text-xs uppercase tracking-wide text-text-muted bg-bg-elevated">
@@ -263,4 +265,4 @@
 			</SectionCard>
 		{/if}
 	{/if}
-</div>
+</main>

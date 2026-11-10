@@ -24,10 +24,19 @@ describe('ModalShell', () => {
 		expect(dialog?.getAttribute('aria-modal')).toBe('true');
 	});
 
-	it('has aria-labelledby referencing modal-title', () => {
-		const { container } = render(ModalShell, { props: { open: true, title: 'Test' } });
-		const dialog = container.querySelector('[role="dialog"]');
-		expect(dialog?.getAttribute('aria-labelledby')).toBe('modal-title');
+	it('is labelled by its title heading', () => {
+		render(ModalShell, { props: { open: true, title: 'Test' } });
+		expect(screen.getByRole('dialog', { name: 'Test' })).toBeTruthy();
+	});
+
+	it('gives each instance its own title id', () => {
+		const a = render(ModalShell, { props: { open: true, title: 'First' } });
+		const b = render(ModalShell, { props: { open: true, title: 'Second' } });
+		const idA = a.container.querySelector('[role="dialog"]')?.getAttribute('aria-labelledby');
+		const idB = b.container.querySelector('[role="dialog"]')?.getAttribute('aria-labelledby');
+		expect(idA).toBeTruthy();
+		expect(idA).not.toBe(idB);
+		expect(document.getElementById(idA!)?.textContent).toBe('First');
 	});
 
 	it('has close button with aria-label', () => {

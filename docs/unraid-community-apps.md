@@ -22,9 +22,9 @@ links into this repository, valid CA categories, the icon, the image tag and the
 
 ### Template decisions
 
-- **Image tag `islamdiaa/arkive:0`.** CI publishes `latest` from every commit to `main`, so a
-  template on `:latest` would offer every merge (dependency bumps included) to Unraid users
-  as an update. The `0` tag is published only by `v0.*` release tags (`type=semver,pattern={{major}}`
+- **Image tag `islamdiaa/arkive:0`.** `latest` follows the newest stable release, including the next
+  major version, so a template on `:latest` would move users to 1.0 without a template
+  change. The `0` tag is published only by `v0.*` release tags (`type=semver,pattern={{major}}`
   in `.github/workflows/build.yml`). Today it points at the same image as `0.4.0`.
   docker/metadata-action's docs suggest turning that pattern off for 0.x versions. Keep it on
   while the template uses `:0`; the template test fails if it gets a condition.
@@ -187,11 +187,6 @@ Approved apps appear after CA's next catalog build.
 - **Never put commands in `ExtraParams` or `PostArgs`.** CA treats extra commands as a
   security violation and blacklists the whole repository. Keep the icon static: animated
   icons aren't allowed.
-- **Your decision:** `latest` currently follows `main`, while `SECURITY.md` tells users to
-  upgrade by pulling `latest`. If `latest` should follow releases, drop
-  `type=raw,value=latest,enable={{is_default_branch}}` from `build.yml`.
-  docker/metadata-action then tags `latest` on release tags only. After that the template
-  could use `:latest`.
 
 ## Sources
 
