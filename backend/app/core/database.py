@@ -188,6 +188,45 @@ CREATE TABLE IF NOT EXISTS size_history (
     snapshot_count INTEGER NOT NULL,
     PRIMARY KEY (date, target_id)
 );
+
+-- Guided restores: one database loaded back into its running container from a
+-- snapshot (or, kind 'undo', from the safety dump taken first). A new table,
+-- so it is created here on every start rather than by a numbered migration,
+-- which other branches could also claim. Like every table above, this
+-- definition is frozen: later column changes go in MIGRATIONS.
+CREATE TABLE IF NOT EXISTS guided_restores (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'restore',
+    parent_id TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    phase TEXT,
+    method TEXT NOT NULL,
+    container_name TEXT NOT NULL,
+    db_type TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    host_path TEXT,
+    target_id TEXT,
+    snapshot_id TEXT,
+    dump_file TEXT,
+    dump_size_bytes INTEGER NOT NULL DEFAULT 0,
+    work_dir TEXT,
+    safety_dump_path TEXT,
+    safety_dump_size_bytes INTEGER NOT NULL DEFAULT 0,
+    database_changed INTEGER,
+    db_owner TEXT,
+    stop_containers TEXT NOT NULL DEFAULT '[]',
+    stopped_containers TEXT NOT NULL DEFAULT '[]',
+    steps TEXT NOT NULL DEFAULT '[]',
+    instructions TEXT NOT NULL DEFAULT '[]',
+    warnings TEXT NOT NULL DEFAULT '[]',
+    bytes_done INTEGER NOT NULL DEFAULT 0,
+    bytes_total INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    completed_at TEXT,
+    duration_seconds INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_guided_restores_started ON guided_restores(started_at DESC);
 """
 
 

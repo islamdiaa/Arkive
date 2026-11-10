@@ -32,6 +32,11 @@
 <Header title="Restore Plan" />
 
 <main class="p-6 space-y-6">
+	<div class="flex flex-wrap gap-3 text-sm">
+		<a href="/restore/database" class="btn-secondary text-sm">Restore a database</a>
+		<a href="/restore/browse" class="btn-secondary text-sm">Browse &amp; restore files</a>
+	</div>
+
 	<div class="card">
 		<div class="flex items-start gap-4">
 			<div class="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">

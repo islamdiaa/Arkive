@@ -18,6 +18,7 @@ compression, size, integrity), see ``write_dump_manifest``.
 """
 
 import asyncio
+import copy
 import functools
 import gzip
 import hashlib
@@ -58,6 +59,8 @@ PG_DUMPALL_TRAILER = b"PostgreSQL database cluster dump complete"
 MYSQL_DUMP_TRAILER = b"-- Dump completed"
 DUMP_TRAILERS = (PG_DUMP_TRAILER, PG_DUMPALL_TRAILER, MYSQL_DUMP_TRAILER)
 _TAIL_BYTES = 4096
+# How often a dump with DBDumper.min_free_bytes set checks free space.
+_SPACE_CHECK_BYTES = 64 * 1024 * 1024
 
 # pg_dump options (followed by -U <user> -d <database>).
 PG_DUMP_COMMAND = ["pg_dump", "--clean", "--create", "--if-exists"]
@@ -693,6 +696,10 @@ class DumpResult:
 class DBDumper:
     """Dumps databases using native tools."""
 
+    # Streamed dumps stop once free space in their folder drops below this
+    # (0: never checked). Set per dump by dump_to_directory.
+    min_free_bytes = 0
+
     def __init__(self, docker_client, config: ArkiveConfig):
         self.docker = docker_client
         self.config = config
@@ -808,6 +815,7 @@ class DBDumper:
         bytes_written = 0
         tail = b""
         stderr_chunks: list[bytes] = []
+        next_space_check = 0
         writer = _open_dump_writer(dump_path, self.compression)
         try:
             for chunk in output:
@@ -819,6 +827,14 @@ class DBDumper:
                     writer.write(stdout_data)
                     bytes_written += len(stdout_data)
                     tail = (tail + stdout_data[-_TAIL_BYTES:])[-_TAIL_BYTES:]
+                    if self.min_free_bytes and bytes_written >= next_space_check:
+                        next_space_check = bytes_written + _SPACE_CHECK_BYTES
+                        free = shutil.disk_usage(os.path.dirname(dump_path) or ".").free
+                        if free < self.min_free_bytes:
+                            raise OSError(
+                                f"dump stopped: less than {self.min_free_bytes // (1024 * 1024)} MB of free disk "
+                                f"space left in {os.path.dirname(dump_path)}"
+                            )
                 if stderr_data:
                     stderr_chunks.append(stderr_data)
             writer.close()
@@ -1756,6 +1772,28 @@ class DBDumper:
             protect_prefixes=protect_prefixes,
             legacy_prefixes=legacy_prefixes,
         )
+
+    async def dump_to_directory(
+        self, db: DiscoveredDatabase, directory: Path, compression: str = "none", min_free_bytes: int = 0
+    ) -> DumpResult:
+        """Dump one database into ``directory`` instead of the shared dump dir.
+
+        Used for the safety dump a guided restore takes before it overwrites a
+        database: the file is validated like every dump (completion trailer,
+        ``.partial`` + atomic rename) but never joins the dump manifest or
+        dump-dir cleanup. A failed dump leaves no file behind. With
+        ``min_free_bytes``, a streamed dump stops (and fails) once free space
+        in ``directory`` drops below it, instead of filling the disk.
+        """
+        worker = copy.copy(self)  # never retarget the shared instance mid-backup
+        worker.dump_dir = Path(directory)
+        worker.compression = compression if compression in DUMP_COMPRESSIONS else "none"
+        worker.min_free_bytes = max(0, int(min_free_bytes or 0))
+        worker.dump_dir.mkdir(parents=True, exist_ok=True)
+        result = await worker._dump_one(db)
+        if result.status != "success":
+            self._remove_dump_file(result.dump_path)
+        return result
 
     async def dump_single(
         self,

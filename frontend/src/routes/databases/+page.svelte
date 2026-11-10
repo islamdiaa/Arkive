@@ -209,6 +209,15 @@
 									{dumpingDb === `${db.container_name}:${db.db_name}` ? 'Dumping…' : 'Dump Now'}
 								</button>
 							{/if}
+							{#if ['postgres', 'mariadb', 'mysql', 'sqlite'].includes(db.db_type)}
+								<a
+									href={`/restore/database?${new URLSearchParams({ container: db.container_name, db: db.db_name, type: db.db_type })}`}
+									class="text-xs text-text-secondary hover:text-text transition-colors"
+									title="Restore this database from a snapshot"
+								>
+									Restore
+								</a>
+							{/if}
 							<button
 								on:click={() => toggleExcluded(db)}
 								disabled={togglingDb === keyOf(db)}

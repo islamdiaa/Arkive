@@ -57,6 +57,7 @@ To explore the interface with sample data before you configure anything, open an
 **Restore**
 - **Recovery kit.** A one-time export of the encryption password, every repository location and step-by-step restore instructions, so your backups stay usable if the server is lost.
 - **Snapshot browser and granular restore** of individual files and dumps.
+- **Guided database restore.** Pick a database and a snapshot; Arkive takes a safety dump of the current database, loads the snapshot's dump into the running Postgres or MariaDB/MySQL container (optionally stopping the apps that use it) and lets you undo. SQLite files are restored and checked, with exact commands to swap them in.
 - **Restore plan.** A downloadable PDF tailored to your setup.
 
 **Interface**
@@ -201,7 +202,7 @@ SQL dumps must end with the tool's completion trailer, or they count as failed. 
 | `/mnt/user/appdata` (and anything else to protect) | Data to back up | read-only |
 | `/boot/config` → `/boot-config` | Unraid flash config backup | read-only |
 
-Arkive only writes to `/config`, `/cache` and local target paths. Restores always land in `/config/restores`, and you copy the files into place from there, so the data you protect can stay mounted read-only.
+Arkive only writes to `/config`, `/cache` and local target paths. Restores always land in `/config/restores`, and you copy the files into place from there, so the data you protect can stay mounted read-only. The one exception is a guided database restore you confirm: it loads the dump through the database container's own client (`psql`, `mariadb`/`mysql`), never by writing files under `/mnt/user`.
 
 A local target must be a path mapped to the host. Arkive refuses targets inside the container's own filesystem or an anonymous volume, because those are deleted when the container is re-created.
 
