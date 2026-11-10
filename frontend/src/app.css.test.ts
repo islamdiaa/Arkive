@@ -86,6 +86,11 @@ describe('compiled utilities', () => {
 			'text-text-secondary',
 			'border-border',
 			'bg-primary',
+			'hover:bg-primary-hover',
+			'bg-danger',
+			'text-primary',
+			'border-danger',
+			'from-(--color-primary)',
 			'bg-danger/10',
 			'border-warning/30',
 			'rounded',
@@ -103,11 +108,20 @@ describe('compiled utilities', () => {
 		expect(rule(css, '.bg-bg-input')).toContain('background-color: var(--bg-input)');
 		expect(rule(css, '.text-text-secondary')).toContain('color: var(--text-secondary)');
 		expect(rule(css, '.border-border')).toContain('border-color: var(--border-default)');
-		expect(rule(css, '.bg-primary')).toContain('background-color: var(--color-primary)');
+	});
+
+	it('fills backgrounds with the darker fill shade, and nothing else', () => {
+		// White text needs 4.5:1 on a filled button; the accent as text does not.
+		expect(rule(css, '.bg-primary')).toContain('background-color: var(--color-primary-fill)');
+		expect(rule(css, '.bg-danger')).toContain('background-color: var(--color-danger-fill)');
+		expect(css).toContain('background-color: var(--color-primary-fill-hover)');
+		expect(rule(css, '.text-primary')).toContain('color: var(--color-primary)');
+		expect(rule(css, '.border-danger')).toContain('border-color: var(--color-danger)');
+		expect(rule(css, '.from-\\(--color-primary\\)')).toContain('--tw-gradient-from: var(--color-primary)');
 	});
 
 	it('applies opacity modifiers to token colours', () => {
-		expect(rule(css, '.bg-danger\\/10')).toMatch(/color-mix\(in \w+, var\(--color-danger\) 10%, transparent\)/);
+		expect(rule(css, '.bg-danger\\/10')).toMatch(/color-mix\(in \w+, var\(--color-danger-fill\) 10%, transparent\)/);
 		expect(rule(css, '.border-warning\\/30')).toMatch(/color-mix\(in \w+, var\(--color-warning\) 30%, transparent\)/);
 	});
 
@@ -143,9 +157,18 @@ describe('compiled utilities', () => {
 		}
 	});
 
+	it('keeps the browser dimming of a disabled select', () => {
+		// Tailwind 4's preflight sets opacity: 1 on form controls; the guided
+		// restore page shows a disabled select until a database is chosen.
+		const match = /select:disabled\s*\{\s*opacity: revert;\s*\}/.exec(css);
+		expect(match).not.toBeNull();
+		const layers = [...css.slice(0, match!.index).matchAll(/@layer (\w+) \{/g)];
+		expect(layers.at(-1)?.[1]).toBe('base');
+	});
+
 	it('emits the component classes', () => {
-		expect(rule(css, '.badge-success')).toContain('rgba(63, 185, 80, 0.15)');
+		expect(rule(css, '.badge-success')).toContain('background-color: var(--color-success-bg)');
 		expect(css).toMatch(/\.badge-success[,\s][\s\S]*?display: inline-flex/);
-		expect(rule(css, '.btn-primary')).toContain('background-color: var(--color-primary)');
+		expect(rule(css, '.btn-primary')).toContain('background-color: var(--color-primary-fill)');
 	});
 });

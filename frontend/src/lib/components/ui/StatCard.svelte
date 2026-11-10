@@ -2,7 +2,7 @@
   export let label: string;
   export let value: string;
   export let delta: number | null = null;
-  export let gradient: string = 'from-primary to-info';
+  export let gradient: string = 'from-(--color-primary) to-info';
   export let mono: boolean = true;
   let className: string = '';
   export { className as class };

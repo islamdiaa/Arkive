@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.core.activity import log_activity
 from app.core.dependencies import get_db, get_db_dumper, require_auth
+from app.services.database_health import accept_current_size, database_health
 from app.services.db_exclusions import excluded_identities, identity, set_excluded
 from app.services.lock_manager import BackupLockManager
 
@@ -36,7 +37,8 @@ async def list_databases(
 
     excluded = await excluded_identities(db)
     for d in all_dbs:
-        d["excluded"] = identity(d) in excluded
+        d["key"] = identity(d)
+        d["excluded"] = d["key"] in excluded
 
     total = len(all_dbs)
     paginated = all_dbs[offset : offset + limit]
@@ -48,6 +50,42 @@ async def list_databases(
         "offset": offset,
         "has_more": offset + limit < total,
     }
+
+
+@router.get("/health")
+async def get_database_health(db: aiosqlite.Connection = Depends(get_db)):
+    """Backup health of every discovered database.
+
+    Per database: last successful dump, dump size and its trend over recent
+    runs, the last restore-drill result, and "restorable as of" (the newest
+    dump that a snapshot holds). See services/database_health.py.
+    """
+    return await database_health(db)
+
+
+class AcceptSize(BaseModel):
+    key: str
+
+
+@router.post("/health/accept-size")
+async def accept_database_size(body: AcceptSize, db: aiosqlite.Connection = Depends(get_db)):
+    """Accept a database's current dump size as its new normal.
+
+    Dumps before the newest successful one stop counting towards the size
+    baseline, so a deliberate shrink (data purged on purpose) no longer makes
+    runs partial.
+    """
+    accepted = await accept_current_size(db, body.key)
+    if accepted is None:
+        raise HTTPException(404, "No successful dump of that database is recorded")
+    await log_activity(
+        db,
+        "database",
+        "size_accepted",
+        f"{accepted['container_name']}/{accepted['db_name']}: current dump size accepted as the new baseline",
+        {"key": body.key, **accepted},
+    )
+    return {"key": body.key, "accepted_from": accepted["accepted_from"]}
 
 
 class ExclusionUpdate(BaseModel):

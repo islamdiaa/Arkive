@@ -435,14 +435,64 @@ Rules that follow from this:
 - a new route the setup wizard needs before setup goes in `_SETUP_ROUTES`;
   don't reopen the bootstrap bypass
 - run `pip-audit`, `npm audit` and Trivy on the image before a release tag
+- the full release checklist is `RELEASING.md`. A `vX.Y.Z` tag publishes the
+  image and creates the GitHub release from that version's `CHANGELOG.md`
+  section (`scripts/release.py`); Docker `latest` moves only on the newest
+  stable tag, never on a push to `main`. CI runs the workflow from the tagged
+  commit, so a maintenance branch cut from v0.4.0 or earlier must take this
+  tooling first (RELEASING.md, "Fixes for an older release line"). User-visible
+  changes get a line under `## [Unreleased]` in `CHANGELOG.md`
 
-### 15. Tailwind CSS 4 (#53)
+### 15. Restore path review with real engines
+
+`scripts/restore-roundtrip/restore_roundtrip.py` runs dump -> backup ->
+restore -> load (following the generated restore plan) and a drill against
+Postgres 16/17, MariaDB 11.4, MySQL 8.4 and WAL-mode SQLite inside a
+throwaway Docker-in-Docker daemon (see its README). Its first run found:
+- pg_dump ran with `--no-owner --no-privileges`: a database owned by an app
+  role came back owned by the restoring superuser, and the app got
+  "permission denied" on its own tables. Dumps now keep owners and GRANTs;
+  roles come from the globals dump, restored first (the drill loads it too,
+  minus its own bootstrap superuser's CREATE/ALTER ROLE lines).
+- mysqldump without `--routines --events` silently dropped procedures,
+  functions and events; MySQL 5.7's default utf8 turned emoji into `?`.
+- Only `MYSQL_DATABASE` was dumped from a MariaDB/MySQL server; every
+  application database is now listed (like Postgres since v0.4.0).
+- Drill false failures: a `CREATE TABLE` inside a function/procedure body was
+  counted as a table, and a `mysql` system-schema dump (no `MYSQL_DATABASE`)
+  was counted outside its own schema.
+- Restore plan commands: `psql -U postgres` (fails when POSTGRES_USER is
+  another role), `mysql -u root` (no such binary in MariaDB 11, no password),
+  `< glob` (only bash expands it), SQLite copied to a guessed path while the
+  old `-wal` stayed (SQLite replays it over the restored file), restic without
+  `-it` (cannot ask for the password).
+- `redact_credentials` turned `immich-postgres/...` into `immich-p[REDACTED]`.
+
+Rules that follow from this:
+- a restore must bring back what the app needs to run, not only its rows:
+  owners, grants, roles, routines, events
+- restore plan commands are executed by the round trip; keep them runnable
+  in POSIX sh against the container's own environment (and never pass a bare
+  `-p` to a MySQL client: with no TTY it reads the password from the piped dump)
+- the drill must not be stricter than the restore it checks: the roles dump
+  is loaded without ON_ERROR_STOP and judged by SQLSTATE afterwards, so roles
+  the image's own init scripts created ("already exists", 42710) don't fail it
+- database-name validation rejects argv hazards only (leading `-`, control
+  characters); MySQL names may contain dots (`example.com`) and slashes
+- the round-trip harness deletes only a `--workdir` carrying its
+  `.arkive-restore-roundtrip` marker, and refuses a non-empty unmarked one
+
+### 16. Tailwind CSS 4 (#53)
 
 - No `tailwind.config.ts`: `@tailwindcss/vite` plus CSS config in
   `frontend/src/app.css`. `@theme inline reference` maps colour utilities to the
   runtime tokens in `:root`/`.light`, so `bg-danger/10` works on variables
   without wrappers; `src/app.css.test.ts` checks every token has a light value
   and every utility colour points at a defined token.
+- `bg-primary` and `bg-danger` use the darker `--color-*-fill` tokens (white
+  text needs 4.5:1 on them), through `--background-color-*` theme keys.
+  Gradient stops read the same keys, so a gradient that wants the accent
+  itself names the token: `from-(--color-primary)`, not `from-primary`.
 - `space-x/y-*` now put the margin on the end of every child but the last, and
   a child's own margin wins. Children with their own margins, inline labels
   next to inputs, and inline links after blocks render differently from v3.
@@ -614,8 +664,14 @@ At the time this handoff was updated (v0.4.0):
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
-- the frontend is on Tailwind CSS 4 (#53, section 15); remaining low-severity
-  npm advisories need SvelteKit 3 (build-time only)
+- the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
+- the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
+  (there is no svelte.config.js), `$lib` still works through the deprecated
+  `alias` option (moving to `#lib` subpath imports is a follow-up), and `$:`
+  components read the route from `$lib/stores/page` because `$app/stores` is
+  gone and `$app/state` only notifies runes. The one npm advisory left is
+  deepmerge (GHSA-gcqx-w48m-w2h4, via vite-plugin-svelte, build-time only): no
+  patched release exists and its CVE was rejected upstream
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still

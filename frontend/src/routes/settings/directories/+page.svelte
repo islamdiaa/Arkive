@@ -165,9 +165,10 @@
 							<div class="min-w-0">
 								<div class="flex items-center gap-2">
 									<p class="text-sm font-medium text-text">{suggestion.label}</p>
+									<!-- Theme -bg tokens: accent text on a /20 tint is under 4.5:1. -->
 									<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide
-										{suggestion.priority === 'critical' ? 'bg-danger/20 text-danger' :
-										 suggestion.priority === 'recommended' ? 'bg-primary/20 text-primary' :
+										{suggestion.priority === 'critical' ? 'bg-danger-bg text-danger' :
+										 suggestion.priority === 'recommended' ? 'bg-primary-bg text-primary' :
 										 'bg-bg-surface text-text-secondary'}">
 										{suggestion.priority}
 									</span>
@@ -259,10 +260,10 @@
 							<button
 								on:click={() => removeDir(dir.id)}
 								disabled={removingId === dir.id}
-								class="text-text-secondary hover:text-danger disabled:opacity-50"
-								aria-label="Remove directory"
+								class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-danger disabled:opacity-50"
+								aria-label="Remove {dir.label || dir.path}"
 							>
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
 							</button>
 						</div>
 					</div>

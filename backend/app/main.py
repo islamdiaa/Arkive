@@ -33,6 +33,7 @@ from app.services.discovery import DiscoveryEngine
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.docker_client import DockerUnavailableError, ResilientDockerClient
 from app.services.flash_backup import FlashBackup
+from app.services.guided_restore import GuidedRestoreEngine
 from app.services.host_identity import resolve_hostname
 from app.services.notifier import Notifier
 from app.services.orchestrator import BackupOrchestrator, cleanup_stale_backup_lock
@@ -242,6 +243,16 @@ async def lifespan(app: FastAPI):
         # Docker may be slow right after boot; don't hold up startup for it.
         app.state.drill_sweep = asyncio.create_task(restore_drill.remove_leftover_containers())
 
+    # Guided database restores: a restart mid-restore leaves a 'running' row.
+    guided_restore = GuidedRestoreEngine(
+        config,
+        backup_engine=backup_engine,
+        docker_client=docker_client,
+        lock_manager=orchestrator.lock_manager,
+    )
+    await guided_restore.recover_after_restart()
+    await guided_restore.prune()
+
     scheduler = ArkiveScheduler(
         orchestrator,
         config,
@@ -252,6 +263,7 @@ async def lifespan(app: FastAPI):
         verify_engine=verify_engine,
         event_bus=event_bus,
         restore_drill=restore_drill,
+        guided_restore=guided_restore,
     )
 
     # Wire services to app.state
@@ -270,6 +282,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     app.state.verify_engine = verify_engine
     app.state.restore_drill = restore_drill
+    app.state.guided_restore = guided_restore
 
     # Step 7b: Auto-unlock stale restic locks (part of self-healing, before scheduler)
     try:
@@ -360,6 +373,10 @@ async def lifespan(app: FastAPI):
                 )
         else:
             logger.warning("Backup still running after 5 min, forcing shutdown")
+
+    # A guided restore mid-load gets the same 5 minutes, before Docker is closed;
+    # one that has not touched anything yet is stopped and recorded right away.
+    await guided_restore.shutdown(wait_seconds=300)
 
     if scheduler:
         await scheduler.stop()

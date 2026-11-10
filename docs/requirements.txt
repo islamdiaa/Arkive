@@ -1,0 +1,4 @@
+# Tools for building the user guide (mkdocs.yml). Not needed to run Arkive.
+# Material for MkDocs runs on MkDocs 1.x, so MkDocs stays pinned to 1.x.
+mkdocs==1.6.1
+mkdocs-material==9.8.1

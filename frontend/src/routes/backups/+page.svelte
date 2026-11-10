@@ -14,7 +14,7 @@
 	import { timeAgo } from '$lib/utils/date';
 	import { jobTypeLabel } from '$lib/utils/job-types';
 	import { onMount, onDestroy } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 
 	let jobs: any[] = [];
 	let selectedJob: any = null;
@@ -213,16 +213,18 @@
 						{#each filteredRuns as run}
 							<a
 								href="/backups/{run.id}"
-								class="flex items-center gap-4 px-4 py-3 rounded-lg bg-bg-surface hover:bg-bg-surface-hover/50 transition-colors border-l-[3px] {spineClass[run.status] || 'border-l-neutral'}"
+								class="flex flex-wrap sm:flex-nowrap items-center gap-x-3 sm:gap-x-4 gap-y-1 px-4 py-3 rounded-lg bg-bg-surface hover:bg-bg-surface-hover/50 transition-colors border-l-[3px] {spineClass[run.status] || 'border-l-neutral'}"
 								title={run.error_message || 'View run details'}
 							>
+								<!-- Phones: id, status and age on the first line; the
+								     numbers wrap to a second line instead of overflowing. -->
 								<span class="font-mono text-xs text-text-secondary w-20 shrink-0 truncate">{run.id}</span>
 								<div class="w-24 shrink-0">
 									<StatusBadge status={run.status} size="sm" />
 								</div>
-								<span class="text-xs text-text-secondary w-16 shrink-0 capitalize">{run.trigger}</span>
-								<span class="font-mono text-xs text-text-secondary flex-1">{timeAgo(run.started_at)}</span>
-								<span class="font-mono text-xs text-text-secondary w-20 shrink-0 text-right">
+								<span class="hidden sm:inline text-xs text-text-secondary w-16 shrink-0 capitalize">{run.trigger}</span>
+								<span class="font-mono text-xs text-text-secondary flex-1 min-w-0">{timeAgo(run.started_at)}</span>
+								<span class="font-mono text-xs text-text-secondary w-20 shrink-0 sm:text-right">
 									{run.duration_seconds ? formatDuration(run.duration_seconds) : '—'}
 								</span>
 								<span class="text-xs text-text-secondary w-16 shrink-0 text-right">

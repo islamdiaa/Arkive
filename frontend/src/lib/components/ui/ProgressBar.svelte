@@ -41,7 +41,7 @@
   <div class="{heightClass} bg-bg-elevated rounded-full overflow-hidden">
     <div
       class="{heightClass} rounded-full transition-all duration-300 ease-out
-             {isAnimated ? 'animate-progress-shimmer bg-linear-to-r from-primary via-info to-primary' : colorClass}
+             {isAnimated ? 'animate-progress-shimmer bg-linear-to-r from-(--color-primary) via-info to-(--color-primary)' : colorClass}
              {isAnimated ? 'shadow-[0_0_8px_rgba(56,139,253,0.4)]' : ''}"
       style="width: {indeterminate ? '100' : percent}%"
     ></div>

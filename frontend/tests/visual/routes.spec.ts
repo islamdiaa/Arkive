@@ -24,6 +24,7 @@ const ROUTES: ({ name: string; route: string; path: string } & Open)[] = [
 	{ name: 'logs', route: '/logs', path: '/logs' },
 	{ name: 'restore', route: '/restore', path: '/restore' },
 	{ name: 'restore-browse', route: '/restore/browse', path: '/restore/browse' },
+	{ name: 'restore-database', route: '/restore/database', path: '/restore/database' },
 	{ name: 'restore-plan', route: '/restore/plan', path: '/restore/plan' },
 	{ name: 'settings', route: '/settings', path: '/settings' },
 	{ name: 'settings-directories', route: '/settings/directories', path: '/settings/directories' },
@@ -66,7 +67,7 @@ const STATES: ({ name: string; path: string; phoneOnly?: boolean; act: (page: Pa
 		name: 'targets-delete-dialog',
 		path: '/settings/targets',
 		act: async (page) => {
-			await page.getByRole('button', { name: 'Delete target' }).first().click();
+			await page.getByRole('button', { name: /^Delete / }).first().click();
 			await expect(page.getByRole('dialog').first()).toBeVisible();
 		},
 	},

@@ -30,6 +30,12 @@ Copying `appdata` while databases are running produces backups that may not rest
 
 Arkive is under active development. Backup, snapshot, restore, cloud targets and verification are implemented and covered by unit, integration and end-to-end tests.
 
+## Documentation
+
+The [user guide](docs/index.md) covers installing on Unraid, the setup wizard, every storage provider, notifications, the recovery kit, restoring (including disaster recovery on a fresh server), restore drills, overdue-backup alerts and the heartbeat, troubleshooting, upgrading, and the security model. Start with the [quick start](docs/quick-start.md).
+
+To explore the interface with sample data before you configure anything, open any Arkive page with `?demo=true`, for example `http://your-server:8200/?demo=true`.
+
 ## Features
 
 **Backup**
@@ -44,12 +50,14 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 - **Overdue-backup watchdog.** If a job hasn't produced a good backup within its schedule window, the dashboard turns red and you get an alert.
 - **Heartbeat.** Point Arkive at an Uptime Kuma push monitor or a healthchecks.io check. Arkive pings it only while every job is healthy, so you're also alerted when Arkive itself is down.
 - **Restore drills.** Every week, Arkive restores recent database dumps from the latest snapshot and loads each into a temporary, network-isolated copy of its own database image.
+- **Per-database health.** The Databases page shows, for every database, its last good dump, dump size and trend, last restore drill and the point in time it can be restored to. A dump that suddenly shrinks to half its usual size or less (configurable) makes runs `partial` until the size comes back or you accept it, since that usually means lost data. Redis dumps, which are cache and queue snapshots, are not checked.
 - **Repository checks.** A weekly `restic check`, a test restore of a random file, and a trust score on the dashboard.
 - **Notifications** through Apprise: Discord, Slack, ntfy, Telegram, email, Gotify, Pushover, Uptime Kuma and webhooks.
 
 **Restore**
 - **Recovery kit.** A one-time export of the encryption password, every repository location and step-by-step restore instructions, so your backups stay usable if the server is lost.
 - **Snapshot browser and granular restore** of individual files and dumps.
+- **Guided database restore.** Pick a database and a snapshot; Arkive takes a safety dump of the current database, loads the snapshot's dump into the running Postgres or MariaDB/MySQL container (optionally stopping the apps that use it) and lets you undo. SQLite files are restored and checked, with exact commands to swap them in.
 - **Restore plan.** A downloadable PDF tailored to your setup.
 
 **Interface**
@@ -84,7 +92,7 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 
 ### Unraid
 
-Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts app data read-only and keeps Arkive's own state in `/mnt/user/appdata/arkive`.
+Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; `latest` is rebuilt from every commit to `main`.
 
 ### Docker Compose
 
@@ -139,6 +147,8 @@ The browser may then ask for the admin API key once, to create a session.
 
 Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
 
+`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.4.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## How it works
@@ -192,7 +202,7 @@ SQL dumps must end with the tool's completion trailer, or they count as failed. 
 | `/mnt/user/appdata` (and anything else to protect) | Data to back up | read-only |
 | `/boot/config` → `/boot-config` | Unraid flash config backup | read-only |
 
-Arkive only writes to `/config`, `/cache` and local target paths. Restores always land in `/config/restores`, and you copy the files into place from there, so the data you protect can stay mounted read-only.
+Arkive only writes to `/config`, `/cache` and local target paths. Restores always land in `/config/restores`, and you copy the files into place from there, so the data you protect can stay mounted read-only. The one exception is a guided database restore you confirm: it loads the dump through the database container's own client (`psql`, `mariadb`/`mysql`), never by writing files under `/mnt/user`.
 
 A local target must be a path mapped to the host. Arkive refuses targets inside the container's own filesystem or an anonymous volume, because those are deleted when the container is re-created.
 
@@ -261,8 +271,9 @@ scripts/e2e.sh --docker                               # Playwright suite in Dock
 backend/      FastAPI app (api/, core/, models/, services/) and pytest suites
 frontend/     SvelteKit 2 + Svelte 5 + Tailwind CSS 4; Vitest and Playwright tests
 profiles/     YAML app profiles used by discovery
-docs/         Deployment notes (homeserver smoke test)
+docs/         User guide (MkDocs site: mkdocs.yml) and deployment notes
 CLAUDE.md     Architecture notes and invariants for contributors and coding agents
+CHANGELOG.md  Release notes; RELEASING.md has the release checklist
 ```
 
 ## Contributing

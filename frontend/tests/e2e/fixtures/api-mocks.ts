@@ -45,6 +45,14 @@ export async function mockBackgroundEndpoints(page: Page) {
       body: JSON.stringify({ items: [], total: 0 }),
     })
   );
+  // Databases page: per-database backup health.
+  await page.route(/\/api\/databases\/health(\?|$)/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], databases: [], total: 0, summary: {}, policy: null }),
+    })
+  );
   await page.route('**/api/notifications/events', (route) =>
     route.fulfill({
       status: 200,
@@ -73,6 +81,42 @@ export async function mockBackgroundEndpoints(page: Page) {
       body: JSON.stringify({ next_runs: ['2026-03-08T07:00:00Z', '2026-03-15T07:00:00Z'] }),
     })
   );
+  // The dashboard loads the setup checklist. Default: completed and dismissed,
+  // so the card stays out of specs that aren't about it. A regex for the same
+  // reason as drills: the module /src/lib/api/setup-checklist.ts must not match.
+  await page.route(/\/api\/setup-checklist(\/|\?|$)/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(setupChecklist({ allDone: true, dismissed: true })),
+    })
+  );
+}
+
+const SETUP_STEP_IDS = ['first_backup', 'restore_test', 'offsite_target', 'notifications', 'recovery_kit'];
+
+/**
+ * A GET /api/setup-checklist payload. `done` lists the finished steps (all of
+ * them with `allDone`); the rest are still to do.
+ */
+export function setupChecklist(opts: { done?: string[]; allDone?: boolean; dismissed?: boolean } = {}) {
+  const done = new Set(opts.allDone ? SETUP_STEP_IDS : opts.done ?? []);
+  const steps = SETUP_STEP_IDS.map((id) => ({
+    id,
+    state: done.has(id) ? 'done' : 'todo',
+    done: done.has(id),
+    detail: null,
+    completed_at: done.has(id) ? '2026-03-07T03:05:00Z' : null,
+    ...(id === 'restore_test' ? { method: 'drill' } : {}),
+  }));
+  return {
+    complete: done.size === SETUP_STEP_IDS.length,
+    completed_count: done.size,
+    total: SETUP_STEP_IDS.length,
+    dismissed: opts.dismissed ?? false,
+    dismissed_at: opts.dismissed ? '2026-03-07T04:00:00Z' : null,
+    steps,
+  };
 }
 
 /** Mock an empty dashboard state. */

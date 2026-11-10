@@ -107,7 +107,10 @@
   {:else}
     <div class="card overflow-hidden p-0">
       {#each filtered as snap}
-        <div class="flex items-center justify-between px-4 py-3 border-b border-border last:border-0 hover:bg-bg-surface-hover/50 transition-colors">
+        {@const snapLabel = snap.short_id || (snap.id?.slice(0, 8) ?? '')}
+        <!-- Stacks on phones: the action column no longer squeezes the id and
+             host into overlapping text. -->
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4 px-4 py-3 border-b border-border last:border-0 hover:bg-bg-surface-hover/50 transition-colors">
           <div class="flex items-center gap-4 min-w-0">
             <span class="font-mono text-sm text-primary shrink-0">{snap.short_id || (snap.id?.slice(0, 8) ?? '')}</span>
             <div class="min-w-0">
@@ -120,10 +123,10 @@
               </div>
             </div>
           </div>
-          <div class="flex items-center gap-3 shrink-0">
+          <div class="flex flex-wrap items-center gap-3 sm:shrink-0">
             <span class="font-mono text-xs text-text-secondary">{formatBytes(snap.size_bytes || 0)}</span>
             {#if snap.tags?.length}
-              <div class="flex gap-1">
+              <div class="flex flex-wrap gap-1">
                 {#each snap.tags as tag}
                   <span class="text-xs px-1.5 py-0.5 rounded bg-primary-bg text-primary">{tag}</span>
                 {/each}
@@ -131,11 +134,13 @@
             {/if}
             <button
               on:click={() => openBrowser(snap)}
-              class="text-xs px-2 py-1 rounded border border-border text-text-secondary hover:text-primary hover:border-primary transition-colors"
+              aria-label="Browse snapshot {snapLabel}"
+              class="text-xs px-2 py-1.5 rounded border border-border text-text-secondary hover:text-primary hover:border-primary transition-colors"
             >Browse</button>
             <button
               on:click={() => { selectedSnapshot = snap; showRestore = true; }}
-              class="text-xs px-2 py-1 rounded bg-primary-bg text-primary hover:bg-primary/20 transition-colors"
+              aria-label="Restore snapshot {snapLabel}"
+              class="text-xs px-2 py-1.5 rounded bg-primary-bg text-primary hover:bg-primary/20 transition-colors"
             >Restore</button>
           </div>
         </div>

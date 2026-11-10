@@ -69,10 +69,6 @@
 		}
 	}
 
-	function handleInputKeydown(e: KeyboardEvent) {
-		handleKeydown(e);
-	}
-
 	async function onOpenChange(isOpen: boolean) {
 		if (isOpen) {
 			previousFocus = document.activeElement as HTMLElement;
@@ -97,9 +93,10 @@
 		aria-label="Close command palette"
 	></div>
 
-	<!-- Palette -->
+	<!-- Palette. Keys are handled once, here: the input sits inside, so a
+	     second handler on it would run every key twice. -->
 	<div
-		class="fixed top-[20%] left-1/2 -translate-x-1/2 z-modal w-full max-w-xl bg-bg-elevated border border-border rounded-xl shadow-xl animate-modal-in"
+		class="fixed top-[10%] sm:top-[20%] inset-x-4 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-modal sm:w-full sm:max-w-xl bg-bg-elevated border border-border rounded-xl shadow-xl animate-modal-in"
 		role="dialog"
 		aria-modal="true"
 		aria-label="Command palette"
@@ -107,33 +104,42 @@
 		on:keydown={handleKeydown}
 	>
 		<div class="border-b border-border px-4 py-3">
+			<!-- Combobox pattern: focus stays in the input and the highlighted
+			     option is announced through aria-activedescendant. -->
 			<input
 				bind:this={inputEl}
 				type="text"
 				bind:value={query}
-				on:keydown={handleInputKeydown}
 				placeholder="Search pages..."
 				aria-label="Search pages"
+				role="combobox"
+				aria-expanded="true"
+				aria-controls="command-palette-list"
+				aria-autocomplete="list"
+				aria-activedescendant={filtered[selectedIndex] ? `command-palette-option-${selectedIndex}` : undefined}
 				class="w-full bg-transparent text-text placeholder-text-tertiary text-sm outline-hidden"
 			/>
 		</div>
-		<ul class="py-2 max-h-80 overflow-y-auto" role="listbox">
+		<ul id="command-palette-list" class="py-2 max-h-80 overflow-y-auto" role="listbox" aria-label="Pages">
 			{#each filtered as route, i}
-				<li role="option" aria-selected={i === selectedIndex}>
-					<button
-						class="w-full text-left px-4 py-2.5 text-sm transition-colors
-							{i === selectedIndex ? 'bg-primary/10 text-primary' : 'text-text-secondary hover:text-text hover:bg-bg-surface-hover'}"
-						on:click={() => select(route.href)}
-						on:mouseenter={() => (selectedIndex = i)}
-					>
-						{route.label}
-					</button>
+				<!-- Options are picked with the arrow keys + Enter from the input. -->
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<li
+					id="command-palette-option-{i}"
+					role="option"
+					aria-selected={i === selectedIndex}
+					class="w-full cursor-pointer px-4 py-2.5 text-sm transition-colors
+						{i === selectedIndex ? 'bg-primary/10 text-primary' : 'text-text-secondary hover:text-text hover:bg-bg-surface-hover'}"
+					on:click={() => select(route.href)}
+					on:mouseenter={() => (selectedIndex = i)}
+				>
+					{route.label}
 				</li>
 			{/each}
-			{#if filtered.length === 0}
-				<li class="px-4 py-6 text-center text-sm text-text-tertiary">No results found.</li>
-			{/if}
 		</ul>
+		{#if filtered.length === 0}
+			<p class="px-4 pb-4 text-center text-sm text-text-tertiary" role="status">No results found.</p>
+		{/if}
 		<div class="border-t border-border px-4 py-2 flex items-center gap-4 text-xs text-text-tertiary">
 			<span><kbd class="font-mono bg-bg-overlay px-1.5 py-0.5 rounded border border-border-muted">↑↓</kbd> navigate</span>
 			<span><kbd class="font-mono bg-bg-overlay px-1.5 py-0.5 rounded border border-border-muted">↵</kbd> select</span>

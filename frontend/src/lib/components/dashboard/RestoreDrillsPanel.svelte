@@ -219,7 +219,9 @@
 							{:else if detailError && !details[drill.id]}
 								<p class="text-xs text-danger">{detailError}</p>
 							{:else if details[drill.id]?.results?.length}
-								<div class="overflow-x-auto">
+								<!-- Scrolls sideways on phones; focusable so it can be scrolled from the keyboard. -->
+								<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+								<div class="overflow-x-auto" role="region" aria-label="Drill results" tabindex="0">
 									<table class="w-full text-xs">
 										<thead>
 											<tr class="text-left text-text-muted uppercase tracking-wide">

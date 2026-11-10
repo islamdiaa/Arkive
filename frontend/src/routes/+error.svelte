@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/stores';
+  import { page } from '$lib/stores/page';
   import { Button } from '$lib/components/ui/button';
 </script>
 
@@ -7,10 +7,10 @@
   <title>Error {$page.status} - Arkive</title>
 </svelte:head>
 
-<div class="flex items-center justify-center min-h-[70vh]">
+<main class="flex items-center justify-center min-h-[70vh]">
   <div class="flex flex-col items-center text-center max-w-md px-6">
     <!-- Error code -->
-    <div class="text-6xl font-bold font-mono text-text-muted mb-2">
+    <div class="text-6xl font-bold font-mono text-text-muted mb-2" aria-hidden="true">
       {$page.status}
     </div>
 
@@ -63,4 +63,4 @@
       </details>
     {/if}
   </div>
-</div>
+</main>

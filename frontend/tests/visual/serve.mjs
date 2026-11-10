@@ -7,6 +7,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 const root = resolve(process.argv[2] ?? 'build');
 const port = Number(process.argv[3] ?? 5320);
 
+/** @type {Record<string, string>} */
 const TYPES = {
 	'.html': 'text/html; charset=utf-8',
 	'.js': 'text/javascript; charset=utf-8',
@@ -19,6 +20,7 @@ const TYPES = {
 	'.woff2': 'font/woff2',
 };
 
+/** @param {string} urlPath */
 async function fileFor(urlPath) {
 	const path = normalize(join(root, decodeURIComponent(urlPath)));
 	if (path !== root && !path.startsWith(root + sep)) return null;

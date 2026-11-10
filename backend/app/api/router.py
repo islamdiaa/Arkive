@@ -10,11 +10,13 @@ from app.api import (
     discover,
     drills,
     events,
+    guided_restore,
     jobs,
     logs,
     notifications,
     restore,
     settings,
+    setup_checklist,
     snapshots,
     status,
     storage,
@@ -41,3 +43,5 @@ api_router.include_router(directories.router)
 api_router.include_router(events.router)
 api_router.include_router(verification.router)
 api_router.include_router(drills.router)
+api_router.include_router(guided_restore.router)
+api_router.include_router(setup_checklist.router)

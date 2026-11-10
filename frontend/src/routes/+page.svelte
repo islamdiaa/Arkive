@@ -10,7 +10,9 @@
 	import CommandStrip from '$lib/components/dashboard/CommandStrip.svelte';
 	import StaleBackupsAlert from '$lib/components/dashboard/StaleBackupsAlert.svelte';
 	import RecoveryKitBanner from '$lib/components/dashboard/RecoveryKitBanner.svelte';
+	import OffsiteWarningBanner from '$lib/components/dashboard/OffsiteWarningBanner.svelte';
 	import RestoreDrillsPanel from '$lib/components/dashboard/RestoreDrillsPanel.svelte';
+	import SetupChecklistCard from '$lib/components/dashboard/SetupChecklistCard.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
 	import { api, ApiError } from '$lib/api/client';
@@ -22,6 +24,7 @@
 	import { dashboardHealth, healthDisplay, isConflictTerminalEvent, resolveTrustScore } from '$lib/utils/run-status';
 	import { drillCountsLabel, drillTimestamp } from '$lib/utils/drills';
 	import { jobTypeLabel, pickPrimaryJob } from '$lib/utils/job-types';
+	import { checklistVisible, stepDone } from '$lib/utils/setup-checklist';
 	import { onMount, onDestroy } from 'svelte';
 
 	let data: DashboardData | null = null;
@@ -32,6 +35,7 @@
 	let lastVerifiedAt: string | null = null;
 	let refreshing = false;
 	let refreshQueued = false;
+	let checklistCollapsed = false;
 
 	function applyDashboard(d: DashboardData) {
 		data = d;
@@ -175,6 +179,9 @@
 		? timeAgo(getLastBackupTime(data?.status) ?? '')
 		: 'Never';
 	$: storageValue = formatBytes(getStorageUsed(data?.status));
+	// While the open setup checklist lists the recovery kit, skip the separate banner.
+	$: kitInChecklist =
+		checklistVisible(data?.checklist) && !checklistCollapsed && !stepDone(data?.checklist, 'recovery_kit');
 </script>
 
 <Header title="Dashboard" />
@@ -198,8 +205,16 @@
 			backupDisabled={$backupRunning}
 		/>
 		<StaleBackupsAlert freshness={data?.status?.backup_freshness} />
+		<SetupChecklistCard
+			checklist={data?.checklist}
+			onRunBackup={handleBackup}
+			backupRunning={$backupRunning}
+			onChange={refreshDashboard}
+			bind:collapsed={checklistCollapsed}
+		/>
 		<!-- The unauthenticated minimal status payload defaults this to false; ignore it there. -->
-		<RecoveryKitBanner confirmed={data?.status?.authenticated === false ? undefined : data?.status?.recovery_kit_confirmed} />
+		<RecoveryKitBanner confirmed={data?.status?.authenticated === false || kitInChecklist ? undefined : data?.status?.recovery_kit_confirmed} />
+		<OffsiteWarningBanner offsite={data?.status?.offsite} />
 	{/if}
 
 	{#if loading}
@@ -226,7 +241,7 @@
 			<StatCard
 				label="Last Backup"
 				value={lastBackupValue}
-				gradient="from-primary to-primary-hover"
+				gradient="from-(--color-primary) to-(--color-primary-hover)"
 			>
 				{#if getLastBackupStatus(data.status)}
 					<p class="text-xs mt-1">
@@ -246,7 +261,7 @@
 			</StatCard>
 
 			<div class="card relative overflow-hidden">
-				<div class="absolute top-0 inset-x-0 h-0.5 bg-linear-to-r {trustScore !== null && trustScore >= 80 ? 'from-success to-success' : trustScore !== null && trustScore >= 50 ? 'from-warning to-warning' : trustScore !== null ? 'from-danger to-danger' : 'from-border-muted to-border-muted'}"></div>
+				<div class="absolute top-0 inset-x-0 h-0.5 bg-linear-to-r {trustScore !== null && trustScore >= 80 ? 'from-success to-success' : trustScore !== null && trustScore >= 50 ? 'from-warning to-warning' : trustScore !== null ? 'from-(--color-danger) to-(--color-danger)' : 'from-border-muted to-border-muted'}"></div>
 				<p class="text-xs uppercase tracking-wider text-text-secondary mb-2">Backup Trust Score</p>
 				<div class="flex items-center gap-3">
 					<TrustScoreBadge score={trustScore} {lastVerifiedAt} {verifying} />

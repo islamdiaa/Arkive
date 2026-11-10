@@ -4,7 +4,7 @@
 
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import { safeNext } from '$lib/api/session';
+	import { goToNext } from '$lib/api/session';
 	import { addToast, setupCompleted } from '$lib/stores/app';
 	import { applySession } from '$lib/stores/auth';
 	import { goto } from '$app/navigation';
@@ -12,11 +12,6 @@
 
 	let apiKey = '';
 	let loading = false;
-
-	function nextDestination(): string {
-		if (typeof window === 'undefined') return '/';
-		return safeNext(new URLSearchParams(window.location.search).get('next'));
-	}
 
 	onMount(async () => {
 		try {
@@ -26,7 +21,7 @@
 				return;
 			}
 			if (session.authenticated) {
-				goto(nextDestination());
+				void goToNext(goto);
 			}
 		} catch {
 			// Ignore and let the user attempt login.
@@ -44,7 +39,7 @@
 			const session = await api.login(apiKey.trim());
 			applySession(session);
 			setupCompleted.set(true);
-			goto(nextDestination());
+			void goToNext(goto);
 		} catch (e: any) {
 			addToast({ type: 'error', message: e.message || 'Login failed' });
 		} finally {
@@ -53,7 +48,7 @@
 	}
 </script>
 
-<div class="min-h-screen bg-page flex items-center justify-center p-6">
+<main class="min-h-screen bg-page flex items-center justify-center p-6">
 	<div class="w-full max-w-md card p-8 space-y-6">
 		<div class="space-y-2 text-center">
 			<h1 class="text-2xl font-bold text-text">Sign in to Arkive</h1>
@@ -79,4 +74,4 @@
 			{loading ? 'Signing In...' : 'Sign In'}
 		</button>
 	</div>
-</div>
+</main>

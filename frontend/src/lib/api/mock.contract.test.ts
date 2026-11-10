@@ -5,7 +5,7 @@
  * the real API returns, preventing contract drift between
  * demo mode and production API responses.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mockApi } from './mock';
 
 /**
@@ -222,10 +222,65 @@ describe('Mock API contract validation', () => {
     }
   });
 
+  it('setup checklist matches the GET /api/setup-checklist contract', async () => {
+    const checklist = await mockApi.get('/setup-checklist');
+    for (const field of ['complete', 'completed_count', 'total', 'dismissed', 'dismissed_at', 'steps']) {
+      expect(checklist).toHaveProperty(field);
+    }
+    expect(checklist.steps.map((s: any) => s.id)).toEqual([
+      'first_backup', 'restore_test', 'offsite_target', 'notifications', 'recovery_kit',
+    ]);
+    for (const step of checklist.steps) {
+      for (const field of ['id', 'state', 'done', 'detail', 'completed_at']) {
+        expect(step).toHaveProperty(field);
+      }
+      expect(['done', 'todo', 'running', 'attention']).toContain(step.state);
+      expect(step.done).toBe(step.state === 'done');
+    }
+    expect(['drill', 'verification']).toContain(checklist.steps[1].method);
+    expect(checklist.completed_count).toBe(checklist.steps.filter((s: any) => s.done).length);
+    expect(checklist.total).toBe(5);
+  });
+
+  it('setup checklist follows the demo recovery kit and dismisses once complete', async () => {
+    // Fresh demo state: earlier tests confirm the recovery kit on the shared module.
+    vi.resetModules();
+    const { mockApi: demo } = await import('./mock');
+    const before = await demo.get('/setup-checklist');
+    // Demo data leaves the recovery kit unconfirmed, so dismissing does nothing yet.
+    expect(before.steps.find((s: any) => s.id === 'recovery_kit').done).toBe(false);
+    expect((await demo.post('/setup-checklist/dismiss')).dismissed).toBe(false);
+
+    await demo.post('/settings/recovery-kit/confirm');
+    const after = await demo.get('/setup-checklist');
+    expect(after.complete).toBe(true);
+    const dismissed = await demo.post('/setup-checklist/dismiss');
+    expect(dismissed.dismissed).toBe(true);
+    expect(typeof dismissed.dismissed_at).toBe('string');
+  });
+
   it('targets response wraps targets in a targets array', async () => {
     const result = await mockApi.listTargets();
     expect(result).toHaveProperty('targets');
     expect(Array.isArray(result.targets)).toBe(true);
     expect(result.targets.length).toBeGreaterThan(0);
+  });
+
+  it('logs response matches GET /api/logs: a list of parsed entries, newest first', async () => {
+    // It used to be one newline-joined string, which the logs page could not
+    // render, so demo mode (and the a11y gate) only ever saw "Loading logs…".
+    for (const result of [await mockApi.getLogs(), await mockApi.get('/logs?lines=500')]) {
+      expect(Array.isArray(result.items)).toBe(true);
+      expect(result.logs).toEqual(result.items);
+      expect(result.total).toBe(result.items.length);
+      expect(result.items.length).toBeGreaterThan(0);
+      for (const entry of result.items) {
+        for (const field of ['timestamp', 'level', 'run_id', 'component', 'message']) {
+          expect(entry).toHaveProperty(field);
+        }
+      }
+      const stamps = result.items.map((e: any) => e.timestamp);
+      expect(stamps).toEqual([...stamps].sort().reverse());
+    }
   });
 });

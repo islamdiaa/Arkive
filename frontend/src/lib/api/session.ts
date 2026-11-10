@@ -13,11 +13,51 @@ export const navigation = {
 
 let redirecting = false;
 
-/** Only allow same-origin relative paths as post-login destinations. */
+// Stand-in origin for parsing ?next=: a path that resolves anywhere else would
+// leave Arkive's origin too, wherever Arkive is served.
+const PARSE_ORIGIN = 'http://arkive.invalid';
+
+/**
+ * Only allow same-origin paths as post-login destinations. Returns the path
+ * as the URL parser reads it, or '/'.
+ *
+ * Prefix checks are not enough: browsers drop tab, CR and LF and read '\' as
+ * '/' while parsing, so '/\t/evil.example' means '//evil.example'. Parse it the
+ * same way and compare origins instead.
+ */
 export function safeNext(raw: string | null | undefined): string {
-	if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/\\')) return '/';
-	if (raw === '/login' || raw.startsWith('/login?') || raw.startsWith('/setup')) return '/';
-	return raw;
+	if (!raw || !raw.startsWith('/')) return '/';
+	let url: URL;
+	try {
+		url = new URL(raw, PARSE_ORIGIN);
+	} catch {
+		return '/';
+	}
+	if (url.origin !== PARSE_ORIGIN) return '/';
+	const path = url.pathname + url.search + url.hash;
+	// A dot segment can leave '//' at the start ('/.//evil.example'), which
+	// would be protocol-relative once handed back as a string.
+	if (path.startsWith('//')) return '/';
+	if (url.pathname === '/login' || url.pathname.startsWith('/setup')) return '/';
+	return path;
+}
+
+/**
+ * Leaves /login for its ?next= destination using `go` (SvelteKit's goto).
+ *
+ * SvelteKit 3's goto() rejects a path that matches no route. Load the path the
+ * way a link would instead, so the user lands on the 404 page rather than
+ * staying on /login. goto() also rejects a URL on another origin; the fallback
+ * re-checks the origin so it can never turn that into an off-site redirect.
+ */
+export async function goToNext(go: (url: string) => Promise<unknown>): Promise<void> {
+	const next = safeNext(new URLSearchParams(window.location.search).get('next'));
+	try {
+		await go(next);
+	} catch {
+		if (new URL(next, window.location.href).origin !== window.location.origin) return;
+		navigation.assign(next);
+	}
 }
 
 export function loginUrl(next?: string | null): string {

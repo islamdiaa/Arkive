@@ -70,8 +70,13 @@ make test            # backend core lane (what CI runs on every PR)
 make test-slow       # Docker and storage-provider integration tests
 make frontend-check  # svelte-check, Vitest and a production build
 make test-e2e        # Playwright end-to-end suite, in Docker
+make test-upgrade    # 0.2.4 install upgraded to an image of this tree, in Docker
 make lint            # ruff check + format check, bandit
 ```
+
+Run `make test-upgrade` before a release and after changing migrations, the
+keyfile guard, dump naming or job semantics; see
+[docs/upgrade-path-test.md](docs/upgrade-path-test.md).
 
 Test doubles for database dumps must produce realistic output (including the
 dump tool's completion trailer). See `CLAUDE.md` for the invariants the test
@@ -98,6 +103,9 @@ Prefixes: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, `perf`.
 - Reference any related issues (e.g., "Fixes #42")
 - Ensure all tests pass
 - Update documentation if your change affects user-facing behavior
+- Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for changes users will notice
+
+Releases are cut by tagging; see [RELEASING.md](RELEASING.md).
 
 ## Adding Container Profiles
 

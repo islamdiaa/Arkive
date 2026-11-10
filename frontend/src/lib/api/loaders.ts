@@ -4,6 +4,8 @@
  * the await expressions with $.track_reactivity_loss().
  */
 import { api } from './client';
+import { getSetupChecklist } from './setup-checklist';
+import type { SetupChecklist } from '$lib/utils/setup-checklist';
 
 export interface DashboardData {
   status: any;
@@ -14,6 +16,8 @@ export interface DashboardData {
   /** Set when the jobs request failed, so the UI never claims "no jobs". */
   jobsError: string | null;
   activityError: string | null;
+  /** Post-setup "finish protecting this server" checklist; null hides the card. */
+  checklist: SetupChecklist | null;
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
@@ -25,6 +29,7 @@ export async function loadDashboard(): Promise<DashboardData> {
     error: null,
     jobsError: null,
     activityError: null,
+    checklist: null,
   };
 
   try {
@@ -49,6 +54,10 @@ export async function loadDashboard(): Promise<DashboardData> {
 
   try {
     result.storage = await api.getStorageStats();
+  } catch {}
+
+  try {
+    result.checklist = await getSetupChecklist();
   } catch {}
 
   return result;

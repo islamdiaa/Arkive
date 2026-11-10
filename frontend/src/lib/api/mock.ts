@@ -68,6 +68,16 @@ const DEMO_STATUS = {
   },
   recovery_kit_confirmed: false,
   last_drill: DEMO_LAST_DRILL as typeof DEMO_LAST_DRILL | null,
+  offsite: {
+    has_offsite_copy: true,
+    warning: false,
+    uncertain: false,
+    enabled_targets: 2,
+    offsite_targets: 2,
+    local_targets: [] as Array<{ id: string; name: string; type: string; reason: string }>,
+    unused_offsite_targets: [] as Array<{ id: string; name: string; type: string }>,
+    message: null as string | null,
+  },
 };
 
 const DEMO_JOBS = {
@@ -189,14 +199,144 @@ const DEMO_TARGETS = {
 
 const DEMO_DATABASES = {
   databases: [
-    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null, excluded: false },
-    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null, excluded: false },
-    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null, excluded: false },
-    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null, excluded: false },
-    { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null, excluded: false },
-    { container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db', excluded: false },
+    { key: 'immich-postgres_immich-3f2a9c1d', container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null, excluded: false },
+    { key: 'vaultwarden-db_vaultwarden-8b41e0a7', container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null, excluded: false },
+    { key: 'paperless-db_paperless-c95d1b22', container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null, excluded: false },
+    { key: 'nextcloud-mariadb_nextcloud-1e7f4a90', container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null, excluded: false },
+    { key: 'authelia-redis_redis-64c0d3b8', container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null, excluded: false },
+    { key: 'home-assistant_home-assistant_v2.db-a07e5f31', container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db', excluded: false },
   ],
 };
+
+const MIB = 1024 * 1024;
+
+/** Twice-daily dump history (oldest first) ending 12 minutes ago. */
+function _demoTrend(sizesMb: number[], shrunkLast = false): any[] {
+  const n = sizesMb.length;
+  return sizesMb.map((mb, i) => {
+    const at = new Date(Date.now() - 720000 - (n - 1 - i) * 12 * 3600000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    return {
+      run_id: `run-demo-${n - i}`,
+      at,
+      status: 'success',
+      size_bytes: Math.round(mb * MIB),
+      shrunk: shrunkLast && i === n - 1,
+    };
+  });
+}
+
+function _demoHealth(index: number, sizesMb: number[], extra: Record<string, any> = {}): any {
+  const db = DEMO_DATABASES.databases[index];
+  const trend = extra.trend ?? _demoTrend(sizesMb, !!extra.shrunk);
+  const last = trend[trend.length - 1];
+  const previous = trend[trend.length - 2];
+  return {
+    key: db.key,
+    container_name: db.container_name,
+    db_type: db.db_type,
+    db_name: db.db_name,
+    host_path: db.host_path,
+    excluded: db.excluded,
+    status: 'ok',
+    issues: [] as string[],
+    notes: [] as string[],
+    last_attempt: { status: 'success', at: last.at, run_id: last.run_id, error: null },
+    last_success_at: last.at,
+    last_success_run_id: last.run_id,
+    size_bytes: last.size_bytes,
+    integrity_check: 'ok',
+    baseline_bytes: previous ? previous.size_bytes : null,
+    size_change_percent: previous ? Math.round(((last.size_bytes - previous.size_bytes) * 1000) / previous.size_bytes) / 10 : null,
+    shrunk: false,
+    shrink_percent: null as number | null,
+    trend,
+    last_drill: null as any,
+    restorable_as_of: last.at,
+    ...extra,
+  };
+}
+
+function _demoDrill(drillId: string, status: string, detail: string): any {
+  const drill = DEMO_DRILLS.items.find((d) => d.id === drillId);
+  return {
+    status,
+    at: drill?.completed_at ?? null,
+    drill_id: drillId,
+    detail,
+    dump_file: null,
+    dump_dumped_at: drill?.started_at ?? null,
+    snapshot_id: drill?.snapshot_id ?? null,
+  };
+}
+
+function _demoDatabaseHealth(): any {
+  const items = [
+    _demoHealth(0, [205, 206, 206, 207, 208, 208, 209, 210, 211, 211, 212, 213, 214, 214], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into postgres:14 — 42 tables'),
+    }),
+    _demoHealth(1, [5, 5, 5, 5, 5, 5, 5, 5, 5.1, 5.1, 5.1, 5.1, 5.1, 5.1], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into postgres:16-alpine — 31 tables'),
+    }),
+    _demoHealth(2, [96, 96, 97, 97, 97, 98, 98, 98, 99, 99, 99, 100, 100, 100], {
+      status: 'warning',
+      issues: ['Last restore drill failed'],
+      last_drill: _demoDrill('drill-demo-0', 'failed', 'psql: ERROR: relation "documents_document" does not exist'),
+    }),
+    _demoHealth(3, [98, 98, 99, 99, 99, 100, 100, 100, 100, 101, 101, 101, 102, 102], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into mariadb:11 — 108 tables'),
+    }),
+    _demoHealth(4, [2, 2, 2.1, 2, 2.1, 2.1, 2, 2.1, 2.1, 2.1, 2.2, 2.1, 2.2, 2.2], {
+      last_drill: _demoDrill('drill-demo-1', 'skipped', 'redis dumps are not drill-tested'),
+      // Redis dumps aren't size-checked (see services/database_health.py).
+      baseline_bytes: null,
+      notes: ['Dump size is not checked for shrinking: Redis dumps are cache and queue snapshots'],
+    }),
+    _demoHealth(5, [1180, 1184, 1190, 1195, 1199, 1204, 1210, 1214, 1219, 1224, 1229, 1233, 1238, 392], {
+      status: 'warning',
+      shrunk: true,
+      shrink_percent: 68,
+      baseline_bytes: 1229 * MIB,
+      size_change_percent: -68.3,
+      issues: ['Latest dump is 68% smaller than its recent median (392.0 MB vs 1.2 GB)'],
+    }),
+  ];
+  const summary = { ok: 0, warning: 0, failed: 0, never_dumped: 0, excluded: 0 } as Record<string, number>;
+  for (const item of items) summary[item.status] = (summary[item.status] ?? 0) + 1;
+  return {
+    items,
+    databases: items,
+    total: items.length,
+    summary,
+    policy: {
+      shrink_alert_percent: DEMO_SETTINGS.dump_shrink_alert_percent,
+      shrink_min_mb: DEMO_SETTINGS.dump_shrink_min_mb,
+      baseline_dumps: 5,
+      min_baseline_dumps: 3,
+    },
+    latest_upload_at: items[0].restorable_as_of,
+    generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+}
+
+let DEMO_DATABASE_HEALTH: any = null;
+
+function _mockDatabaseHealth(): any {
+  DEMO_DATABASE_HEALTH = DEMO_DATABASE_HEALTH ?? _demoDatabaseHealth();
+  return DEMO_DATABASE_HEALTH;
+}
+
+function _mockAcceptDatabaseSize(key: string): any {
+  const health = _mockDatabaseHealth();
+  const item = health.items.find((i: any) => i.key === key);
+  if (!item) return { key, accepted_from: null };
+  item.shrunk = false;
+  item.shrink_percent = null;
+  item.baseline_bytes = null;
+  item.issues = item.issues.filter((issue: string) => !issue.startsWith('Latest dump is'));
+  item.trend = item.trend.map((p: any) => ({ ...p, shrunk: false }));
+  if (item.status === 'warning' && item.issues.length === 0) item.status = 'ok';
+  return { key, accepted_from: item.last_success_at };
+}
 
 const DEMO_ACTIVITY = {
   activities: [
@@ -265,6 +405,8 @@ const DEMO_SETTINGS = {
   restore_drill_schedule: '0 7 * * 0',
   restore_drill_max_databases: 3,
   restore_drill_max_dump_mb: 2048,
+  dump_shrink_alert_percent: 50,
+  dump_shrink_min_mb: 1,
   recovery_kit_confirmed_at: null as string | null,
   schedule: '0 3 * * *',
   retention: { keep_daily: 7, keep_weekly: 4, keep_monthly: 6 },
@@ -323,9 +465,256 @@ const DEMO_DRILL_RESULTS: Record<string, any[]> = {
   ],
 };
 
+// ── Guided database restore (demo) ──
+const GUIDED_LOAD_STEPS: Array<[string, string]> = [
+  ['check_container', 'Check the database container'],
+  ['locate_dump', 'Find the dump in the snapshot'],
+  ['restore_dump', 'Restore the dump from the repository'],
+  ['verify_dump', 'Check the dump is complete'],
+  ['safety_dump', 'Take a safety dump of the current database'],
+  ['stop_apps', 'Stop the apps that use the database'],
+  ['load', 'Load the dump into the database'],
+  ['verify', 'Check the restored database'],
+  ['start_apps', 'Start the apps again'],
+];
+const GUIDED_MANUAL_STEPS: Array<[string, string]> = [
+  ['locate_dump', 'Find the dump in the snapshot'],
+  ['restore_dump', 'Restore the dump from the repository'],
+  ['verify_dump', 'Check the dump is complete'],
+  ['safety_dump', 'Take a safety dump of the current database'],
+  ['instructions', 'Swap the file in by hand'],
+];
+const GUIDED_DURATION_MS = 6000;
+
+const DEMO_GUIDED_DEPENDENTS: Record<string, string[]> = {
+  'immich-postgres': ['immich-server'],
+  'vaultwarden-db': ['vaultwarden'],
+  'paperless-db': ['paperless-ngx'],
+  'nextcloud-mariadb': ['nextcloud'],
+};
+
+function _guidedMethod(dbType: string): 'load' | 'manual' | 'unsupported' {
+  if (dbType === 'postgres' || dbType === 'mariadb' || dbType === 'mysql') return 'load';
+  if (dbType === 'sqlite') return 'manual';
+  return 'unsupported';
+}
+
+function _guidedDependents(container: string) {
+  return (DEMO_GUIDED_DEPENDENTS[container] || []).map((name) => ({ name, status: 'running', reason: 'uses this database' }));
+}
+
+function _guidedOptions(): any {
+  return {
+    databases: DEMO_DATABASES.databases.map((d) => {
+      const method = _guidedMethod(d.db_type);
+      return {
+        container_name: d.container_name,
+        db_type: d.db_type,
+        db_name: d.db_name,
+        host_path: d.host_path,
+        container_status: 'running',
+        method,
+        reason: method === 'unsupported' ? `Guided restore does not support ${d.db_type} yet.` : null,
+        dependents: _guidedDependents(d.container_name),
+      };
+    }),
+  };
+}
+
+function _guidedDumpFile(container: string, db: string, dbType: string): string {
+  return `${container}_${db}-1a2b3c4d_20261109_030000.${dbType === 'sqlite' ? 'sqlite3' : 'sql'}`;
+}
+
+function _mockGuidedPreview(data: any): any {
+  const method = _guidedMethod(data?.db_type);
+  const steps = method === 'manual' ? GUIDED_MANUAL_STEPS : GUIDED_LOAD_STEPS;
+  const snap = DEMO_SNAPSHOTS.snapshots.find((s) => s.id === data?.snapshot_id) || DEMO_SNAPSHOTS.snapshots[0];
+  const target = DEMO_TARGETS.targets.find((t) => t.id === snap.target_id);
+  const dependents = _guidedDependents(data?.container_name);
+  return {
+    method,
+    database: {
+      container_name: data?.container_name,
+      db_type: data?.db_type,
+      db_name: data?.db_name,
+      host_path: data?.host_path ?? null,
+      container_detail: method === 'load' ? 'psql connects as postgres; 3 open session(s) will be disconnected' : null,
+    },
+    snapshot: { id: snap.id, full_id: snap.full_id, time: snap.time, target_id: snap.target_id, target_name: target?.name || snap.target_id },
+    dump: { file: _guidedDumpFile(data?.container_name, data?.db_name, data?.db_type), size_bytes: 214748364, created_at: snap.time, source: 'manifest' },
+    dependents,
+    confirm_phrase: method === 'load' ? data?.db_name : null,
+    steps: steps.map(([key, label]) => ({ key, label })),
+    blockers: [] as string[],
+    warnings: dependents.length
+      ? ["Apps that use this database are running. Stop them during the restore (selected below) so they don't write to the database while it is replaced or run migrations against a half-loaded one."]
+      : [],
+    safety_dump_retention_days: 14,
+  };
+}
+
+const DEMO_GUIDED_RESTORES: Record<string, any> = {};
+const DEMO_GUIDED_ORDER: string[] = [];
+
+function _guidedRecord(kind: 'restore' | 'undo', data: any, parent?: any): any {
+  const id = `demo${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+  const method = _guidedMethod(data.db_type);
+  const steps = method === 'manual' ? GUIDED_MANUAL_STEPS : GUIDED_LOAD_STEPS;
+  const record = {
+    id,
+    kind,
+    parent_id: parent?.id ?? null,
+    status: 'running',
+    phase: steps[0][0],
+    method,
+    container_name: data.container_name,
+    db_type: data.db_type,
+    db_name: data.db_name,
+    host_path: data.host_path ?? null,
+    target_id: kind === 'undo' ? null : data.target_id,
+    target_name: kind === 'undo' ? null : DEMO_TARGETS.targets.find((t) => t.id === data.target_id)?.name ?? null,
+    snapshot_id: kind === 'undo' ? null : data.snapshot_id,
+    dump_file: _guidedDumpFile(data.container_name, data.db_name, data.db_type),
+    dump_size_bytes: 214748364,
+    safety_dump: null as any,
+    database_changed: null as boolean | null,
+    stop_containers: data.stop_containers || [],
+    stopped_containers: [] as string[],
+    steps: (kind === 'undo' ? steps.filter(([k]) => k !== 'locate_dump' && k !== 'restore_dump') : steps).map(([key, label]) => ({ key, label, status: 'pending', detail: null as string | null })),
+    instructions: [] as Array<{ text: string; command: string | null }>,
+    warnings: [] as string[],
+    progress: null as { bytes_done: number; bytes_total: number } | null,
+    error_message: null as string | null,
+    started_at: new Date().toISOString(),
+    completed_at: null as string | null,
+    duration_seconds: null as number | null,
+    can_undo: false,
+  };
+  DEMO_GUIDED_RESTORES[id] = record;
+  DEMO_GUIDED_ORDER.unshift(id);
+  return record;
+}
+
+function _guidedAdvance(record: any): any {
+  if (record.status !== 'running') return record;
+  const elapsed = Date.now() - new Date(record.started_at).getTime();
+  const fraction = Math.min(1, elapsed / GUIDED_DURATION_MS);
+  const doneCount = Math.floor(fraction * record.steps.length);
+  record.steps.forEach((step: any, i: number) => {
+    if (i < doneCount) {
+      step.status = step.key === 'stop_apps' && !record.stop_containers.length ? 'skipped' : 'done';
+      if (step.key === 'start_apps' && !record.stop_containers.length) step.status = 'skipped';
+      step.detail = step.detail || (step.status === 'done' ? 'ok (demo)' : 'none selected');
+    } else if (i === doneCount && fraction < 1) {
+      step.status = 'running';
+      record.phase = step.key;
+    }
+  });
+  const loadIndex = record.steps.findIndex((s: any) => s.key === 'load');
+  record.progress = record.phase === 'load' && loadIndex >= 0
+    ? { bytes_done: Math.round(214748364 * Math.min(1, (fraction * record.steps.length - loadIndex))), bytes_total: 214748364 }
+    : null;
+  if (fraction >= 1) {
+    record.phase = null;
+    record.progress = null;
+    record.completed_at = new Date().toISOString();
+    record.duration_seconds = Math.round(GUIDED_DURATION_MS / 1000);
+    record.stopped_containers = [...record.stop_containers];
+    const safetyPath = `/config/restores/guided-${record.id}/safety/${record.container_name}_${record.db_name}-9f8e7d6c_20261109_120000.${record.method === 'manual' ? 'sqlite3' : 'sql'}`;
+    record.safety_dump = { file: safetyPath.split('/').pop(), path: safetyPath, size_bytes: 209715200, available: true };
+    if (record.method === 'manual') {
+      record.status = 'action_required';
+      const live = record.host_path || '/mnt/user/appdata/app/app.db';
+      const restored = `/mnt/user/appdata/arkive/restores/guided-${record.id}/restored/${record.dump_file}`;
+      record.instructions = [
+        { text: `Stop the ${record.container_name} container (Docker tab, or run this on the server):`, command: `docker stop ${record.container_name}` },
+        { text: 'Keep a copy of the current database files next to them:', command: `for f in ${live} ${live}-wal ${live}-shm; do [ -e "$f" ] && cp -a "$f" "$f.before-restore-20261109"; done` },
+        { text: 'Remove the current write-ahead log files. They belong to the current database and would corrupt the restored one if left in place:', command: `rm -f ${live}-wal ${live}-shm` },
+        { text: 'Copy the restored database over the current one (the file keeps its owner and permissions):', command: `cp ${restored} ${live}` },
+        { text: `Start the ${record.container_name} container again:`, command: `docker start ${record.container_name}` },
+      ];
+    } else {
+      record.status = 'completed';
+      record.database_changed = true;
+      record.can_undo = true;
+    }
+  }
+  return record;
+}
+
+function _mockGuidedHistory(): any {
+  const items = DEMO_GUIDED_ORDER.map((id) => _guidedAdvance(DEMO_GUIDED_RESTORES[id]));
+  return { items, total: items.length };
+}
+
+function _mockGuidedGet(id: string): any {
+  const record = DEMO_GUIDED_RESTORES[id];
+  if (!record) throw new Error('Restore not found');
+  return _guidedAdvance(record);
+}
+
+function _mockGuidedStart(data: any): any {
+  const record = _guidedRecord('restore', data || {});
+  return { id: record.id, status: 'running' };
+}
+
+function _mockGuidedUndo(id: string, data: any): any {
+  const parent = DEMO_GUIDED_RESTORES[id];
+  if (!parent) throw new Error('Restore not found');
+  const record = _guidedRecord('undo', { ...parent, stop_containers: data?.stop_containers ?? parent.stop_containers }, parent);
+  return { id: record.id, status: 'running' };
+}
+
+
 function _mockDrillDetail(id: string): any {
   const drill = DEMO_DRILLS.items.find(d => d.id === id) || DEMO_DRILLS.items[0];
   return { ...drill, results: DEMO_DRILL_RESULTS[drill.id] ?? [] };
+}
+
+/** Demo "finish protecting this server" checklist, derived from the other demo data. */
+let DEMO_CHECKLIST_DISMISSED_AT: string | null = null;
+
+function _mockSetupChecklist(): any {
+  const drill = DEMO_STATUS.last_drill;
+  const offsite = DEMO_TARGETS.targets.filter(t => t.type !== 'local' && t.enabled);
+  const channels = DEMO_CHANNELS.channels.filter(c => c.enabled);
+  const step = (id: string, done: boolean, detail: string | null, completedAt: string | null, extra = {}) => ({
+    id,
+    state: done ? 'done' : 'todo',
+    done,
+    detail,
+    completed_at: done ? completedAt : null,
+    ...extra,
+  });
+  const steps = [
+    step('first_backup', DEMO_STATUS.last_backup_status === 'success', null, DEMO_STATUS.last_backup.completed_at),
+    step(
+      'restore_test',
+      drill?.status === 'passed',
+      drill ? `${drill.databases_passed} of ${drill.databases_tested} databases restored in the last drill` : null,
+      drill?.completed_at ?? null,
+      { method: 'drill' },
+    ),
+    step('offsite_target', offsite.length > 0, offsite.map(t => t.name).join(', ') || null, null),
+    step('notifications', channels.length > 0, channels.map(c => c.name).join(', ') || null, null),
+    step('recovery_kit', DEMO_STATUS.recovery_kit_confirmed, null, DEMO_SETTINGS.recovery_kit_confirmed_at),
+  ];
+  const completed = steps.filter(s => s.done).length;
+  return {
+    complete: completed === steps.length,
+    completed_count: completed,
+    total: steps.length,
+    dismissed: DEMO_CHECKLIST_DISMISSED_AT !== null,
+    dismissed_at: DEMO_CHECKLIST_DISMISSED_AT,
+    steps,
+  };
+}
+
+function _mockDismissSetupChecklist(): any {
+  const checklist = _mockSetupChecklist();
+  // The real API answers 409 until every step is done; demo mode just leaves it visible.
+  if (checklist.complete && !checklist.dismissed) DEMO_CHECKLIST_DISMISSED_AT = new Date().toISOString();
+  return _mockSetupChecklist();
 }
 
 function _mockRecoveryKit(): any {
@@ -387,24 +776,43 @@ const DEMO_DIR_SUGGESTIONS = [
   { path: '/mnt/user/photos', priority: 'optional', size_bytes: 107374182400, file_count: 24000, reason: 'Personal photos (irreplaceable)' },
 ];
 
+// Same shape as GET /api/logs (backend/app/api/logs.py): parsed JSON log
+// lines, newest first, under `items` with `logs` as an alias.
+const DEMO_LOG_ITEMS = ([
+  ['2026-02-26T03:00:00Z', 'INFO', 'orchestrator', 'Starting daily backup run...'],
+  ['2026-02-26T03:00:01Z', 'INFO', 'discovery', 'Discovery: scanning Docker socket...'],
+  ['2026-02-26T03:00:02Z', 'INFO', 'discovery', 'Found 14 containers, 6 databases'],
+  ['2026-02-26T03:00:03Z', 'INFO', 'db_dumper', 'Dumping postgres: immich (2.0 GB)'],
+  ['2026-02-26T03:00:45Z', 'INFO', 'db_dumper', 'Dumping postgres: vaultwarden (50 MB)'],
+  ['2026-02-26T03:00:50Z', 'INFO', 'db_dumper', 'Dumping postgres: paperless (1.0 GB)'],
+  ['2026-02-26T03:01:20Z', 'INFO', 'db_dumper', 'Dumping mariadb: nextcloud (3.0 GB)'],
+  ['2026-02-26T03:02:00Z', 'INFO', 'db_dumper', 'Dumping redis: authelia (10 MB)'],
+  ['2026-02-26T03:02:05Z', 'INFO', 'db_dumper', 'Dumping influxdb: homeassistant (5.0 GB)'],
+  ['2026-02-26T03:03:30Z', 'INFO', 'backup_engine', 'Creating restic snapshot...'],
+  ['2026-02-26T03:04:00Z', 'INFO', 'backup_engine', 'Snapshot created: abc123def'],
+  ['2026-02-26T03:04:01Z', 'INFO', 'backup_engine', 'Syncing to Backblaze B2...'],
+  ['2026-02-26T03:04:30Z', 'WARNING', 'backup_engine', 'B2 upload slow: retrying part 14 of 96'],
+  ['2026-02-26T03:05:42Z', 'INFO', 'orchestrator', 'Backup complete. Duration: 5m42s. Size: 12.0 GB'],
+  ['2026-02-26T03:05:43Z', 'INFO', 'notifier', 'Notification sent to Discord'],
+  ['2026-02-26T03:05:44Z', 'INFO', 'backup_engine', 'Retention: pruned 2 old snapshots'],
+] as const)
+  .map(([timestamp, level, component, message]) => ({
+    timestamp,
+    level,
+    run_id: 'run-demo-1',
+    component: `app.services.${component}`,
+    message,
+  }))
+  .reverse();
+
 const DEMO_LOGS = {
-  logs: [
-    `[2026-02-26T03:00:00Z] INFO  Starting daily backup run...`,
-    `[2026-02-26T03:00:01Z] INFO  Discovery: scanning Docker socket...`,
-    `[2026-02-26T03:00:02Z] INFO  Found 14 containers, 6 databases`,
-    `[2026-02-26T03:00:03Z] INFO  Dumping postgres: immich (2.0 GB)`,
-    `[2026-02-26T03:00:45Z] INFO  Dumping postgres: vaultwarden (50 MB)`,
-    `[2026-02-26T03:00:50Z] INFO  Dumping postgres: paperless (1.0 GB)`,
-    `[2026-02-26T03:01:20Z] INFO  Dumping mariadb: nextcloud (3.0 GB)`,
-    `[2026-02-26T03:02:00Z] INFO  Dumping redis: authelia (10 MB)`,
-    `[2026-02-26T03:02:05Z] INFO  Dumping influxdb: homeassistant (5.0 GB)`,
-    `[2026-02-26T03:03:30Z] INFO  Creating restic snapshot...`,
-    `[2026-02-26T03:04:00Z] INFO  Snapshot created: abc123def`,
-    `[2026-02-26T03:04:01Z] INFO  Syncing to Backblaze B2...`,
-    `[2026-02-26T03:05:42Z] INFO  Backup complete. Duration: 5m42s. Size: 12.0 GB`,
-    `[2026-02-26T03:05:43Z] INFO  Notification sent to Discord`,
-    `[2026-02-26T03:05:44Z] INFO  Retention: pruned 2 old snapshots`,
-  ].join('\n'),
+  items: DEMO_LOG_ITEMS,
+  logs: DEMO_LOG_ITEMS,
+  total: DEMO_LOG_ITEMS.length,
+  limit: 500,
+  offset: 0,
+  has_more: false,
+  truncated: false,
 };
 
 // Simulate a short delay
@@ -436,11 +844,16 @@ async function _mockGet(path: string): Promise<any> {
     return DEMO_TARGETS.targets.find(t => t.id === id) || DEMO_TARGETS.targets[0];
   }
   if (clean === '/databases') return DEMO_DATABASES;
+  if (clean === '/databases/health') return _mockDatabaseHealth();
   if (clean === '/notifications') return DEMO_CHANNELS;
   if (clean === '/notifications/events') return fallbackEventCatalog();
   if (clean === '/drills') return DEMO_DRILLS;
+  if (clean === '/restore/database/options') return _guidedOptions();
+  if (clean === '/restore/database') return _mockGuidedHistory();
+  if (clean.startsWith('/restore/database/')) return _mockGuidedGet(decodeURIComponent(clean.split('/')[3] ?? ''));
   if (clean.startsWith('/drills/')) return _mockDrillDetail(decodeURIComponent(clean.split('/')[2] ?? ''));
   if (clean === '/settings') return DEMO_SETTINGS;
+  if (clean === '/setup-checklist') return _mockSetupChecklist();
   if (clean === '/activity') return DEMO_ACTIVITY;
   if (clean === '/storage') return DEMO_STORAGE;
   if (clean.startsWith('/snapshots')) return DEMO_SNAPSHOTS;
@@ -477,7 +890,9 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean === '/auth/rotate-key') return { api_key: 'demo-new-key-67890' };
   if (clean === '/jobs') return { ...data, id: `job-new-${Date.now()}` };
   if (clean === '/drills/run') return { drill_id: `drill-demo-${Date.now()}`, status: 'running' };
+  if (clean === '/databases/health/accept-size') return _mockAcceptDatabaseSize(String(data?.key ?? ''));
   if (clean === '/settings/recovery-kit') return _mockRecoveryKit();
+  if (clean === '/setup-checklist/dismiss') return _mockDismissSetupChecklist();
   if (clean === '/settings/recovery-kit/confirm') {
     const confirmedAt = new Date().toISOString();
     DEMO_SETTINGS.recovery_kit_confirmed_at = confirmedAt;
@@ -494,6 +909,9 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean.startsWith('/notifications/') && clean.endsWith('/test')) return { status: 'ok' };
   if (clean.endsWith('/test')) return { success: true, message: 'Connection OK (demo)', tested_at: new Date().toISOString() };
   if (clean === '/restore') return _mockRestore(data);
+  if (clean === '/restore/database/preview') return _mockGuidedPreview(data);
+  if (clean === '/restore/database') return _mockGuidedStart(data);
+  if (clean.startsWith('/restore/database/') && clean.endsWith('/undo')) return _mockGuidedUndo(decodeURIComponent(clean.split('/')[3] ?? ''), data);
   if (clean === '/discover/scan') return DEMO_CONTAINERS;
   if (clean === '/directories/scan') return { ...DEMO_DIRECTORIES, suggestions: DEMO_DIR_SUGGESTIONS, platform: 'unraid' };
   if (clean === '/directories') return { ...data, id: `dir-new-${Date.now()}` };
@@ -599,6 +1017,8 @@ export const mockApi = {
   listContainers: async () => { await delay(); return DEMO_CONTAINERS; },
 
   listDatabases: async () => { await delay(); return DEMO_DATABASES; },
+  getDatabaseHealth: async () => { await delay(); return _mockDatabaseHealth(); },
+  acceptDatabaseSize: async (key: string) => { await delay(); return _mockAcceptDatabaseSize(key); },
   setDatabaseExcluded: async (db: any, excluded: boolean) => {
     await delay();
     const entry = DEMO_DATABASES.databases.find(

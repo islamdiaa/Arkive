@@ -46,10 +46,13 @@
 
 <Header title="Restore" />
 
-<div class="p-6 space-y-6">
-  <div>
-    <h1 class="text-2xl font-semibold text-text">Browse & Restore</h1>
-    <p class="text-sm text-text-secondary mt-1">Select a snapshot to browse files and restore</p>
+<main class="p-6 space-y-6">
+  <div class="flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <h2 class="text-2xl font-semibold text-text">Browse & Restore</h2>
+      <p class="text-sm text-text-secondary mt-1">Select a snapshot to browse files and restore</p>
+    </div>
+    <a href="/restore/database" class="btn-secondary text-sm">Restore a database</a>
   </div>
 
   {#if error}
@@ -89,7 +92,7 @@
       {/each}
     </div>
   {/if}
-</div>
+</main>
 
 <SnapshotBrowser bind:open={showBrowser} snapshot={selectedSnapshot} nodes={browserNodes} />
 <RestoreModal bind:open={showRestore} snapshot={selectedSnapshot} />

@@ -18,6 +18,7 @@ compression, size, integrity), see ``write_dump_manifest``.
 """
 
 import asyncio
+import copy
 import functools
 import gzip
 import hashlib
@@ -58,6 +59,25 @@ PG_DUMPALL_TRAILER = b"PostgreSQL database cluster dump complete"
 MYSQL_DUMP_TRAILER = b"-- Dump completed"
 DUMP_TRAILERS = (PG_DUMP_TRAILER, PG_DUMPALL_TRAILER, MYSQL_DUMP_TRAILER)
 _TAIL_BYTES = 4096
+# How often a dump with DBDumper.min_free_bytes set checks free space.
+_SPACE_CHECK_BYTES = 64 * 1024 * 1024
+
+# pg_dump options (followed by -U <user> -d <database>).
+PG_DUMP_COMMAND = ["pg_dump", "--clean", "--create", "--if-exists"]
+# mysqldump / mariadb-dump options (after the binary and -u <user>).
+# Stored procedures/functions and events are not dumped by default; triggers
+# are. The connection character set is pinned to utf8mb4 because MySQL 5.7's
+# mysqldump defaults to 3-byte utf8 and writes emoji and other 4-byte
+# characters as "?" (silently, exit code 0). --no-tablespaces: MySQL 8 prints
+# "Access denied; you need ... the PROCESS privilege" for every dump made with
+# app-user credentials otherwise (NDB tablespace statements only).
+MYSQL_DUMP_OPTIONS = [
+    "--single-transaction",
+    "--routines",
+    "--events",
+    "--no-tablespaces",
+    "--default-character-set=utf8mb4",
+]
 
 DUMP_COMPRESSIONS = ("none", "gzip")
 DUMP_MANIFEST_NAME = "arkive-dumps-manifest.json"
@@ -100,6 +120,20 @@ def safe_name(value: str) -> str:
 def postgres_user_from_env(env: dict[str, str]) -> str:
     """The role Arkive connects as for a Postgres container (from its environment)."""
     return env.get("POSTGRES_USER") or env.get("DB_USERNAME") or env.get("DB_USER") or "postgres"
+
+
+def mysql_credentials_from_env(env: dict[str, str]) -> tuple[str, str]:
+    """User and password Arkive connects with to a MariaDB/MySQL container:
+    root with the root password, else the app user with its password, else
+    root without a password."""
+    root_password = env.get("MYSQL_ROOT_PASSWORD") or env.get("MARIADB_ROOT_PASSWORD")
+    app_user = env.get("MYSQL_USER") or env.get("MARIADB_USER")
+    app_password = env.get("MYSQL_PASSWORD") or env.get("MARIADB_PASSWORD")
+    if root_password:
+        return "root", root_password
+    if app_user and app_password:
+        return app_user, app_password
+    return "root", ""
 
 
 def dump_prefix(
@@ -652,10 +686,19 @@ class DumpResult:
     # Finer integrity detail for the manifest, e.g. "unverifiable" when the
     # stock checker cannot evaluate an app-specific SQLite schema.
     integrity_detail: str | None = None
+    # Identity of the dumped database (dump_prefix of the discovered entry,
+    # including its host path) and when the dump began (UTC, the point in
+    # time it captures). Set by dump_all; recorded per run for database health.
+    db_key: str | None = None
+    started_at: str | None = None
 
 
 class DBDumper:
     """Dumps databases using native tools."""
+
+    # Streamed dumps stop once free space in their folder drops below this
+    # (0: never checked). Set per dump by dump_to_directory.
+    min_free_bytes = 0
 
     def __init__(self, docker_client, config: ArkiveConfig):
         self.docker = docker_client
@@ -772,6 +815,7 @@ class DBDumper:
         bytes_written = 0
         tail = b""
         stderr_chunks: list[bytes] = []
+        next_space_check = 0
         writer = _open_dump_writer(dump_path, self.compression)
         try:
             for chunk in output:
@@ -783,6 +827,14 @@ class DBDumper:
                     writer.write(stdout_data)
                     bytes_written += len(stdout_data)
                     tail = (tail + stdout_data[-_TAIL_BYTES:])[-_TAIL_BYTES:]
+                    if self.min_free_bytes and bytes_written >= next_space_check:
+                        next_space_check = bytes_written + _SPACE_CHECK_BYTES
+                        free = shutil.disk_usage(os.path.dirname(dump_path) or ".").free
+                        if free < self.min_free_bytes:
+                            raise OSError(
+                                f"dump stopped: less than {self.min_free_bytes // (1024 * 1024)} MB of free disk "
+                                f"space left in {os.path.dirname(dump_path)}"
+                            )
                 if stderr_data:
                     stderr_chunks.append(stderr_data)
             writer.close()
@@ -897,6 +949,7 @@ class DBDumper:
         results: list[DumpResult] = []
         host_paths: dict[int, str | None] = {}
         for db in databases:
+            started_at = _utc_iso()
             try:
                 result = await self._dump_one(db)
                 if result.status != "success":
@@ -918,6 +971,8 @@ class DBDumper:
                     error=redacted_error,
                 )
             host_paths[id(result)] = db.host_path
+            result.db_key = dump_prefix(db.container_name, db.db_type, db.db_name, db.host_path)
+            result.started_at = started_at
             results.append(result)
 
         # Roles and tablespaces live outside any single database: dump them
@@ -932,6 +987,7 @@ class DBDumper:
                 clusters[db.container_name] = db.db_name
                 connect_ok[db.container_name] = ok
         for container_name, connect_db in clusters.items():
+            started_at = _utc_iso()
             try:
                 result = await asyncio.to_thread(self._dump_postgres_globals_blocking, container_name, connect_db)
             except Exception as e:
@@ -948,6 +1004,8 @@ class DBDumper:
                 )
             if result.status != "success":
                 self._remove_dump_file(result.dump_path)
+            result.db_key = dump_prefix(container_name, "postgres", GLOBALS_DB_NAME, kind="globals")
+            result.started_at = started_at
             results.append(result)
 
         await self._update_manifest(results, host_paths, {db.container_name for db in databases})
@@ -1090,6 +1148,29 @@ class DBDumper:
         return value
 
     @staticmethod
+    def _sanitize_mysql_dbname(value: str) -> str:
+        """Validate a MariaDB/MySQL database name passed as one argv element.
+
+        No shell is involved; the hazards are a leading "-" (read as an
+        option) and control characters (a newline would end the
+        "-- Current Database:" comment line mysqldump writes). Any other
+        character is legal in a quoted MySQL identifier: names listed from
+        information_schema may contain dots ("example.com", stored on disk as
+        "example@002ecom"), slashes, spaces or Unicode, and dump fine.
+        A backslash is refused: the batch-mode listing escapes it, so a listed
+        name containing one names a different database.
+        """
+        if (
+            not value
+            or len(value) > 64
+            or value.startswith("-")
+            or "\\" in value
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+        ):
+            raise ValueError("Invalid database name: contains disallowed characters")
+        return value
+
+    @staticmethod
     def _copy_file_from_container_archive(container, container_path: str, dump_path: str) -> tuple[bool, str | None]:
         """Copy a file out of a container via the Docker archive API."""
         try:
@@ -1132,20 +1213,13 @@ class DBDumper:
             # Sanitize identifiers to prevent command injection
             pg_user = self._sanitize_identifier(postgres_user_from_env(env))
             db_name = self._sanitize_pg_dbname(db.db_name)
-            # Produce a self-contained logical dump that can be restored into a
-            # fresh instance without recreating roles by hand.
-            exec_cmd = [
-                "pg_dump",
-                "--clean",
-                "--create",
-                "--if-exists",
-                "--no-owner",
-                "--no-privileges",
-                "-U",
-                pg_user,
-                "-d",
-                db_name,
-            ]
+            # --create/--clean: the dump recreates the database itself. Object
+            # owners and GRANTs are kept (no --no-owner/--no-privileges): a
+            # database owned by an application role must come back owned by
+            # it, or the app gets "permission denied" on its own tables. The
+            # roles themselves are in the cluster's globals dump, which is
+            # restored first.
+            exec_cmd = PG_DUMP_COMMAND + ["-U", pg_user, "-d", db_name]
             stream = self._exec_stream_to_file(container, exec_cmd, partial)
             return self._streamed_dump_result(db, "postgres", "pg_dump", dump_path, stream, PG_DUMP_TRAILER, partial)
         except Exception as e:
@@ -1353,6 +1427,41 @@ class DBDumper:
         finally:
             self._discard(partial)
 
+    @staticmethod
+    def _mysql_dump_binary(container) -> str:
+        """``mariadb-dump`` or ``mysqldump``, whichever the container has.
+
+        MariaDB 11+ images ship only ``mariadb-dump``; MySQL images only
+        ``mysqldump``. The image name decides (its tags, or the image the
+        container was created from when the image has lost its tags after a
+        newer pull); when it names neither, the binaries are probed.
+        """
+        names: list[str] = []
+        try:
+            names.extend(
+                t for t in getattr(getattr(container, "image", None), "tags", None) or [] if isinstance(t, str)
+            )
+        except Exception:
+            pass
+        attrs = getattr(container, "attrs", None)
+        config = attrs.get("Config") if isinstance(attrs, dict) else None
+        if isinstance(config, dict) and isinstance(config.get("Image"), str):
+            names.append(config["Image"])
+        lowered = [name.lower() for name in names]
+        if any("mariadb" in name for name in lowered):
+            return "mariadb-dump"
+        if any("mysql" in name for name in lowered):
+            return "mysqldump"
+        for binary in ("mariadb-dump", "mysqldump"):
+            try:
+                result = container.exec_run([binary, "--version"])
+            except Exception:
+                continue
+            code = result.exit_code if hasattr(result, "exit_code") else result[0]
+            if code == 0:
+                return binary
+        return "mysqldump"
+
     def _dump_mariadb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MariaDB/MySQL via docker exec with streaming."""
         dump_path = self._dump_path(db, self._timestamp(), self._sql_ext())
@@ -1361,34 +1470,17 @@ class DBDumper:
         try:
             container = self.docker.containers.get(db.container_name)
             env = self._get_container_env(container)
-            image_tags = [t.lower() for t in getattr(getattr(container, "image", None), "tags", [])]
-            dump_binary = "mariadb-dump" if any("mariadb" in tag for tag in image_tags) else "mysqldump"
-            # Select consistent user/password pairs:
-            # 1. root user with root password
-            # 2. app user with app password
-            # 3. fallback to root with no password
-            root_password = env.get("MYSQL_ROOT_PASSWORD") or env.get("MARIADB_ROOT_PASSWORD")
-            app_user = env.get("MYSQL_USER") or env.get("MARIADB_USER")
-            app_password = env.get("MYSQL_PASSWORD") or env.get("MARIADB_PASSWORD")
-
-            if root_password:
-                mysql_user = "root"
-                mysql_password = root_password
-            elif app_user and app_password:
-                mysql_user = app_user
-                mysql_password = app_password
-            else:
-                mysql_user = "root"
-                mysql_password = ""
+            dump_binary = self._mysql_dump_binary(container)
+            mysql_user, mysql_password = mysql_credentials_from_env(env)
             # Sanitize identifiers to prevent command injection
             mysql_user = self._sanitize_identifier(mysql_user)
-            db_name = self._sanitize_identifier(db.db_name)
+            db_name = self._sanitize_mysql_dbname(db.db_name)
             # Use list form to avoid shell interpretation;
             # pass password via environment variable to avoid it appearing in process list
             exec_env = {}
             # --single-transaction gives a consistent InnoDB snapshot without
-            # locking tables for the whole dump.
-            exec_cmd = [dump_binary, "-u", mysql_user, "--single-transaction"]
+            # locking tables for the whole dump (see MYSQL_DUMP_OPTIONS).
+            exec_cmd = [dump_binary, "-u", mysql_user, *MYSQL_DUMP_OPTIONS]
             if mysql_password:
                 exec_env["MYSQL_PWD"] = mysql_password
             exec_cmd.extend(["--databases", db_name])
@@ -1680,6 +1772,28 @@ class DBDumper:
             protect_prefixes=protect_prefixes,
             legacy_prefixes=legacy_prefixes,
         )
+
+    async def dump_to_directory(
+        self, db: DiscoveredDatabase, directory: Path, compression: str = "none", min_free_bytes: int = 0
+    ) -> DumpResult:
+        """Dump one database into ``directory`` instead of the shared dump dir.
+
+        Used for the safety dump a guided restore takes before it overwrites a
+        database: the file is validated like every dump (completion trailer,
+        ``.partial`` + atomic rename) but never joins the dump manifest or
+        dump-dir cleanup. A failed dump leaves no file behind. With
+        ``min_free_bytes``, a streamed dump stops (and fails) once free space
+        in ``directory`` drops below it, instead of filling the disk.
+        """
+        worker = copy.copy(self)  # never retarget the shared instance mid-backup
+        worker.dump_dir = Path(directory)
+        worker.compression = compression if compression in DUMP_COMPRESSIONS else "none"
+        worker.min_free_bytes = max(0, int(min_free_bytes or 0))
+        worker.dump_dir.mkdir(parents=True, exist_ok=True)
+        result = await worker._dump_one(db)
+        if result.status != "success":
+            self._remove_dump_file(result.dump_path)
+        return result
 
     async def dump_single(
         self,
