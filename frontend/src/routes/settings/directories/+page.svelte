@@ -150,7 +150,7 @@
 				{#each suggestions as suggestion}
 					<div class="rounded-lg border border-border bg-bg-elevated/50 p-3 flex items-center justify-between gap-3">
 						<div class="flex items-center gap-3 min-w-0">
-							<div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0
+							<div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0
 								{suggestion.priority === 'critical' ? 'bg-danger/10 border border-danger/30' :
 								 suggestion.priority === 'recommended' ? 'bg-primary/10 border border-primary/30' :
 								 'bg-bg-surface border border-border'}">
@@ -188,7 +188,7 @@
 						<button
 							on:click={() => addSuggestion(suggestion)}
 							disabled={addingPaths.has(suggestion.path)}
-							class="btn-primary flex items-center gap-1.5 text-xs px-3 py-1.5 flex-shrink-0 disabled:opacity-50"
+							class="btn-primary flex items-center gap-1.5 text-xs px-3 py-1.5 shrink-0 disabled:opacity-50"
 						>
 							<Plus size={12} />
 							{addingPaths.has(suggestion.path) ? 'Adding...' : 'Add'}
@@ -247,7 +247,7 @@
 				{#each directories as dir}
 					<div class="card flex items-center justify-between">
 						<div class="flex items-center gap-3 min-w-0">
-							<div class="w-8 h-8 rounded-lg bg-bg-surface border border-border flex items-center justify-center flex-shrink-0">
+							<div class="w-8 h-8 rounded-lg bg-bg-surface border border-border flex items-center justify-center shrink-0">
 								<FolderOpen size={14} class="text-text-secondary" />
 							</div>
 							<div class="min-w-0">

@@ -132,7 +132,7 @@
 			Skip to main content
 		</a>
 		<Sidebar />
-		<div id="main-content" tabindex="-1" class={cn('flex min-h-screen flex-col transition-all duration-300 focus:outline-none', $sidebarOpen ? 'lg:ml-64' : '')}>
+		<div id="main-content" tabindex="-1" class={cn('flex min-h-screen flex-col transition-all duration-300 focus:outline-hidden', $sidebarOpen ? 'lg:ml-64' : '')}>
 			<ConnectionBanner />
 			{#key $page.url.pathname}
 				<div

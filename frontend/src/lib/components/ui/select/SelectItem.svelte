@@ -15,9 +15,9 @@
   label={label ?? value}
   {disabled}
   class={cn(
-    'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm text-text-primary outline-none',
-    'data-[highlighted]:bg-bg-surface-hover data-[highlighted]:text-text-primary',
-    'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+    'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm text-text-primary outline-hidden',
+    'data-highlighted:bg-bg-surface-hover data-highlighted:text-text-primary',
+    'data-disabled:pointer-events-none data-disabled:opacity-50',
     className
   )}
   {...$$restProps}

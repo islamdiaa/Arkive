@@ -6,6 +6,6 @@
   export { className as class };
 </script>
 
-<DropdownMenuPrimitive.Trigger class={cn('outline-none', className)} {...$$restProps}>
+<DropdownMenuPrimitive.Trigger class={cn('outline-hidden', className)} {...$$restProps}>
   <slot />
 </DropdownMenuPrimitive.Trigger>

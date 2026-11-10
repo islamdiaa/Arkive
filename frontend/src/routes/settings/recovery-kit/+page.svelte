@@ -233,7 +233,7 @@
 						<p class="block text-xs font-semibold uppercase tracking-wide text-text-secondary">How to restore</p>
 						<ol class="list-decimal pl-5 space-y-1 text-sm text-text-secondary">
 							{#each kit.instructions as step}
-								<li class="break-words">{step}</li>
+								<li class="wrap-break-word">{step}</li>
 							{/each}
 						</ol>
 					</div>

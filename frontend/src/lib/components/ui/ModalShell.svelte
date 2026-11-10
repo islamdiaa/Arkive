@@ -118,7 +118,7 @@
 {#if open}
   <!-- Backdrop -->
   <div
-    class="fixed inset-0 z-modal-backdrop bg-black/70 backdrop-blur-sm"
+    class="fixed inset-0 z-modal-backdrop bg-black/70 backdrop-blur-xs"
     transition:fade={{ duration: 200 }}
     role="presentation"
   ></div>
@@ -134,7 +134,7 @@
   >
     <div
       bind:this={panel}
-      class="w-full {maxWidth} max-h-full flex flex-col bg-bg-elevated border rounded-xl shadow-xl animate-modal-in focus:outline-none {danger ? 'border-danger/40' : 'border-border'} {className}"
+      class="w-full {maxWidth} max-h-full flex flex-col bg-bg-elevated border rounded-xl shadow-xl animate-modal-in focus:outline-hidden {danger ? 'border-danger/40' : 'border-border'} {className}"
       role="dialog"
       aria-modal="true"
       aria-labelledby={title ? titleId : undefined}

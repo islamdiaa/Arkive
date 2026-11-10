@@ -85,7 +85,7 @@
 {#if open}
 	<!-- Backdrop -->
 	<div
-		class="fixed inset-0 z-modal-backdrop bg-black/60 backdrop-blur-sm"
+		class="fixed inset-0 z-modal-backdrop bg-black/60 backdrop-blur-xs"
 		on:click={close}
 		on:keydown={(e) => e.key === 'Escape' && close()}
 		role="button"
@@ -117,7 +117,7 @@
 				aria-controls="command-palette-list"
 				aria-autocomplete="list"
 				aria-activedescendant={filtered[selectedIndex] ? `command-palette-option-${selectedIndex}` : undefined}
-				class="w-full bg-transparent text-text placeholder-text-tertiary text-sm outline-none"
+				class="w-full bg-transparent text-text placeholder-text-tertiary text-sm outline-hidden"
 			/>
 		</div>
 		<ul id="command-palette-list" class="py-2 max-h-80 overflow-y-auto" role="listbox" aria-label="Pages">

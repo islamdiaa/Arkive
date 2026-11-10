@@ -233,7 +233,7 @@
 								<span class="font-mono text-xs text-text-secondary w-20 shrink-0 text-right">{formatBytes(run.total_size_bytes || 0)}</span>
 							</a>
 							{#if run.error_message && (run.status === 'partial' || run.status === 'failed')}
-								<p class="px-4 pb-2 -mt-1 text-xs truncate {run.status === 'failed' ? 'text-danger' : 'text-warning'}">{run.error_message}</p>
+								<p class="px-4 pb-2 text-xs truncate {run.status === 'failed' ? 'text-danger' : 'text-warning'}">{run.error_message}</p>
 							{/if}
 						{/each}
 					</div>

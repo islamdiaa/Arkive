@@ -269,7 +269,7 @@ scripts/e2e.sh --docker                               # Playwright suite in Dock
 
 ```
 backend/      FastAPI app (api/, core/, models/, services/) and pytest suites
-frontend/     SvelteKit 2 + Svelte 5 + Tailwind; Vitest and Playwright tests
+frontend/     SvelteKit 2 + Svelte 5 + Tailwind CSS 4; Vitest and Playwright tests
 profiles/     YAML app profiles used by discovery
 docs/         User guide (MkDocs site: mkdocs.yml) and deployment notes
 CLAUDE.md     Architecture notes and invariants for contributors and coding agents
@@ -283,7 +283,7 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Run the backe
 ## Roadmap
 
 - [x] Automated restore verification (restore drills)
-- [ ] Tailwind CSS 4 ([#53](https://github.com/islamdiaa/Arkive/issues/53))
+- [x] Tailwind CSS 4 ([#53](https://github.com/islamdiaa/Arkive/issues/53))
 - [ ] Prometheus metrics endpoint (`/api/metrics`)
 - [ ] Multi-user access with roles
 - [ ] Scheduled email digest

@@ -168,7 +168,7 @@
               value={field.value}
               on:input={(e) => updateCronPart(i, e.currentTarget.value)}
               class="w-full rounded-md border border-border bg-bg-input px-2 py-1.5 text-center text-sm font-mono text-text-primary
-                focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-1 focus:ring-offset-bg-app"
+                focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-1 focus:ring-offset-bg-app"
             />
           </div>
         {/each}

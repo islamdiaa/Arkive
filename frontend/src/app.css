@@ -5,11 +5,183 @@
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/600.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind CSS 4. Class detection is limited to src/ (Tailwind 3's `content`). */
+@import 'tailwindcss' source('.');
+
+/* `dark:` matches [data-theme="dark"] (Tailwind 3's darkMode selector). The
+   theme itself switches with the .light class on <html>, through the tokens. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Colour utilities (bg-surface, text-text-secondary, border-warning/30, ...)
+ * resolve to the theme tokens in :root and .light below, so they follow the
+ * active theme. `inline` puts var(--token) straight into each utility, and
+ * `reference` stops Tailwind emitting variables of its own for these names
+ * (several are the token itself, e.g. --color-primary). Opacity modifiers
+ * (bg-danger/10) apply to these variables through color-mix().
+ */
+@theme inline reference {
+	/* Legacy flat tokens (backward compat) */
+	--color-page: var(--page-bg);
+	--color-surface: var(--surface);
+	--color-surface-hover: var(--surface-hover);
+	--color-surface-subtle: var(--surface-subtle);
+	--color-elevated: var(--bg-elevated);
+
+	/* Background scale */
+	--color-bg-base: var(--bg-base);
+	--color-bg-app: var(--bg-app);
+	--color-bg-sidebar: var(--bg-sidebar);
+	--color-bg-surface: var(--bg-surface);
+	--color-bg-surface-hover: var(--bg-surface-hover);
+	--color-bg-input: var(--bg-input);
+	--color-bg-elevated: var(--bg-elevated);
+	--color-bg-overlay: var(--bg-overlay);
+
+	/* Border scale */
+	--color-border: var(--border-default);
+	--color-border-muted: var(--border-muted);
+	--color-border-strong: var(--border-strong);
+	--color-border-focus: var(--border-focus);
+
+	/* Text scale */
+	--color-text: var(--text);
+	--color-text-primary: var(--text-primary);
+	--color-text-secondary: var(--text-secondary);
+	--color-text-tertiary: var(--text-tertiary);
+	--color-text-muted: var(--text-muted);
+	--color-text-disabled: var(--text-disabled);
+	--color-text-link: var(--text-link);
+	--color-text-on-primary: var(--text-on-primary);
+
+	/* Accent colours (5-stop scales) */
+	--color-primary: var(--color-primary);
+	--color-primary-hover: var(--color-primary-hover);
+	--color-primary-strong: var(--color-primary-strong);
+	--color-primary-muted: var(--color-primary-muted);
+	--color-primary-bg: var(--color-primary-bg);
+	--color-success: var(--color-success);
+	--color-success-hover: var(--color-success-hover);
+	--color-success-strong: var(--color-success-strong);
+	--color-success-muted: var(--color-success-muted);
+	--color-success-bg: var(--color-success-bg);
+	--color-warning: var(--color-warning);
+	--color-warning-hover: var(--color-warning-hover);
+	--color-warning-strong: var(--color-warning-strong);
+	--color-warning-muted: var(--color-warning-muted);
+	--color-warning-bg: var(--color-warning-bg);
+	--color-danger: var(--color-danger);
+	--color-danger-hover: var(--color-danger-hover);
+	--color-danger-strong: var(--color-danger-strong);
+	--color-danger-muted: var(--color-danger-muted);
+	--color-danger-bg: var(--color-danger-bg);
+	--color-info: var(--color-info);
+	--color-info-hover: var(--color-info-hover);
+	--color-info-strong: var(--color-info-strong);
+	--color-info-muted: var(--color-info-muted);
+	--color-info-bg: var(--color-info-bg);
+	--color-neutral: var(--color-neutral);
+	--color-neutral-muted: var(--color-neutral-muted);
+	--color-neutral-bg: var(--color-neutral-bg);
+
+	/* Semantic aliases */
+	--color-accent: var(--color-accent);
+	--color-accent-hover: var(--color-accent-hover);
+	--color-error: var(--color-error);
+	--color-error-bg: var(--color-error-bg);
+	--color-folder: var(--color-folder);
+
+	/* Filled backgrounds sit under white text, so bg-primary and bg-danger use
+	   a darker shade than the same accent as text on dark surfaces (the
+	   --color-*-fill tokens below). text-primary, border-primary and
+	   ring-primary keep the text colour. Gradient stops read the same theme
+	   keys as bg-*, so a gradient that wants the accent itself names the
+	   token: from-(--color-primary), not from-primary. */
+	--background-color-primary: var(--color-primary-fill);
+	--background-color-primary-hover: var(--color-primary-fill-hover);
+	--background-color-danger: var(--color-danger-fill);
+	--background-color-danger-hover: var(--color-danger-fill-hover);
+}
+
+@theme {
+	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+
+	--text-xs: 0.75rem;
+	--text-xs--line-height: 1.33;
+	--text-sm: 0.8125rem;
+	--text-sm--line-height: 1.38;
+	--text-base: 0.875rem;
+	--text-base--line-height: 1.5;
+	--text-lg: 1rem;
+	--text-lg--line-height: 1.5;
+	--text-xl: 1.25rem;
+	--text-xl--line-height: 1.4;
+	--text-2xl: 1.5rem;
+	--text-2xl--line-height: 1.25;
+	--text-3xl: 2rem;
+	--text-3xl--line-height: 1.2;
+	--text-display: 2.25rem;
+	--text-display--line-height: 1.1;
+	--text-display--font-weight: 700;
+
+	--radius-sm: 4px;
+	--radius-md: 6px;
+	--radius-lg: 8px;
+	--radius-xl: 12px;
+
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
+	--shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.4);
+	--shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.5);
+	--shadow-focus: 0 0 0 3px rgba(56, 139, 253, 0.3);
+	--shadow-focus-danger: 0 0 0 3px rgba(248, 81, 73, 0.3);
+
+	--z-index-dropdown: 10;
+	--z-index-sticky: 20;
+	--z-index-modal-backdrop: 30;
+	--z-index-modal: 40;
+	--z-index-toast: 50;
+	--z-index-tooltip: 60;
+}
 
 @layer base {
+	/* Tailwind 3 preflight defaults that Tailwind 4 changed, kept so the UI
+	   renders and behaves as before (v4 upgrade guide, "Changes from v3"). */
+	*,
+	::after,
+	::before,
+	::backdrop,
+	::file-selector-button {
+		border-color: #e5e7eb;
+	}
+	input::placeholder,
+	textarea::placeholder {
+		color: #9ca3af;
+	}
+	button:not(:disabled),
+	[role='button']:not(:disabled) {
+		cursor: pointer;
+	}
+	/* Tailwind 4 zeroes the padding of every element; Tailwind 3 kept the
+	   browser default on table cells and options (the drill results table
+	   relies on it). Cells get 1px in every browser, but Chromium sets it as a
+	   presentational hint, which `revert` skips. Option padding differs per
+	   browser and comes from its own stylesheet, so `revert` restores it. */
+	td,
+	th {
+		padding: 1px;
+	}
+	option {
+		padding: revert;
+	}
+	/* Tailwind 4 sets opacity: 1 on form controls. Browsers dim a disabled
+	   <select> through opacity (Chromium: 0.7), which Tailwind 3 left alone;
+	   without it a disabled select reads as enabled. */
+	select:disabled {
+		opacity: revert;
+	}
+
 	:root {
 		/* === Background Scale (6 stops + input + sidebar) === */
 		--bg-base: #0a0e13;
@@ -277,28 +449,30 @@
 		border-color: var(--color-danger);
 	}
 	.input {
-		@apply bg-page border border-border rounded px-3 py-2 text-text placeholder-text-secondary focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors w-full;
+		@apply bg-page border border-border rounded px-3 py-2 text-text placeholder-text-secondary focus:border-primary focus:ring-1 focus:ring-primary outline-hidden transition-colors w-full;
 	}
-	.badge {
+	/* @apply only takes utilities in Tailwind 4, so the variants share the
+	   .badge rule instead of applying it. */
+	.badge,
+	.badge-success,
+	.badge-warning,
+	.badge-danger,
+	.badge-info {
 		@apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
 	}
 	.badge-success {
-		@apply badge;
 		background-color: var(--color-success-bg);
 		color: var(--color-success);
 	}
 	.badge-warning {
-		@apply badge;
 		background-color: var(--color-warning-bg);
 		color: var(--color-warning);
 	}
 	.badge-danger {
-		@apply badge;
 		background-color: var(--color-danger-bg);
 		color: var(--color-danger);
 	}
 	.badge-info {
-		@apply badge;
 		background-color: var(--color-primary-bg);
 		color: var(--color-primary);
 	}
@@ -347,8 +521,10 @@
 	.card-elevated {
 		@apply bg-elevated rounded-lg border border-border p-5 shadow-md;
 	}
+	/* The hover lift is the transform in .card-interactive:hover below (Tailwind
+	   4's translate utilities set `translate`, which would add to it). */
 	.card-interactive {
-		@apply card hover:-translate-y-px hover:shadow-md transition-all duration-150 cursor-pointer;
+		@apply bg-surface rounded-lg border border-border p-5 hover:shadow-md transition-all duration-150 cursor-pointer;
 	}
 	.card-inset {
 		@apply bg-bg-input rounded-lg border border-border-muted p-5;
@@ -356,7 +532,7 @@
 
 	/* === Focus Ring === */
 	.focus-ring {
-		@apply focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary;
+		@apply focus:outline-hidden focus:ring-2 focus:ring-primary/30 focus:border-primary;
 	}
 
 	/* === Micro-interactions === */

@@ -50,7 +50,7 @@
     on:click={toggle}
     on:click
     class="group relative inline-flex h-6 w-10 shrink-0 items-center justify-center rounded-full
-           focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-bg-app
+           focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-bg-app
            {disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}"
   >
     <span

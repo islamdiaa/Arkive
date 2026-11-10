@@ -278,10 +278,10 @@
 								</dd>
 							</dl>
 							{#each health.issues as issue}
-								<p class="{health.status === 'warning' ? 'text-warning' : 'text-danger'} break-words">{issue}</p>
+								<p class="{health.status === 'warning' ? 'text-warning' : 'text-danger'} wrap-break-word">{issue}</p>
 							{/each}
 							{#each health.notes as note}
-								<p class="text-text-muted break-words">{note}</p>
+								<p class="text-text-muted wrap-break-word">{note}</p>
 							{/each}
 							{#if health.shrunk}
 								<button

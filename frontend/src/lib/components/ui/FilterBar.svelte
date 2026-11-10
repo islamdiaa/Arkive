@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Search } from 'lucide-svelte';
+  import { cn } from '$lib/utils/cn';
   import { createEventDispatcher } from 'svelte';
 
   export let searchPlaceholder: string = 'Search...';
@@ -25,7 +26,7 @@
   $: activeFilterCount = Object.values(filterValues).filter(Boolean).length;
 </script>
 
-<div class="flex flex-wrap items-center gap-3 mb-4 {className}">
+<div class={cn('flex flex-wrap items-center gap-3 mb-4', className)}>
   <div class="relative flex-1 min-w-[200px] max-w-sm">
     <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" strokeWidth={1.5} />
     <input
@@ -36,7 +37,7 @@
       aria-label={searchPlaceholder}
       class="w-full h-9 bg-bg-input border border-border rounded-md pl-9 pr-3 text-sm text-text
              placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/30
-             outline-none transition-colors"
+             outline-hidden transition-colors"
     />
   </div>
 
@@ -48,7 +49,7 @@
         aria-label="Filter by {filter.label}"
         class="h-9 bg-bg-input border border-border rounded-md px-3 pr-8 text-sm text-text
                focus:border-primary focus:ring-2 focus:ring-primary/30
-               outline-none transition-colors appearance-none cursor-pointer"
+               outline-hidden transition-colors appearance-none cursor-pointer"
       >
         <option value="">{filter.label}: All</option>
         {#each filter.options as opt}

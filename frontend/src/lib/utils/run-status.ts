@@ -50,7 +50,7 @@ export function healthDisplay(health: string | null | undefined): HealthDisplay 
 		case 'degraded':
 			return { label: 'Degraded', gradient: 'from-warning to-warning' };
 		case 'error':
-			return { label: 'Error', gradient: 'from-danger to-danger' };
+			return { label: 'Error', gradient: 'from-(--color-danger) to-(--color-danger)' };
 		default:
 			return { label: 'Unknown', gradient: 'from-border-muted to-border-muted' };
 	}

@@ -396,10 +396,10 @@
     {#if status === 'success'}
       <p class="text-xs text-text-secondary">Backup completed successfully. This panel will close in 10 seconds.</p>
     {:else if status === 'partial' || status === 'failed'}
-      <div class="space-y-1">
+      <div>
         <p class="text-xs {status === 'failed' ? 'text-danger' : 'text-warning'}">{errorMessage}</p>
         {#if userAction}
-          <p class="text-xs text-text-secondary">{userAction}</p>
+          <p class="mt-1 text-xs text-text-secondary">{userAction}</p>
         {/if}
         {#if runId}
           <a href="/backups/{runId}" class="text-xs text-primary hover:text-primary-hover">View run details</a>
