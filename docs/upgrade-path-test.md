@@ -23,30 +23,35 @@ host most of the time goes into copying the images into the private daemon.
 ## What it does
 
 1. Starts the old release (default `islamdiaa/arkive:0.2.4`, `--old-image` to
-   change) as root, as the Unraid template runs it, with a sample directory
-   mounted read-only, a backup volume, and a throwaway Postgres container
-   holding a marker row.
+   change) as the Unraid template runs it: as root, with a small fake flash
+   drive (`go`, `ident.cfg` and a marker file) mounted read-only at
+   `/boot-config`, so Arkive detects Unraid and backs the flash up. It also
+   gets a sample directory mounted read-only, a backup volume, and a
+   throwaway Postgres container holding a marker row.
 2. Completes setup through the old release's own API with a local target,
    adds a notification channel with events the old UI offered, runs the full
-   backup job, and records the snapshot, the dump file, the `.keyfile` hash and
-   the schema version.
+   backup job, and records the snapshot, the dump file, the flash archive
+   (0.2.4 wrote `.tar.gz`), the `.keyfile` hash and the schema version.
 3. Stops it and starts the new image on the same volumes.
 4. Checks that the new image:
    - starts, with the keyfile guard accepting the old `.keyfile` (unchanged)
    - applied every schema migration in its code, including the data
      migrations (the old channel gains the new failure events)
-   - accepts the old API key, keeps the run history, doesn't re-enter setup
+   - accepts the old API key, keeps the run history, doesn't re-enter setup,
+     and still detects Unraid
    - lists the old snapshot from its cache and after a refresh from the repo
    - restores files from the old snapshot byte-for-byte
    - restores the old database dump, which then loads into a fresh Postgres
      with the original rows
+   - restores the old `.tar.gz` flash archive, which holds the flash files
    - passes a restore drill on the old snapshot (written before dump manifests
      existed, so the drill infers its dumps)
-   - runs a new backup with status `success` that dumps the database, writes a
-     new snapshot and keeps the old one; that dump restores with a row written
-     after the upgrade
+   - runs a new backup with status `success` that dumps the database, archives
+     the flash, writes a new snapshot and keeps the old one; that dump
+     restores with a row written after the upgrade
    - runs the other jobs the old setup created (`db_dump`, `flash`) with
-     status `success`, and reports `status: ok`
+     status `success`; only the `flash` job archives the flash, and its new
+     `.tar` archive restores with the flash files; then reports `status: ok`
    - refuses to start when the `.keyfile` is missing (so the guard really
      checks the old database), and starts again once it is back
 
@@ -54,24 +59,38 @@ host most of the time goes into copying the images into the private daemon.
 
 Arkive needs the Docker socket, and 0.2.4 discovers and dumps every database
 it can see. By default the test therefore runs everything inside a private,
-privileged `docker:dind` daemon that holds only the test containers, so it is
-safe on a machine with real containers. The images are copied into that
-daemon, which can take several minutes on a busy host.
+privileged `docker:dind` daemon that holds only the test containers, so the
+real containers on the machine are out of its reach. The images are copied
+into that daemon, which can take several minutes on a busy host.
 
 `--docker host` uses the current daemon instead (faster, no privileged
 container). It refuses to run when that daemon has any container the test
 didn't create, so it is only for throwaway machines such as CI runners.
 
+The API is published on `127.0.0.1:8310` (`--port`), and the container that
+publishes it (the private daemon, or Arkive with `--docker host`) is on a
+network of its own (`<prefix>net`). That matters because 0.2.4 leaves its API
+open until setup: on the default bridge, other containers could reach it
+through the container's own address. Processes on the host itself, including
+host-network containers, can still reach it; 0.2.4's API is open to them only
+until the test completes setup, a few seconds after it starts.
+
 Test data lives in named Docker volumes, not host directories. Everything the
 test creates is named with `--name-prefix` (default `arkive-upgrade-test-`)
 and removed at the end, including the image it built (`--new-image` tests an
-existing image and leaves it alone). The API is published on
-`127.0.0.1:8310` (`--port`).
+existing image and leaves it alone). Before creating anything, a run claims
+the prefix by creating `<prefix>net`, which fails if the network exists; so a
+second run with the same prefix stops instead of adopting (and later
+removing) the first run's containers and volumes. Use a different
+`--name-prefix` (and `--port`) to run two at once.
 
 ## When it fails
 
 The failing check is printed with `FAIL:`, followed by the last log lines of
 the old and new Arkive containers. Rerun with `--keep` to inspect the
 containers and volumes; afterwards remove them with
-`docker rm -f <prefix>dind && docker volume rm <prefix>dind-lib` (dind mode),
-or the `<prefix>*` containers and volumes (host mode).
+`docker rm -f <prefix>dind && docker volume rm <prefix>dind-lib && docker network rm <prefix>net`
+(dind mode), or the `<prefix>*` containers, volumes and network (host mode),
+and the `<prefix>new:local` image if the test built it. A run that was killed
+before it could clean up leaves the same objects behind, and the next run
+with that prefix refuses to start until they are gone.

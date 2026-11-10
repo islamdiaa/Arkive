@@ -4,21 +4,23 @@ working after its container is re-created from an image built from this tree.
 
 The test:
 
-1. starts the old release (default ``islamdiaa/arkive:0.2.4``), completes
-   setup through its API with a local storage target, and runs a backup of a
-   small sample directory plus a throwaway Postgres container;
+1. starts the old release (default ``islamdiaa/arkive:0.2.4``) with a small
+   fake Unraid flash mounted at ``/boot-config``, completes setup through its
+   API with a local storage target, and runs a backup of a small sample
+   directory, the flash and a throwaway Postgres container;
 2. stops it and starts the new image on the same ``/config`` and backup
    volume, then checks that
    - it starts (the keyfile guard accepts the old ``.keyfile``, unchanged),
    - every schema migration is applied, data migrations included,
    - the old API key still works and the old run history is still there,
    - the old snapshot is listed, both from the cache and from the repository,
-   - a file and the database dump can be restored from the old snapshot (the
-     dump is loaded into a fresh Postgres and its rows are checked), and a
-     restore drill passes on it,
-   - a new backup succeeds, dumps the database, keeps the old snapshot, and
-     its dump restores with the rows written after the upgrade,
-   - the other jobs the old setup created succeed,
+   - a file, the old flash archive and the database dump can be restored from
+     the old snapshot (the dump is loaded into a fresh Postgres and its rows
+     are checked), and a restore drill passes on it,
+   - a new backup succeeds, dumps the database and the flash, keeps the old
+     snapshot, and its dump restores with the rows written after the upgrade,
+   - the other jobs the old setup created succeed, and the flash job's new
+     archive restores with the flash contents,
    - without its ``.keyfile`` the upgraded database is refused.
 
 See docs/upgrade-path-test.md.
@@ -29,9 +31,15 @@ can see, so by default everything runs inside a private Docker daemon
 ``--docker host`` only on a throwaway machine such as a CI runner; it refuses
 to run when the daemon has containers the test didn't create.
 
-Every container and volume the test creates is named with ``--name-prefix``
-and removed at the end (``--keep`` leaves them for debugging). Test data lives
-in those named volumes, never in host directories.
+The container that publishes the API (the private daemon, or Arkive itself
+with ``--docker host``) sits on a network of its own, so other containers
+can't reach the API, which 0.2.4 leaves open until setup.
+
+Every container, volume and network the test creates is named with
+``--name-prefix`` and removed at the end (``--keep`` leaves them for
+debugging). The network is created first and its name can only be taken
+once, so two runs with the same prefix can't adopt each other's objects.
+Test data lives in named volumes, never in host directories.
 
 Needs: docker, python3 (stdlib only). Run ``make test-upgrade`` or
 ``scripts/upgrade-path-test.py --help``.
@@ -52,7 +60,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +74,17 @@ DEFAULT_PORT = 8310
 # Paths inside the Arkive container.
 SAMPLE_MOUNT = "/srv/sample"
 BACKUP_MOUNT = "/backups"
+# Where the Unraid template mounts the flash drive's /boot/config. A ``go``
+# file there is what makes Arkive detect Unraid and back the flash up.
+FLASH_MOUNT = "/boot-config"
+DUMP_DIR = "/config/dumps"
+FLASH_MARKER_FILE = "upgrade-marker.txt"
+
+# How long a job trigger or restore keeps retrying while the server answers
+# 409. A run's final status is committed before the orchestrator sends its
+# notifications, cleans the dump directory and releases backup.lock; a
+# request sent in that gap gets 409 although nothing else is running.
+CONFLICT_WAIT_SECONDS = 120.0
 
 PG_USER = "postgres"
 PG_PASSWORD = "upgrade-test-password"  # nosec B105 - throwaway test database
@@ -141,16 +160,20 @@ def foreign_containers(names: list[str], prefix: str) -> list[str]:
 
 
 def remove_all(docker: Docker, objects: list[tuple[str, str]], attempts: int = 6) -> list[str]:
-    """Remove containers/volumes, retrying (a busy daemon can be slow to kill a
-    container, and a volume can't go while its container exists). Returns what
-    is left."""
+    """Remove containers/volumes/networks, retrying (a busy daemon can be slow
+    to kill a container, and a volume or network can't go while its container
+    exists). Returns what is left."""
     remaining = list(objects)
     for attempt in range(attempts):
         for kind, name in list(remaining):
             if not docker.exists(kind, name):
                 remaining.remove((kind, name))
                 continue
-            args = ("rm", "-fv", name) if kind == "container" else ("volume", "rm", "-f", name)
+            args = {
+                "container": ("rm", "-fv", name),
+                "volume": ("volume", "rm", "-f", name),
+                "network": ("network", "rm", name),
+            }[kind]
             if docker.run(*args, check=False, timeout=300).returncode == 0:
                 remaining.remove((kind, name))
         if not remaining:
@@ -200,11 +223,28 @@ class Api:
             payload = raw.decode(errors="replace")
         return status, payload
 
-    def ok(self, method: str, path: str, body: Any = None, expect: tuple[int, ...] = (200,), **kw: Any) -> Any:
-        status, payload = self.call(method, path, body, **kw)
-        if status not in expect:
-            raise UpgradeCheckError(f"{method} {path} returned HTTP {status}: {str(payload)[:2000]}")
-        return payload
+    def ok(
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        expect: tuple[int, ...] = (200,),
+        conflict_wait: float = 0,
+        **kw: Any,
+    ) -> Any:
+        """Call and require one of ``expect``. With ``conflict_wait``, a 409
+        is retried for that many seconds: only for requests that do nothing
+        when they answer 409 (job triggers, restores)."""
+        deadline = time.monotonic() + conflict_wait
+        while True:
+            status, payload = self.call(method, path, body, **kw)
+            if status == 409 and status not in expect and time.monotonic() < deadline:
+                log(f"  {method} {path}: HTTP 409 ({str(payload)[:200]}), retrying")
+                time.sleep(2)
+                continue
+            if status not in expect:
+                raise UpgradeCheckError(f"{method} {path} returned HTTP {status}: {str(payload)[:2000]}")
+            return payload
 
 
 def items(payload: Any, *keys: str) -> list:
@@ -245,11 +285,15 @@ class Env:
             "cache": f"{self.prefix}cache",
             "backups": f"{self.prefix}backups",
             "sample": f"{self.prefix}sample",
+            "flash": f"{self.prefix}flash",
         }
+        # On the host daemon. It holds the container that publishes the API,
+        # and creating it is how a run claims the prefix (see prepare()).
+        self.network = f"{self.prefix}net"
         self.new_image = args.new_image or f"{self.prefix}new:local"
         self.built_new_image = False
-        # Set once the name checks pass: cleanup never removes objects that
-        # existed before this run.
+        # Set once this run has claimed the prefix: cleanup never removes
+        # objects that existed before this run or belong to another run.
         self.owns_names = False
         self.docker = HOST if self.mode == "host" else Docker(["docker", "exec", "-i", self.dind, "docker"])
         self.api = Api(f"http://127.0.0.1:{self.port}")
@@ -263,10 +307,12 @@ class Env:
             existing = [("container", n) for n in self.containers] + [("volume", v) for v in self.volumes.values()]
         else:
             existing = [("container", self.dind), ("volume", self.dind_volume)]
+        if not self.args.new_image:
+            existing.append(("image", self.new_image))
         for kind, name in existing:
             if HOST.exists(kind, name):
                 raise UpgradeCheckError(f"{kind} {name} already exists; remove it or pick another --name-prefix")
-        self.owns_names = True
+        self._claim_prefix()
 
         if not self.args.new_image:
             log(f"building {self.new_image} from {REPO_ROOT}")
@@ -283,6 +329,25 @@ class Env:
                 self._load_image(image)
         for volume in self.volumes.values():
             self.docker.run("volume", "create", volume)
+
+    def _claim_prefix(self) -> None:
+        """Create the run's network, which fails if the name is taken.
+
+        The checks above are not enough on their own: two runs can both pass
+        them and then, because ``docker volume create`` silently reuses an
+        existing volume, share objects, and the first to finish would remove
+        the other's. A network name can only be created once, so exactly one
+        run gets here, and only that run cleans up.
+        """
+        proc = HOST.run("network", "create", self.network, check=False, timeout=120)
+        if proc.returncode != 0:
+            raise UpgradeCheckError(
+                f"could not create network {self.network} "
+                f"({proc.stderr.decode(errors='replace').strip()[-500:]}): another run with this "
+                "--name-prefix is in progress, or one was killed before cleaning up; "
+                "remove its objects or pick another --name-prefix"
+            )
+        self.owns_names = True
 
     def _refuse_shared_daemon(self) -> None:
         names = HOST.out("ps", "-a", "--format", "{{.Names}}").split()
@@ -306,6 +371,11 @@ class Env:
             "--hostname", "tower",
             "-e", "DOCKER_TLS_CERTDIR=",
             "-v", f"{self.dind_volume}:/var/lib/docker",
+            # Inside the private daemon the API is published on all of this
+            # container's interfaces. On the host's default bridge, any other
+            # container could reach it there; on its own network only the
+            # host can, and from outside only through 127.0.0.1.
+            "--network", self.network,
             "-p", f"127.0.0.1:{self.port}:8200",
             self.args.dind_image,
             # Unix socket only: no TCP listener on the host network.
@@ -354,11 +424,11 @@ class Env:
             # Everything else lives inside the private daemon's storage. A
             # graceful stop lets it shut its own containers down first.
             HOST.run("stop", "-t", "60", self.dind, check=False, timeout=180)
-            leftovers = remove_all(HOST, [("container", self.dind), ("volume", self.dind_volume)])
+            objects = [("container", self.dind), ("volume", self.dind_volume)]
         else:
-            leftovers = remove_all(
-                HOST, [("container", n) for n in self.containers] + [("volume", v) for v in self.volumes.values()]
-            )
+            objects = [("container", n) for n in self.containers] + [("volume", v) for v in self.volumes.values()]
+        # The network last: it is the run's claim on the prefix.
+        leftovers = remove_all(HOST, [*objects, ("network", self.network)])
         if self.built_new_image:
             HOST.run("image", "rm", self.new_image, check=False, timeout=120)
         if leftovers:
@@ -376,11 +446,20 @@ class Env:
 
     def start_arkive(self, name: str, image: str, serve: bool = True) -> None:
         """Run Arkive on the shared volumes; ``serve`` publishes the API and waits for it."""
-        publish = ["-p", "8200:8200" if self.mode == "dind" else f"127.0.0.1:{self.port}:8200"] if serve else []
+        if not serve:
+            publish = []
+        elif self.mode == "dind":
+            # The private daemon's own container is the one on a network of
+            # its own and published on 127.0.0.1 (see _start_private_daemon).
+            publish = ["-p", "8200:8200"]
+        else:
+            publish = ["--network", self.network, "-p", f"127.0.0.1:{self.port}:8200"]
         log(f"starting {image} as {name}")
         self.docker.run(
             "run", "-d", "--name", name,
-            # As the Unraid template runs it (Docker socket access, flash backup).
+            # As the Unraid template runs it: root (Docker socket access,
+            # flash backup) and the flash's /boot/config read-only at
+            # /boot-config, which is also how Arkive detects Unraid.
             "--user", "0:0",
             "-e", "TZ=UTC",
             "-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
@@ -388,6 +467,7 @@ class Env:
             "-v", f"{self.volumes['cache']}:/cache",
             "-v", f"{self.volumes['backups']}:{BACKUP_MOUNT}",
             "-v", f"{self.volumes['sample']}:{SAMPLE_MOUNT}:ro",
+            "-v", f"{self.volumes['flash']}:{FLASH_MOUNT}:ro",
             *publish,
             image,
         )  # fmt: skip
@@ -501,19 +581,72 @@ def sample_tar(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+def fill_volume(env: Env, volume: str, files: dict[str, bytes]) -> None:
+    env.docker.run(
+        "run", "--rm", "-i", "--name", env.helper,
+        "-v", f"{env.volumes[volume]}:/fill",
+        env.args.postgres_image, "tar", "-x", "-C", "/fill",
+        input=sample_tar(files),
+    )  # fmt: skip
+
+
 def write_sample_data(env: Env, marker: str) -> dict[str, bytes]:
     files = {
         "notes.txt": f"upgrade-path sample {marker}\n".encode(),
         "nested/settings.json": json.dumps({"marker": marker, "version": 1}).encode(),
         "nested/blob.bin": secrets.token_bytes(64 * 1024),
     }
-    env.docker.run(
-        "run", "--rm", "-i", "--name", env.helper,
-        "-v", f"{env.volumes['sample']}:/sample",
-        env.args.postgres_image, "tar", "-x", "-C", "/sample",
-        input=sample_tar(files),
-    )  # fmt: skip
+    fill_volume(env, "sample", files)
     return files
+
+
+def fake_flash(marker: str) -> dict[str, bytes]:
+    """A minimal Unraid /boot/config: ``go`` is one of the files Arkive looks
+    for to detect Unraid (both 0.2.4 and now)."""
+    return {
+        "go": b"#!/bin/bash\n# Start the Management Utility\n/usr/local/sbin/emhttp &\n",
+        "ident.cfg": b'NAME="tower"\n',
+        FLASH_MARKER_FILE: f"upgrade-path flash {marker}\n".encode(),
+    }
+
+
+def write_flash_data(env: Env, marker: str) -> dict[str, bytes]:
+    files = fake_flash(marker)
+    fill_volume(env, "flash", files)
+    return files
+
+
+def flash_archive_member(raw: bytes, name: str) -> bytes | None:
+    """Content of ``name`` in a flash archive (0.2.4 wrote .tar.gz, now .tar)."""
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tar:
+        for member in tar.getmembers():
+            # Archives are made with ``tar -C /boot-config .``: "./go".
+            if member.isfile() and str(PurePosixPath(member.name)) == name:
+                handle = tar.extractfile(member)
+                return handle.read() if handle else None
+    return None
+
+
+def newest_flash_archive(names: list[str], suffix: str) -> str:
+    """Newest ``flash_<timestamp><suffix>`` in a dump dir listing."""
+    archives = sorted(n for n in names if n.startswith("flash_") and n.endswith(suffix))
+    if not archives:
+        raise UpgradeCheckError(f"no flash_*{suffix} archive in {DUMP_DIR} ({names})")
+    return f"{DUMP_DIR}/{archives[-1]}"
+
+
+def flash_archive_path(env: Env, container: str, suffix: str) -> str:
+    return newest_flash_archive(env.exec(container, "ls", DUMP_DIR).decode().split(), suffix)
+
+
+def check_flash_archive(env: Env, container: str, path: str, flash: dict[str, bytes], what: str) -> None:
+    """``path`` (in ``container``) is a flash archive holding the fake flash."""
+    raw = env.exec(container, "cat", path)
+    try:
+        got = {name: flash_archive_member(raw, name) for name in flash}
+    except (tarfile.TarError, OSError, EOFError) as e:
+        raise UpgradeCheckError(f"{what} {path} is not a readable archive: {e}") from e
+    check(got == flash, f"{what} {Path(path).name} holds the flash files")
 
 
 def wait_for_run(api: Api, run_id: str, timeout: float) -> dict:
@@ -528,7 +661,7 @@ def wait_for_run(api: Api, run_id: str, timeout: float) -> dict:
 
 
 def run_full_job(env: Env, job_id: str) -> dict:
-    trigger = env.api.ok("POST", f"/api/jobs/{job_id}/run", expect=(200, 202))
+    trigger = env.api.ok("POST", f"/api/jobs/{job_id}/run", expect=(200, 202), conflict_wait=CONFLICT_WAIT_SECONDS)
     run_id = trigger["run_id"]
     log(f"  run {run_id} started")
     run = wait_for_run(env.api, run_id, env.args.run_timeout)
@@ -558,6 +691,7 @@ def restore(env: Env, snapshot_id: str, target_id: str, paths: list[str]) -> Pat
         "POST",
         "/api/restore",
         {"snapshot_id": snapshot_id, "target": target_id, "paths": paths},
+        conflict_wait=CONFLICT_WAIT_SECONDS,
         timeout=600,
     )
     check(
@@ -581,10 +715,10 @@ def dump_path_of(run: dict, container: str) -> str:
     raise UpgradeCheckError(f"run {run.get('id')} has no successful dump of {container}/{PG_DB}")
 
 
-def restore_dump(env: Env, snapshot_id: str, target_id: str, dump_path: str) -> str:
-    """Restore one dump file from a snapshot; return its restored path in the Arkive container."""
-    restored = restore(env, snapshot_id, target_id, [dump_path])
-    return str(restored / dump_path.lstrip("/"))
+def restore_file(env: Env, snapshot_id: str, target_id: str, path: str) -> str:
+    """Restore one file from a snapshot; return its restored path in the Arkive container."""
+    restored = restore(env, snapshot_id, target_id, [path])
+    return str(restored / path.lstrip("/"))
 
 
 def run_restore_drill(env: Env, timeout: float = 600) -> dict:
@@ -624,6 +758,7 @@ def phase_old(env: Env, marker: str) -> dict:
     args = env.args
     log(f"== phase 1: {args.old_image}")
     sample = write_sample_data(env, marker)
+    flash = write_flash_data(env, marker)
 
     log("starting sample Postgres")
     env.start_postgres(env.pg)
@@ -650,6 +785,8 @@ def phase_old(env: Env, marker: str) -> dict:
     )
     env.api.api_key = setup["api_key"]
     log(f"  setup complete, {setup.get('jobs_created')} jobs created")
+    platform = env.api.ok("GET", "/api/status").get("platform")
+    check(platform == "unraid", f"old release detects Unraid from the flash ({platform})")
 
     targets = items(env.api.ok("GET", "/api/targets"), "targets")
     check(len(targets) == 1 and targets[0].get("type") == "local", "setup created the local target")
@@ -672,6 +809,10 @@ def phase_old(env: Env, marker: str) -> dict:
     check(run.get("status") == "success", f"old release backup succeeded (status={run.get('status')})")
     old_dump = dump_path_of(run, env.pg)
     log(f"  ok: old release dumped {env.pg}/{PG_DB} to {old_dump}")
+    check(run.get("flash_backed_up") == 1, "old release backed up the flash")
+    # 0.2.4 wrote gzipped flash archives; the new image writes plain .tar.
+    old_flash = flash_archive_path(env, env.old, ".tar.gz")
+    log(f"  ok: old release archived the flash to {old_flash}")
     snaps = [t.get("snapshot_id") for t in run.get("targets", []) if t.get("snapshot_id")]
     check(len(snaps) == 1, "old release recorded one snapshot")
     old_snapshot = snaps[0]
@@ -686,7 +827,9 @@ def phase_old(env: Env, marker: str) -> dict:
         "old_run_id": run["id"],
         "old_snapshot": old_snapshot,
         "old_dump": old_dump,
+        "old_flash": old_flash,
         "sample": sample,
+        "flash": flash,
         "keyfile_sha": env.config_sha256(env.old, "/config/.keyfile"),
         "old_schema": env.schema_versions(env.old),
     }
@@ -727,6 +870,8 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
     env.api.api_key = state["api_key"]
     env.api.ok("GET", "/api/jobs")
     log("  ok: the old API key is accepted")
+    platform = env.api.ok("GET", "/api/status").get("platform")
+    check(platform == "unraid", f"new image detects Unraid from the flash ({platform})")
     runs = items(env.api.ok("GET", "/api/jobs/runs"), "runs")
     check(any(r.get("id") == state["old_run_id"] for r in runs), "the old run is in the run history")
 
@@ -754,9 +899,13 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
         check(got == content, f"restored {rel} matches the original")
 
     # Database dump restore from the old snapshot.
-    dump = restore_dump(env, old_snapshot, target_id, state["old_dump"])
+    dump = restore_file(env, old_snapshot, target_id, state["old_dump"])
     markers = load_dump_and_read_markers(env, env.new, dump)
     check(markers == [f"before-upgrade-{marker}"], f"old dump {Path(dump).name} restores with its rows ({markers})")
+
+    # The flash archive 0.2.4 wrote, restored from the old snapshot.
+    archive = restore_file(env, old_snapshot, target_id, state["old_flash"])
+    check_flash_archive(env, env.new, archive, state["flash"], "restored old flash archive")
 
     # The restore drill on a snapshot written before dump manifests existed.
     drill = run_restore_drill(env)
@@ -782,6 +931,7 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
     )
     new_dump = dump_path_of(run, env.pg)
     log(f"  ok: new backup dumped {env.pg}/{PG_DB} to {new_dump}")
+    check(run.get("flash_backed_up") == 1, "new backup archived the flash")
     new_snaps = [t.get("snapshot_id") for t in run.get("targets", []) if t.get("snapshot_id")]
     check(len(new_snaps) == 1 and not same_snapshot(new_snaps[0], old_snapshot), "new backup wrote a new snapshot")
     new_snapshot = new_snaps[0]
@@ -789,14 +939,15 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
     listed = snapshot_ids(env)
     check({old_snapshot, new_snapshot} <= listed, "old and new snapshots are both in the repository")
 
-    dump = restore_dump(env, new_snapshot, target_id, new_dump)
+    dump = restore_file(env, new_snapshot, target_id, new_dump)
     markers = load_dump_and_read_markers(env, env.new, dump)
     check(
         markers == [f"before-upgrade-{marker}", f"after-upgrade-{marker}"],
         f"new dump {Path(dump).name} restores with the rows written after the upgrade",
     )
 
-    # The other jobs the old setup created run too.
+    # The other jobs the old setup created run too. Each does its own part:
+    # db_dump refreshes the dumps, flash the flash archive.
     for job_type, legacy_job in sorted(state["legacy_jobs"].items()):
         log(f"running the old {job_type} job with the new image")
         run = run_full_job(env, legacy_job)
@@ -804,6 +955,18 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
             run.get("status") == "success",
             f"old {job_type} job succeeded (status={run.get('status')}, error={run.get('error_message')!r})",
         )
+        flash_expected = 1 if job_type == "flash" else 0
+        check(
+            run.get("flash_backed_up") == flash_expected,
+            f"old {job_type} job {'archived' if flash_expected else 'did not archive'} the flash",
+        )
+        if job_type != "flash":
+            continue
+        snaps = [t.get("snapshot_id") for t in run.get("targets", []) if t.get("snapshot_id")]
+        check(len(snaps) == 1, "flash job wrote a snapshot")
+        flash_path = flash_archive_path(env, env.new, ".tar")
+        archive = restore_file(env, snaps[0], target_id, flash_path)
+        check_flash_archive(env, env.new, archive, state["flash"], "flash job's restored archive")
 
     status = env.api.ok("GET", "/api/status")
     log(f"  status after upgrade: status={status.get('status')} freshness={status.get('backup_freshness')}")
@@ -844,13 +1007,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--docker",
         choices=("dind", "host"),
         default="dind",
-        help="dind: private privileged Docker daemon (safe anywhere); host: the current daemon "
-        "(throwaway machines only, refuses when other containers exist)",
+        help="dind: private privileged Docker daemon that holds only the test containers; host: the "
+        "current daemon (throwaway machines only, refuses when other containers exist)",
     )
     parser.add_argument("--dind-image", default=DEFAULT_DIND_IMAGE)
     parser.add_argument("--postgres-image", default=DEFAULT_POSTGRES_IMAGE)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="127.0.0.1 port for the Arkive API")
-    parser.add_argument("--name-prefix", default=DEFAULT_PREFIX, help="prefix of every container/volume created")
+    parser.add_argument(
+        "--name-prefix", default=DEFAULT_PREFIX, help="prefix of every container/volume/network created"
+    )
     parser.add_argument("--run-timeout", type=float, default=600, help="seconds to wait for each backup run")
     parser.add_argument("--keep", action="store_true", help="leave containers and volumes in place for debugging")
     args = parser.parse_args(argv)
