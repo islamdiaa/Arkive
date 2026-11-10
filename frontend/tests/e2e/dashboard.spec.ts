@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { mockSetupComplete } from './fixtures/api-mocks';
+import { mockSetupComplete, setupChecklist } from './fixtures/api-mocks';
 import { mockJobs, mockActivity } from './fixtures/test-data';
 
 async function mockDashboardRoutes(page: import('@playwright/test').Page) {
@@ -109,5 +109,57 @@ test.describe('Dashboard', () => {
     // The dashboard must have at least one interactive element (button or nav link).
     const actionButton = page.getByRole('button').or(page.getByRole('link'));
     await expect(actionButton.first()).toBeVisible();
+  });
+});
+
+test.describe('Dashboard setup checklist', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockDashboardRoutes(page);
+  });
+
+  test('guides the remaining steps and starts the first backup', async ({ page }) => {
+    await page.route(/\/api\/setup-checklist(\/|\?|$)/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(setupChecklist({ done: ['offsite_target', 'notifications'] })),
+      })
+    );
+    await page.route(/\/api\/jobs\/[^/]+\/run$/, (route) =>
+      route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ run_id: 'run-e2e', status: 'started' }),
+      })
+    );
+    await page.goto('/', { waitUntil: 'networkidle' });
+
+    const card = page.getByTestId('setup-checklist');
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('heading', { name: 'Finish protecting this server' })).toBeVisible();
+    await expect(card.getByTestId('setup-checklist-progress')).toHaveText('2 of 5 done');
+    await expect(card.getByTestId('setup-step-offsite_target')).toHaveAttribute('data-state', 'done');
+    await expect(card.getByRole('link', { name: 'Save recovery kit' })).toHaveAttribute(
+      'href',
+      '/settings/recovery-kit'
+    );
+    // A restore test needs a snapshot first.
+    await expect(card.getByRole('button', { name: 'Run restore test now' })).toBeDisabled();
+    // Not complete yet, so it can't be dismissed.
+    await expect(card.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+
+    const run = page.waitForRequest(
+      (req) => req.method() === 'POST' && /\/api\/jobs\/[^/]+\/run$/.test(new URL(req.url()).pathname)
+    );
+    await card.getByRole('button', { name: 'Run first backup now' }).click();
+    await run;
+  });
+
+  test('stays hidden once dismissed', async ({ page }) => {
+    // mockBackgroundEndpoints answers with a completed, dismissed checklist.
+    await page.goto('/', { waitUntil: 'networkidle' });
+
+    await expect(page.getByText('DB Dumps').or(page.getByText('Cloud Sync')).first()).toBeVisible();
+    await expect(page.getByTestId('setup-checklist')).toHaveCount(0);
   });
 });

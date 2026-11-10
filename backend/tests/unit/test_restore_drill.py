@@ -998,6 +998,47 @@ async def test_start_drill_runs_in_background_and_rejects_second(tmp_path):
     assert drill["trigger"] == "manual" and drill["status"] == "skipped"
 
 
+@pytest.mark.asyncio
+async def test_nothing_testable_drill_lets_the_setup_checklist_use_a_file_restore_test(tmp_path):
+    # Redis is never drilled and the only Postgres dump is over the size cap:
+    # the drill picks nothing. The setup checklist must not keep asking for a
+    # drill that can't pass; it accepts a file restore test instead.
+    from app.api.setup_checklist import evaluate_setup_checklist
+
+    cfg = await _make_cfg(tmp_path)
+    redis_file = "cache_redis_20261022_030000.rdb"
+    files = {
+        PG_FILE: PG_DUMP,
+        redis_file: b"REDIS0011",
+        DUMP_MANIFEST_NAME: _manifest(
+            [
+                _entry(PG_FILE, "immich_postgres", "postgres", "appdb", image="postgres:16"),
+                _entry(redis_file, "cache", "redis", "redis", image="redis:7"),
+            ]
+        ),
+    }
+    discovered = [{"container_name": "immich_postgres", "db_type": "postgres", "db_name": "appdb", "host_path": None}]
+    async with aiosqlite.connect(cfg.db_path) as db:
+        await db.execute("INSERT INTO settings (key, value) VALUES ('restore_drill_max_dump_mb', '1')")
+        await db.execute(
+            "INSERT INTO discovered_containers (name, image, status, databases) VALUES (?, 'postgres:16', 'running', ?)",
+            ("immich_postgres", json.dumps(discovered)),
+        )
+        await db.commit()
+    backup = FakeBackupEngine(cfg.dump_dir, files, sizes={PG_FILE: 5 * rd.MIB})
+    summary = await _engine(cfg, backup, FakeDocker()).run_drill()
+
+    assert summary["status"] == "skipped"
+    drill = (await _rows(cfg, "SELECT * FROM restore_drills"))[0]
+    assert rd.NOTHING_TO_DRILL in drill["error_message"]
+
+    async with aiosqlite.connect(cfg.db_path) as db:
+        step = next(s for s in (await evaluate_setup_checklist(db))["steps"] if s["id"] == "restore_test")
+    assert step["method"] == "verification"
+    assert step["state"] == "todo"
+    assert step["detail"] == f"The last drill found nothing it can test: {drill['error_message']}"
+
+
 # ---------------------------------------------------------------------------
 # Postgres database names
 # ---------------------------------------------------------------------------
