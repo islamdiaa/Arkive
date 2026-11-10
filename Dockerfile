@@ -51,7 +51,7 @@ RUN git clone --depth 1 --branch "v${RCLONE_VERSION}" https://github.com/rclone/
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 ARG TARGETARCH
-ARG VERSION=0.4.0
+ARG VERSION=0.5.0
 
 # OCI image metadata
 LABEL org.opencontainers.image.title="Arkive" \
