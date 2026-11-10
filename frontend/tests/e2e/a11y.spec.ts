@@ -28,6 +28,7 @@ const APP_ROUTES: [string, string][] = [
   ['/snapshots/abc12345', 'snapshot detail'],
   ['/restore/plan', 'restore plan'],
   ['/restore/browse', 'restore browse'],
+  ['/restore/database', 'restore database'],
   ['/logs', 'logs'],
   ['/settings/general', 'settings: general'],
   ['/settings/targets', 'settings: targets'],
