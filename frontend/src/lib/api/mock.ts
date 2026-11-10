@@ -199,14 +199,144 @@ const DEMO_TARGETS = {
 
 const DEMO_DATABASES = {
   databases: [
-    { container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null, excluded: false },
-    { container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null, excluded: false },
-    { container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null, excluded: false },
-    { container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null, excluded: false },
-    { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null, excluded: false },
-    { container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db', excluded: false },
+    { key: 'immich-postgres_immich-3f2a9c1d', container_name: 'immich-postgres', db_type: 'postgres', db_name: 'immich', host_path: null, excluded: false },
+    { key: 'vaultwarden-db_vaultwarden-8b41e0a7', container_name: 'vaultwarden-db', db_type: 'postgres', db_name: 'vaultwarden', host_path: null, excluded: false },
+    { key: 'paperless-db_paperless-c95d1b22', container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', host_path: null, excluded: false },
+    { key: 'nextcloud-mariadb_nextcloud-1e7f4a90', container_name: 'nextcloud-mariadb', db_type: 'mariadb', db_name: 'nextcloud', host_path: null, excluded: false },
+    { key: 'authelia-redis_redis-64c0d3b8', container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', host_path: null, excluded: false },
+    { key: 'home-assistant_home-assistant_v2.db-a07e5f31', container_name: 'home-assistant', db_type: 'sqlite', db_name: 'home-assistant_v2.db', host_path: '/mnt/user/appdata/home-assistant/home-assistant_v2.db', excluded: false },
   ],
 };
+
+const MIB = 1024 * 1024;
+
+/** Twice-daily dump history (oldest first) ending 12 minutes ago. */
+function _demoTrend(sizesMb: number[], shrunkLast = false): any[] {
+  const n = sizesMb.length;
+  return sizesMb.map((mb, i) => {
+    const at = new Date(Date.now() - 720000 - (n - 1 - i) * 12 * 3600000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    return {
+      run_id: `run-demo-${n - i}`,
+      at,
+      status: 'success',
+      size_bytes: Math.round(mb * MIB),
+      shrunk: shrunkLast && i === n - 1,
+    };
+  });
+}
+
+function _demoHealth(index: number, sizesMb: number[], extra: Record<string, any> = {}): any {
+  const db = DEMO_DATABASES.databases[index];
+  const trend = extra.trend ?? _demoTrend(sizesMb, !!extra.shrunk);
+  const last = trend[trend.length - 1];
+  const previous = trend[trend.length - 2];
+  return {
+    key: db.key,
+    container_name: db.container_name,
+    db_type: db.db_type,
+    db_name: db.db_name,
+    host_path: db.host_path,
+    excluded: db.excluded,
+    status: 'ok',
+    issues: [] as string[],
+    notes: [] as string[],
+    last_attempt: { status: 'success', at: last.at, run_id: last.run_id, error: null },
+    last_success_at: last.at,
+    last_success_run_id: last.run_id,
+    size_bytes: last.size_bytes,
+    integrity_check: 'ok',
+    baseline_bytes: previous ? previous.size_bytes : null,
+    size_change_percent: previous ? Math.round(((last.size_bytes - previous.size_bytes) * 1000) / previous.size_bytes) / 10 : null,
+    shrunk: false,
+    shrink_percent: null as number | null,
+    trend,
+    last_drill: null as any,
+    restorable_as_of: last.at,
+    ...extra,
+  };
+}
+
+function _demoDrill(drillId: string, status: string, detail: string): any {
+  const drill = DEMO_DRILLS.items.find((d) => d.id === drillId);
+  return {
+    status,
+    at: drill?.completed_at ?? null,
+    drill_id: drillId,
+    detail,
+    dump_file: null,
+    dump_dumped_at: drill?.started_at ?? null,
+    snapshot_id: drill?.snapshot_id ?? null,
+  };
+}
+
+function _demoDatabaseHealth(): any {
+  const items = [
+    _demoHealth(0, [205, 206, 206, 207, 208, 208, 209, 210, 211, 211, 212, 213, 214, 214], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into postgres:14 — 42 tables'),
+    }),
+    _demoHealth(1, [5, 5, 5, 5, 5, 5, 5, 5, 5.1, 5.1, 5.1, 5.1, 5.1, 5.1], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into postgres:16-alpine — 31 tables'),
+    }),
+    _demoHealth(2, [96, 96, 97, 97, 97, 98, 98, 98, 99, 99, 99, 100, 100, 100], {
+      status: 'warning',
+      issues: ['Last restore drill failed'],
+      last_drill: _demoDrill('drill-demo-0', 'failed', 'psql: ERROR: relation "documents_document" does not exist'),
+    }),
+    _demoHealth(3, [98, 98, 99, 99, 99, 100, 100, 100, 100, 101, 101, 101, 102, 102], {
+      last_drill: _demoDrill('drill-demo-1', 'passed', 'Restored into mariadb:11 — 108 tables'),
+    }),
+    _demoHealth(4, [2, 2, 2.1, 2, 2.1, 2.1, 2, 2.1, 2.1, 2.1, 2.2, 2.1, 2.2, 2.2], {
+      last_drill: _demoDrill('drill-demo-1', 'skipped', 'redis dumps are not drill-tested'),
+      // Redis dumps aren't size-checked (see services/database_health.py).
+      baseline_bytes: null,
+      notes: ['Dump size is not checked for shrinking: Redis dumps are cache and queue snapshots'],
+    }),
+    _demoHealth(5, [1180, 1184, 1190, 1195, 1199, 1204, 1210, 1214, 1219, 1224, 1229, 1233, 1238, 392], {
+      status: 'warning',
+      shrunk: true,
+      shrink_percent: 68,
+      baseline_bytes: 1229 * MIB,
+      size_change_percent: -68.3,
+      issues: ['Latest dump is 68% smaller than its recent median (392.0 MB vs 1.2 GB)'],
+    }),
+  ];
+  const summary = { ok: 0, warning: 0, failed: 0, never_dumped: 0, excluded: 0 } as Record<string, number>;
+  for (const item of items) summary[item.status] = (summary[item.status] ?? 0) + 1;
+  return {
+    items,
+    databases: items,
+    total: items.length,
+    summary,
+    policy: {
+      shrink_alert_percent: DEMO_SETTINGS.dump_shrink_alert_percent,
+      shrink_min_mb: DEMO_SETTINGS.dump_shrink_min_mb,
+      baseline_dumps: 5,
+      min_baseline_dumps: 3,
+    },
+    latest_upload_at: items[0].restorable_as_of,
+    generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+}
+
+let DEMO_DATABASE_HEALTH: any = null;
+
+function _mockDatabaseHealth(): any {
+  DEMO_DATABASE_HEALTH = DEMO_DATABASE_HEALTH ?? _demoDatabaseHealth();
+  return DEMO_DATABASE_HEALTH;
+}
+
+function _mockAcceptDatabaseSize(key: string): any {
+  const health = _mockDatabaseHealth();
+  const item = health.items.find((i: any) => i.key === key);
+  if (!item) return { key, accepted_from: null };
+  item.shrunk = false;
+  item.shrink_percent = null;
+  item.baseline_bytes = null;
+  item.issues = item.issues.filter((issue: string) => !issue.startsWith('Latest dump is'));
+  item.trend = item.trend.map((p: any) => ({ ...p, shrunk: false }));
+  if (item.status === 'warning' && item.issues.length === 0) item.status = 'ok';
+  return { key, accepted_from: item.last_success_at };
+}
 
 const DEMO_ACTIVITY = {
   activities: [
@@ -275,6 +405,8 @@ const DEMO_SETTINGS = {
   restore_drill_schedule: '0 7 * * 0',
   restore_drill_max_databases: 3,
   restore_drill_max_dump_mb: 2048,
+  dump_shrink_alert_percent: 50,
+  dump_shrink_min_mb: 1,
   recovery_kit_confirmed_at: null as string | null,
   schedule: '0 3 * * *',
   retention: { keep_daily: 7, keep_weekly: 4, keep_monthly: 6 },
@@ -666,6 +798,7 @@ async function _mockGet(path: string): Promise<any> {
     return DEMO_TARGETS.targets.find(t => t.id === id) || DEMO_TARGETS.targets[0];
   }
   if (clean === '/databases') return DEMO_DATABASES;
+  if (clean === '/databases/health') return _mockDatabaseHealth();
   if (clean === '/notifications') return DEMO_CHANNELS;
   if (clean === '/notifications/events') return fallbackEventCatalog();
   if (clean === '/drills') return DEMO_DRILLS;
@@ -710,6 +843,7 @@ async function _mockPost(path: string, data?: any): Promise<any> {
   if (clean === '/auth/rotate-key') return { api_key: 'demo-new-key-67890' };
   if (clean === '/jobs') return { ...data, id: `job-new-${Date.now()}` };
   if (clean === '/drills/run') return { drill_id: `drill-demo-${Date.now()}`, status: 'running' };
+  if (clean === '/databases/health/accept-size') return _mockAcceptDatabaseSize(String(data?.key ?? ''));
   if (clean === '/settings/recovery-kit') return _mockRecoveryKit();
   if (clean === '/settings/recovery-kit/confirm') {
     const confirmedAt = new Date().toISOString();
@@ -835,6 +969,8 @@ export const mockApi = {
   listContainers: async () => { await delay(); return DEMO_CONTAINERS; },
 
   listDatabases: async () => { await delay(); return DEMO_DATABASES; },
+  getDatabaseHealth: async () => { await delay(); return _mockDatabaseHealth(); },
+  acceptDatabaseSize: async (key: string) => { await delay(); return _mockAcceptDatabaseSize(key); },
   setDatabaseExcluded: async (db: any, excluded: boolean) => {
     await delay();
     const entry = DEMO_DATABASES.databases.find(
