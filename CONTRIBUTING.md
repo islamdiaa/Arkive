@@ -103,6 +103,9 @@ Prefixes: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, `perf`.
 - Reference any related issues (e.g., "Fixes #42")
 - Ensure all tests pass
 - Update documentation if your change affects user-facing behavior
+- Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for changes users will notice
+
+Releases are cut by tagging; see [RELEASING.md](RELEASING.md).
 
 ## Adding Container Profiles
 

@@ -435,6 +435,13 @@ Rules that follow from this:
 - a new route the setup wizard needs before setup goes in `_SETUP_ROUTES`;
   don't reopen the bootstrap bypass
 - run `pip-audit`, `npm audit` and Trivy on the image before a release tag
+- the full release checklist is `RELEASING.md`. A `vX.Y.Z` tag publishes the
+  image and creates the GitHub release from that version's `CHANGELOG.md`
+  section (`scripts/release.py`); Docker `latest` moves only on the newest
+  stable tag, never on a push to `main`. CI runs the workflow from the tagged
+  commit, so a maintenance branch cut from v0.4.0 or earlier must take this
+  tooling first (RELEASING.md, "Fixes for an older release line"). User-visible
+  changes get a line under `## [Unreleased]` in `CHANGELOG.md`
 
 ### 15. Restore path review with real engines
 

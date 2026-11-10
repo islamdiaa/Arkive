@@ -139,6 +139,8 @@ The browser may then ask for the admin API key once, to create a session.
 
 Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
 
+`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.4.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## How it works
@@ -263,6 +265,7 @@ frontend/     SvelteKit 2 + Svelte 5 + Tailwind; Vitest and Playwright tests
 profiles/     YAML app profiles used by discovery
 docs/         Deployment notes (homeserver smoke test)
 CLAUDE.md     Architecture notes and invariants for contributors and coding agents
+CHANGELOG.md  Release notes; RELEASING.md has the release checklist
 ```
 
 ## Contributing
