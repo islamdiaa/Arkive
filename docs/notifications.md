@@ -42,6 +42,7 @@ Apprise has no Uptime Kuma service. To have Uptime Kuma watch Arkive, use the [h
 | `backup.partial` | Backup incomplete | A run finished but missed something (a database, a path, a target, unreadable files). Usually a snapshot was still written; when the job had no storage target to upload to, nothing was. The message gives the reason. | yes |
 | `backup.failed` | Backup failed | A run failed: every target it uploaded to failed, or the run stopped with an error (for example too little disk space for the dumps) | yes |
 | `backup.stale` | Backups overdue | The [freshness watchdog](monitoring.md) finds a job without a good backup within its schedule window. Repeated every 24 hours while the job stays overdue. | yes |
+| `backup.no_offsite` | No offsite copy | Every storage target the backup jobs upload to is on this server, so losing the server loses the backups too. Sent once, and again only after the condition has cleared and returned. | yes |
 | `verification.failed` | Verification failed | The weekly verification (Sundays at 06:00) found a target that failed or scored below 50, or the weekly repository check (Sundays at 05:00) hit an error | yes |
 | `drill.failed` | Restore drill failed | A [restore drill](restore-drills.md) could not restore a database dump, or the last 3 drills in a row could not test any database | yes |
 | `target.error` | Storage target unreachable | The 5-minute health check finds that a target which was reachable no longer is | yes |
