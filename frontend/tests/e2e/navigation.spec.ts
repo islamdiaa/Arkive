@@ -84,6 +84,29 @@ test.describe('Navigation', () => {
       bodyText.toLowerCase().includes('arkive');
     expect(hasAnyDashboardContent).toBe(true);
   });
+
+  // The other checks here load each route directly; this one follows sidebar
+  // links, which SvelteKit routes on the client.
+  test('breadcrumbs follow client-side navigation', async ({ page }) => {
+    // While the outgoing page fades out, both pages' headers are in the DOM.
+    const breadcrumbs = page.getByRole('navigation', { name: 'Breadcrumb' });
+    async function expectOnlyCrumb(label: string) {
+      await expect(breadcrumbs.filter({ hasText: label })).toBeVisible();
+      await expect(breadcrumbs).toHaveCount(1);
+      await expect(breadcrumbs).toContainText(label);
+    }
+
+    await page.goto(demoUrl('/backups'), { waitUntil: 'networkidle' });
+    await expectOnlyCrumb('Backups');
+
+    await page.locator('aside').getByRole('link', { name: 'Snapshots' }).click();
+    await expect(page).toHaveURL(/\/snapshots$/);
+    await expectOnlyCrumb('Snapshots');
+
+    await page.locator('aside').getByRole('link', { name: 'Logs' }).click();
+    await expect(page).toHaveURL(/\/logs$/);
+    await expectOnlyCrumb('Logs');
+  });
 });
 
 test.describe('Navigation — demo mode without a backend session', () => {

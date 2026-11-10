@@ -9,7 +9,7 @@
 	import { api } from '$lib/api/client';
 	import { loginUrl } from '$lib/api/session';
 	import { isConflictTerminalEvent } from '$lib/utils/run-status';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 	import { goto } from '$app/navigation';
 	import { fly, fade } from 'svelte/transition';
 	import { onMount } from 'svelte';

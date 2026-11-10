@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from '$app/stores';
+  import { page } from '$lib/stores/page';
   import { Button } from '$lib/components/ui/button';
 </script>
 

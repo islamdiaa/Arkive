@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 import { writable } from 'svelte/store';
 
-// We need to mock $app/stores with a writable page store so we can change routes
-// The mock at src/tests/mocks/app/stores.ts provides the default,
-// but the Sidebar component imports from $app/stores which is aliased in vitest config.
+// Sidebar reads the route through $lib/stores/page, which wraps $app/state.
+// vitest.config.ts aliases $app/state to src/tests/mocks/app/state.svelte.ts.
 
 import { tick } from 'svelte';
 import Sidebar from './Sidebar.svelte';

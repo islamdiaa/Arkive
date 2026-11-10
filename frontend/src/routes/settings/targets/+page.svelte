@@ -9,7 +9,7 @@
 	import { formatBytes } from '$lib/utils/format';
 	import { timeAgo } from '$lib/utils/date';
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 	import { Cloud, Folder, Server, HardDrive } from 'lucide-svelte';
 	import ConfirmDangerModal from '$lib/components/ui/ConfirmDangerModal.svelte';
 	import { isHealthyTargetStatus } from '$lib/utils/run-status';

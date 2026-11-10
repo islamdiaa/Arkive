@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 	import { sidebarOpen, backupRunning } from '$lib/stores/app';
 	import { connected } from '$lib/stores/sse';
 
