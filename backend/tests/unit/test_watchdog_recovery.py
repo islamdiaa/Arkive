@@ -608,6 +608,7 @@ async def test_migration_backfills_new_events(tmp_path):
         "verification.failed",
         "target.error",
         "backup.partial",
+        "backup.no_offsite",
     ]
     assert json.loads(rows["b"]) == ["backup.success"]
 
