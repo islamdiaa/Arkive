@@ -38,6 +38,7 @@ Upgrade by recreating the container with the same `/config` volume; database mig
 - A local storage target on a read-only mount is rejected when you add it, instead of failing at the first backup.
 - The frontend moved to SvelteKit 3 and Tailwind CSS 4. Nothing should look or behave differently.
 - Dependency updates: apprise 2.1.0, click 8.5.0, and the Inter and JetBrains Mono fonts.
+- restic 0.19.1 and rclone 1.75.2 are rebuilt with `golang.org/x/net` 0.62.0, which fixes CVE-2026-78661.
 
 ### Fixed
 - Restore-plan commands now run as written: they use the container's own database user and client, no longer rely on bash-only syntax, and handle SQLite write-ahead logs.
