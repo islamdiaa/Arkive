@@ -314,6 +314,26 @@ MIGRATIONS: dict[int, list[str]] = {
               AND NOT EXISTS (SELECT 1 FROM json_each(notification_channels.events)
                               WHERE value = 'backup.no_offsite')""",
     ],
+    8: [
+        # Per-database health. job_run_databases could not tell apart two
+        # databases with the same container and name (same-basename SQLite
+        # files) and only knew when the run started, not when each dump was
+        # taken. db_key is the database identity (dump_prefix, the same key
+        # dump files and exclusions use; NULL on older rows, derived from the
+        # dump file name when read); dumped_at is when the dump began, i.e.
+        # the point in time it captures (NULL on older rows: the run start).
+        # shrink_flagged is 1 when the run flagged this dump as a sharp
+        # shrink, else NULL; flagged dumps never become the size baseline, so
+        # a shrink keeps warning until the size returns or it is accepted.
+        "ALTER TABLE job_run_databases ADD COLUMN db_key TEXT",
+        "ALTER TABLE job_run_databases ADD COLUMN dumped_at TEXT",
+        "ALTER TABLE job_run_databases ADD COLUMN shrink_flagged INTEGER",
+        # Per-database history lookups (services/database_health.py), however
+        # many runs there are: by identity, and by name for older rows.
+        "CREATE INDEX IF NOT EXISTS idx_job_run_databases_key ON job_run_databases(db_key, status, shrink_flagged)",
+        """CREATE INDEX IF NOT EXISTS idx_job_run_databases_legacy
+            ON job_run_databases(container_name, status, shrink_flagged) WHERE db_key IS NULL""",
+    ],
 }
 
 

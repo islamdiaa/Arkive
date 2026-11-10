@@ -82,6 +82,79 @@ export interface DiscoveredDatabase {
   db_type: 'postgres' | 'sqlite' | 'mysql' | 'mariadb' | 'mongodb' | 'redis';
   db_name: string;
   host_path: string | null;
+  /** Database identity (matches DatabaseHealth.key); returned by GET /databases. */
+  key?: string;
+  excluded?: boolean;
+}
+
+// ── Database health (GET /databases/health) ──
+export type DatabaseHealthStatus = 'ok' | 'warning' | 'failed' | 'never_dumped' | 'excluded';
+
+export interface DatabaseSizePoint {
+  run_id: string;
+  at: string;
+  status: 'success' | 'failed' | string;
+  /** null for failed dumps */
+  size_bytes: number | null;
+  /** This dump was a sharp shrink versus the ones before it. */
+  shrunk: boolean;
+}
+
+export interface DatabaseDrillResult {
+  status: 'passed' | 'failed' | 'skipped' | string;
+  at: string | null;
+  drill_id: string;
+  detail: string | null;
+  dump_file: string | null;
+  /** When the drilled dump was taken. */
+  dump_dumped_at: string | null;
+  snapshot_id: string | null;
+}
+
+export interface DatabaseHealth {
+  key: string;
+  container_name: string;
+  db_type: string;
+  db_name: string;
+  host_path: string | null;
+  excluded: boolean;
+  status: DatabaseHealthStatus | string;
+  /** Problems (any makes the status at least "warning"). */
+  issues: string[];
+  /** Context that is not a problem, e.g. a run skipped a stopped container. */
+  notes: string[];
+  last_attempt: { status: string; at: string; run_id: string; error: string | null } | null;
+  last_success_at: string | null;
+  last_success_run_id: string | null;
+  size_bytes: number | null;
+  integrity_check: string | null;
+  /** Median of recent dumps the latest is compared with (null: not enough history). */
+  baseline_bytes: number | null;
+  /** Latest successful dump versus the previous one, in percent. */
+  size_change_percent: number | null;
+  shrunk: boolean;
+  shrink_percent: number | null;
+  /** Recent dump attempts, oldest first. */
+  trend: DatabaseSizePoint[];
+  last_drill: DatabaseDrillResult | null;
+  /** Newest dump that a snapshot holds: the point in time this database restores to. */
+  restorable_as_of: string | null;
+}
+
+export interface DatabaseHealthPolicy {
+  shrink_alert_percent: number;
+  shrink_min_mb: number;
+  baseline_dumps: number;
+  min_baseline_dumps: number;
+}
+
+export interface DatabaseHealthResponse {
+  items: DatabaseHealth[];
+  total: number;
+  summary: Partial<Record<DatabaseHealthStatus, number>>;
+  policy: DatabaseHealthPolicy | null;
+  latest_upload_at: string | null;
+  generated_at: string | null;
 }
 
 // ── Activity ──

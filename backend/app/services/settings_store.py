@@ -17,6 +17,11 @@ DEFAULTS: dict[str, str] = {
     "restore_drill_schedule": "0 7 * * 0",
     "restore_drill_max_databases": "3",
     "restore_drill_max_dump_mb": "2048",
+    # A dump this many percent smaller than its database's recent median makes
+    # the run partial (0 = off); databases whose median is below
+    # dump_shrink_min_mb are not checked. See services/database_health.py.
+    "dump_shrink_alert_percent": "50",
+    "dump_shrink_min_mb": "1",
 }
 
 

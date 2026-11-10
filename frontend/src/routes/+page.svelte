@@ -12,6 +12,7 @@
 	import RecoveryKitBanner from '$lib/components/dashboard/RecoveryKitBanner.svelte';
 	import OffsiteWarningBanner from '$lib/components/dashboard/OffsiteWarningBanner.svelte';
 	import RestoreDrillsPanel from '$lib/components/dashboard/RestoreDrillsPanel.svelte';
+	import SetupChecklistCard from '$lib/components/dashboard/SetupChecklistCard.svelte';
 	import StatCard from '$lib/components/ui/StatCard.svelte';
 	import { loadDashboard, type DashboardData } from '$lib/api/loaders';
 	import { api, ApiError } from '$lib/api/client';
@@ -23,6 +24,7 @@
 	import { dashboardHealth, healthDisplay, isConflictTerminalEvent, resolveTrustScore } from '$lib/utils/run-status';
 	import { drillCountsLabel, drillTimestamp } from '$lib/utils/drills';
 	import { jobTypeLabel, pickPrimaryJob } from '$lib/utils/job-types';
+	import { checklistVisible, stepDone } from '$lib/utils/setup-checklist';
 	import { onMount, onDestroy } from 'svelte';
 
 	let data: DashboardData | null = null;
@@ -33,6 +35,7 @@
 	let lastVerifiedAt: string | null = null;
 	let refreshing = false;
 	let refreshQueued = false;
+	let checklistCollapsed = false;
 
 	function applyDashboard(d: DashboardData) {
 		data = d;
@@ -176,6 +179,9 @@
 		? timeAgo(getLastBackupTime(data?.status) ?? '')
 		: 'Never';
 	$: storageValue = formatBytes(getStorageUsed(data?.status));
+	// While the open setup checklist lists the recovery kit, skip the separate banner.
+	$: kitInChecklist =
+		checklistVisible(data?.checklist) && !checklistCollapsed && !stepDone(data?.checklist, 'recovery_kit');
 </script>
 
 <Header title="Dashboard" />
@@ -199,8 +205,15 @@
 			backupDisabled={$backupRunning}
 		/>
 		<StaleBackupsAlert freshness={data?.status?.backup_freshness} />
+		<SetupChecklistCard
+			checklist={data?.checklist}
+			onRunBackup={handleBackup}
+			backupRunning={$backupRunning}
+			onChange={refreshDashboard}
+			bind:collapsed={checklistCollapsed}
+		/>
 		<!-- The unauthenticated minimal status payload defaults this to false; ignore it there. -->
-		<RecoveryKitBanner confirmed={data?.status?.authenticated === false ? undefined : data?.status?.recovery_kit_confirmed} />
+		<RecoveryKitBanner confirmed={data?.status?.authenticated === false || kitInChecklist ? undefined : data?.status?.recovery_kit_confirmed} />
 		<OffsiteWarningBanner offsite={data?.status?.offsite} />
 	{/if}
 

@@ -8,7 +8,10 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — Frontend Builder
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS frontend-builder
+# The output is static files (adapter-static), identical for every target
+# architecture, so build it once on the build platform. Under QEMU the arm64
+# `npm ci` / `vite build` took several times longer and sometimes hung.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
