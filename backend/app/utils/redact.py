@@ -116,8 +116,11 @@ def redact_credentials(text: str) -> str:
     # -pVALUE (no space) — MySQL/MariaDB short password flag.
     # Case-sensitive: matches -p (password) but NOT -P (port).
     # (?!-) prevents matching --password (already handled above).
+    # Only a stand-alone argument (start, whitespace, quote, "=" before it):
+    # container names such as "immich-postgres" or "paperless-pg/appdb" in
+    # error messages are not passwords.
     # False positives on rare flags like -print are acceptable (overly cautious, not a leak).
-    text = re.sub(r"(?<!\-)(-p)(?!-)([^\s\-][^\s]*)", r"\1[REDACTED]", text)
+    text = re.sub(r"(?<![^\s'\"=(\[,])(-p)(?!-)([^\s\-][^\s]*)", r"\1[REDACTED]", text)
 
     # MongoDB patterns
     # MONGO_INITDB_ROOT_PASSWORD=... environment variable

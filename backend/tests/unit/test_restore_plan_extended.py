@@ -130,9 +130,9 @@ class TestRestoreCommandsMongodb:
 
 
 class TestRestoreCommandsSqlite:
-    def test_short_cmd_contains_sqlite3(self, generator):
+    def test_short_cmd_says_to_drop_the_stale_wal(self, generator):
         short, full = generator._get_restore_commands("sqlite", "mydata.db", "sqlite_ctr")
-        assert "sqlite3" in short
+        assert "mydata.db-wal" in short and "stop sqlite_ctr" in short
 
     def test_full_cmd_contains_container_name(self, generator):
         short, full = generator._get_restore_commands("sqlite", "mydata.db", "sqlite_ctr")

@@ -71,6 +71,7 @@ DRILLABLE_TYPES = SQL_SERVER_TYPES | {"sqlite"}
 NOT_DRILLED_TYPES = frozenset({"mongodb", "redis"})
 
 PG_DUMP_TRAILER = b"PostgreSQL database dump complete"
+PG_DUMPALL_TRAILER = b"PostgreSQL database cluster dump complete"
 MYSQL_DUMP_TRAILER = b"-- Dump completed"
 
 _SQLITE_UNVERIFIABLE_MARKERS = (
@@ -92,7 +93,9 @@ _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 # Paths inside the throwaway container (chosen here, never user-controlled).
 CONTAINER_DUMP_DIR = "/arkive-drill"
 CONTAINER_DUMP_FILE = "/arkive-drill/dump.sql"
+CONTAINER_GLOBALS_FILE = "/arkive-drill/globals.sql"
 CONTAINER_LOAD_ERR = "/tmp/arkive-drill-load.err"  # nosec B108 - inside the throwaway drill container
+CONTAINER_GLOBALS_ERR = "/tmp/arkive-drill-globals.err"  # nosec B108 - inside the throwaway drill container
 
 # Fixed shell scripts: variable parts arrive through the exec environment and
 # are only ever expanded inside double quotes.
@@ -100,6 +103,21 @@ _PG_LOAD_SCRIPT = (
     'psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
     '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_DUMP_FILE + " >/dev/null 2>" + CONTAINER_LOAD_ERR
 )
+# Roles first, as in a real restore: the database dump assigns its objects to
+# them. No ON_ERROR_STOP: like the restore plan's plain psql, every statement
+# runs, and the errors are judged afterwards (pg_globals_errors). pg_dumpall
+# writes a plain "CREATE ROLE x;", which fails with "already exists" for every
+# role the image's own init scripts created in the drill server; that is
+# harmless (the "ALTER ROLE x WITH ..." after it still applies the dumped
+# attributes). VERBOSITY=verbose adds the SQLSTATE to each message, so the
+# check does not depend on the server's message language.
+_PG_GLOBALS_SCRIPT = (
+    'psql -X -q -v VERBOSITY=verbose -h 127.0.0.1 -U "$ARKIVE_DRILL_USER" '
+    '-d "$ARKIVE_DRILL_MAINTDB" -f ' + CONTAINER_GLOBALS_FILE + " >/dev/null 2>" + CONTAINER_GLOBALS_ERR
+)
+# psql's messages from the roles load are read back in full (two lines per
+# role that already existed); more than this is reported, not skipped.
+_GLOBALS_ERR_MAX_BYTES = 1024 * 1024
 _MYSQL_LOAD_SCRIPT = (
     '"$ARKIVE_DRILL_CLIENT" -h 127.0.0.1 --protocol=tcp -uroot <'
     + CONTAINER_DUMP_FILE
@@ -119,6 +137,15 @@ _MYSQL_COUNT_SQL = (
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_type = 'BASE TABLE' "
     "AND table_schema NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')"
 )
+# A container without MYSQL_DATABASE has its "mysql" system schema (accounts,
+# grants) dumped. Its tables live in that schema, which the count above
+# leaves out; count that schema itself (the drill server already has one, so
+# this only confirms the load did not drop it).
+_MYSQL_SYSTEM_COUNT_SQL = {
+    "mysql": (
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_type = 'BASE TABLE' AND table_schema = 'mysql'"
+    ),
+}
 
 
 def _now() -> str:
@@ -227,6 +254,96 @@ def parse_pg_connect(arg: str) -> str | None:
     if reuse_previous or (token.startswith("dbname=") and not arg.startswith('"')):
         return _conninfo_value(token, "dbname")
     return token
+
+
+_DOLLAR_QUOTE_RE = re.compile(rb"\$(?:[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$")
+
+
+def _dollar_quote_state(line: bytes, open_tag: bytes | None) -> bytes | None:
+    """Dollar-quote tag still open at the end of ``line`` (pg_dump writes
+    function bodies as ``$$ ... $$`` / ``$_$ ... $_$``), given the tag open at
+    its start. Only the tag that opened a quote closes it."""
+    for match in _DOLLAR_QUOTE_RE.finditer(line):
+        tag = match.group(0)
+        if open_tag is None:
+            open_tag = tag
+        elif tag == open_tag:
+            open_tag = None
+    return open_tag
+
+
+def _sql_identifier(token: bytes) -> tuple[str | None, bytes]:
+    """Leading SQL identifier of ``token`` (double-quoted with "" escapes, or
+    bare) and the rest of the line."""
+    if token.startswith(b'"'):
+        out = bytearray()
+        i = 1
+        while i < len(token):
+            if token[i : i + 1] == b'"':
+                if token[i + 1 : i + 2] == b'"':
+                    out += b'"'
+                    i += 2
+                    continue
+                return out.decode("utf-8", errors="replace"), token[i + 1 :]
+            out += token[i : i + 1]
+            i += 1
+        return None, b""
+    match = re.match(rb"[^\s;]+", token)
+    if not match:
+        return None, token
+    return match.group(0).decode("utf-8", errors="replace"), token[match.end() :]
+
+
+def is_bootstrap_role_line(line: bytes, role: str) -> bool:
+    """True for pg_dumpall's ``CREATE ROLE <role>;`` and ``ALTER ROLE <role> WITH ...``
+    lines. The drill's server already has its bootstrap superuser: re-creating
+    it fails, and the ALTER would replace the drill's own password."""
+    for prefix in (b"CREATE ROLE ", b"ALTER ROLE "):
+        if line.startswith(prefix):
+            name, rest = _sql_identifier(line[len(prefix) :])
+            if name != role:
+                return False
+            rest = rest.strip()
+            return rest == b";" if prefix == b"CREATE ROLE " else rest.startswith(b"WITH ")
+    return False
+
+
+# "psql:<file>:<line>: <SEVERITY>:  <SQLSTATE>: <message>" (VERBOSITY=verbose).
+_PSQL_SCRIPT_MESSAGE_RE = re.compile(r"^psql:.*?:\d+: (.*)$")
+_PSQL_SQLSTATE_RE = re.compile(r"^[^\s:]+:\s+([0-9A-Z]{5}): (.*)$")
+_SQLSTATE_DUPLICATE_OBJECT = "42710"  # "role ... already exists"
+_SQLSTATE_NOT_ERROR_CLASSES = ("00", "01", "02")  # notices, warnings, no data
+
+
+def pg_globals_errors(stderr: str) -> tuple[list[str], int]:
+    """Judge psql's messages from loading a roles dump (``_PG_GLOBALS_SCRIPT``).
+
+    Returns ``(errors, existing)``: the messages that mean a role (or grant)
+    was not restored, and how many objects already existed in the drill
+    server. "already exists" (SQLSTATE 42710) is harmless: the image's own
+    init scripts created that role, and the following ``ALTER ROLE ... WITH``
+    applies the dumped attributes to it. Notices and warnings are ignored.
+    A message without a SQLSTATE (psql's own errors) counts as an error.
+    """
+    errors: list[str] = []
+    existing = 0
+    for line in stderr.splitlines():
+        script_message = _PSQL_SCRIPT_MESSAGE_RE.match(line.strip())
+        if not script_message:
+            continue  # DETAIL/HINT/LOCATION lines belong to the message above
+        text = script_message.group(1)
+        coded = _PSQL_SQLSTATE_RE.match(text)
+        if coded is None:
+            errors.append(text)
+            continue
+        code, message = coded.groups()
+        if code[:2] in _SQLSTATE_NOT_ERROR_CLASSES:
+            continue
+        if code == _SQLSTATE_DUPLICATE_OBJECT:
+            existing += 1
+            continue
+        errors.append(f"{message} (SQLSTATE {code})")
+    return errors, existing
 
 
 def _mb(size_bytes: int) -> int:
@@ -476,7 +593,13 @@ def select_candidates(
         if not cand.in_snapshot:
             excluded.append((cand, "failed", "listed in the snapshot's dump manifest but missing from the snapshot"))
         elif cand.kind == "globals":
-            excluded.append((cand, "skipped", "roles/globals dump; not drill-tested"))
+            excluded.append(
+                (
+                    cand,
+                    "skipped",
+                    "roles/globals dump; loaded ahead of this server's database dumps when they are drilled",
+                )
+            )
         elif cand.db_type in NOT_DRILLED_TYPES:
             excluded.append((cand, "skipped", f"{cand.db_type} dumps are not drill-tested"))
         elif cand.db_type not in DRILLABLE_TYPES:
@@ -571,6 +694,8 @@ class PreparedDump:
     create_tables: int
     database: str | None
     trailer_ok: bool
+    # Postgres: the cluster's roles dump, loaded before the database dump.
+    globals_path: Path | None = None
 
 
 def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 0) -> PreparedDump:
@@ -589,6 +714,12 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
     database: str | None = None
     in_copy = False
     at_line_start = True
+    # Function / procedure bodies are not statements of the dump itself: a
+    # "CREATE TABLE" at the start of a line inside one is not a table the dump
+    # creates. Postgres bodies are dollar-quoted; mysqldump writes routines and
+    # triggers between "DELIMITER ;;" and "DELIMITER ;".
+    dollar_tag: bytes | None = None
+    in_delimiter_block = False
 
     if gzipped:
         reader = gzip.open(src, "rb")
@@ -615,10 +746,22 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
             starts_line = at_line_start
             at_line_start = line.endswith(b"\n")
             if not starts_line:
+                if postgres and not in_copy:
+                    dollar_tag = _dollar_quote_state(line, dollar_tag)
                 continue  # continuation of a line longer than MIB
             if in_copy:
                 if line.rstrip(b"\r\n") == b"\\.":
                     in_copy = False
+                continue
+            if postgres:
+                in_body = dollar_tag is not None
+                dollar_tag = _dollar_quote_state(line, dollar_tag)
+                if in_body:
+                    continue
+            elif line.startswith(b"DELIMITER "):
+                in_delimiter_block = line.split()[1:2] != [b";"]
+                continue
+            elif in_delimiter_block:
                 continue
             if line.startswith(b"CREATE TABLE ") or line.startswith(b"CREATE UNLOGGED TABLE "):
                 create_tables += 1
@@ -648,6 +791,31 @@ def prepare_sql_dump(src: Path, dest: Path, db_type: str, min_free_bytes: int = 
     return PreparedDump(
         path=dest, size_bytes=size, create_tables=create_tables, database=database, trailer_ok=trailer in tail
     )
+
+
+def prepare_pg_globals(src: Path, dest: Path, bootstrap_role: str) -> bool:
+    """Write the roles dump (pg_dumpall --globals-only) to ``dest`` as plain
+    SQL without the statements for the drill server's own bootstrap superuser
+    (see ``is_bootstrap_role_line``). Returns whether the completion trailer
+    was present. Removes ``src`` when it differs from ``dest``.
+    """
+    with open(src, "rb") as fh:
+        gzipped = fh.read(2) == b"\x1f\x8b"
+    tail = b""
+    try:
+        with gzip.open(src, "rb") if gzipped else open(src, "rb") as reader, open(dest, "wb") as writer:
+            for line in reader:
+                tail = (tail + line)[-4096:]
+                if not is_bootstrap_role_line(line, bootstrap_role):
+                    writer.write(line)
+    except (EOFError, zlib.error, gzip.BadGzipFile) as exc:
+        raise DrillFailure(f"the roles dump is a corrupt gzip stream: {exc}") from exc
+    if src != dest:
+        try:
+            os.remove(src)
+        except OSError:
+            pass
+    return PG_DUMPALL_TRAILER in tail
 
 
 # ---------------------------------------------------------------------------
@@ -868,9 +1036,18 @@ class RestoreDrillEngine:
         chosen, excluded = select_candidates(candidates, history, max_databases, max_dump_mb * MIB)
         outcome.results.extend(DrillResult.for_candidate(c, status, reason) for c, status, reason in excluded)
 
+        # Postgres roles dump of each container, restored ahead of its databases.
+        roles_dumps = {
+            c.container_name: c
+            for c in candidates
+            if c.kind == "globals" and c.db_type == "postgres" and c.in_snapshot and c.container_name
+        }
         host_restore_dir = await self._resolve_host_restore_dir() if chosen else None
         for index, cand in enumerate(chosen):
-            result = await self._drill_one(drill_id, index, cand, target, snapshot_id, drill_dir, host_restore_dir)
+            roles = roles_dumps.get(cand.container_name) if cand.db_type == "postgres" else None
+            result = await self._drill_one(
+                drill_id, index, cand, target, snapshot_id, drill_dir, host_restore_dir, roles=roles
+            )
             outcome.results.append(result)
 
         if outcome.failed:
@@ -924,13 +1101,14 @@ class RestoreDrillEngine:
         snapshot_id: str,
         drill_dir: Path,
         host_restore_dir: str | None,
+        roles: DumpCandidate | None = None,
     ) -> DrillResult:
         started = time.monotonic()
         work = drill_dir / f"db-{index}"
         try:
             await asyncio.to_thread(work.mkdir, parents=True, exist_ok=True)
             free = await asyncio.to_thread(lambda: shutil.disk_usage(work).free)
-            needed = cand.size_bytes + self.min_free_bytes
+            needed = cand.size_bytes + (roles.size_bytes if roles else 0) + self.min_free_bytes
             if free < needed:
                 raise DrillSkip(
                     f"not enough free space in {self.config.restore_dir} "
@@ -938,10 +1116,11 @@ class RestoreDrillEngine:
                 )
             dump_dir = str(self.config.dump_dir).rstrip("/")
             restore_to = work / "restore"
+            files = [cand.file] + ([roles.file] if roles else [])
             result = await self.backup_engine.restore(
                 target=target,
                 snapshot_id=snapshot_id,
-                paths=[f"{dump_dir}/{cand.file}"],
+                paths=[f"{dump_dir}/{name}" for name in files],
                 restore_to=str(restore_to),
             )
             if result.get("status") != "success":
@@ -951,6 +1130,11 @@ class RestoreDrillEngine:
             restored = restore_to / dump_dir.lstrip("/") / cand.file
             if not await asyncio.to_thread(restored.is_file):
                 raise DrillFailure("dump file missing after restore")
+            restored_roles = None
+            if roles is not None:
+                restored_roles = restore_to / dump_dir.lstrip("/") / roles.file
+                if not await asyncio.to_thread(restored_roles.is_file):
+                    raise DrillFailure(f"roles dump {roles.file} missing after restore")
             if cand.db_type == "sqlite":
                 status, detail = await asyncio.to_thread(verify_sqlite_file, restored)
             else:
@@ -962,6 +1146,7 @@ class RestoreDrillEngine:
                     restored,
                     work,
                     host_restore_dir,
+                    restored_roles,
                 )
         except DrillSkip as exc:
             status, detail = "skipped", str(exc)
@@ -989,7 +1174,14 @@ class RestoreDrillEngine:
         return self.docker_client
 
     def _drill_sql_blocking(
-        self, drill_id: str, index: int, cand: DumpCandidate, restored: Path, work: Path, host_restore_dir: str | None
+        self,
+        drill_id: str,
+        index: int,
+        cand: DumpCandidate,
+        restored: Path,
+        work: Path,
+        host_restore_dir: str | None,
+        restored_roles: Path | None = None,
     ) -> tuple[str, str]:
         dump_dir = work / "dump"
         data_dir = work / "data"
@@ -1024,6 +1216,11 @@ class RestoreDrillEngine:
             raise DrillSkip(f"source image for {cand.container_name} is unknown (container gone and no image recorded)")
         image_config = self._ensure_image(docker, image)
         spec = self._server_spec(cand.db_type, image, source_env, image_config)
+        if spec.is_postgres and restored_roles is not None:
+            globals_path = dump_dir / "globals.sql"
+            if not prepare_pg_globals(restored_roles, globals_path, spec.pg_user):
+                raise DrillFailure("the roles dump is truncated (no completion trailer)")
+            prepared.globals_path = globals_path
 
         volumes = None
         if host_work:
@@ -1039,7 +1236,7 @@ class RestoreDrillEngine:
             attempts.append((src_entrypoint, src_cmd, "source container's command"))
         attempts.append((None, None, "image default command"))
 
-        tar_path = None if host_work else self._build_dump_tar(prepared.path, work)
+        tar_path = None if host_work else self._build_dump_tar(prepared.path, work, prepared.globals_path)
         notes: list[str] = []
         for attempt, (entrypoint, command, label) in enumerate(attempts):
             container = None
@@ -1186,8 +1383,9 @@ class RestoreDrillEngine:
         return docker.containers.create(**kwargs)
 
     @staticmethod
-    def _build_dump_tar(dump_path: Path, work: Path) -> Path:
-        """Tar the dump as CONTAINER_DUMP_FILE for put_archive (no shell, no path interpolation)."""
+    def _build_dump_tar(dump_path: Path, work: Path, globals_path: Path | None = None) -> Path:
+        """Tar the dump as CONTAINER_DUMP_FILE (and the roles dump as
+        CONTAINER_GLOBALS_FILE) for put_archive (no shell, no path interpolation)."""
         tar_path = work / "dump.tar"
         with tarfile.open(tar_path, "w") as tar:
             dir_info = tarfile.TarInfo(CONTAINER_DUMP_DIR.lstrip("/"))
@@ -1195,16 +1393,21 @@ class RestoreDrillEngine:
             dir_info.mode = 0o755
             dir_info.mtime = int(time.time())
             tar.addfile(dir_info)
-            file_info = tarfile.TarInfo(CONTAINER_DUMP_FILE.lstrip("/"))
-            file_info.size = dump_path.stat().st_size
-            file_info.mode = 0o644
-            file_info.mtime = int(time.time())
-            with open(dump_path, "rb") as fh:
-                tar.addfile(file_info, fh)
-        try:
-            dump_path.unlink()  # the tar now holds the only needed copy
-        except OSError:
-            pass
+            members = [(dump_path, CONTAINER_DUMP_FILE)]
+            if globals_path is not None:
+                members.append((globals_path, CONTAINER_GLOBALS_FILE))
+            for source, name in members:
+                file_info = tarfile.TarInfo(name.lstrip("/"))
+                file_info.size = source.stat().st_size
+                file_info.mode = 0o644
+                file_info.mtime = int(time.time())
+                with open(source, "rb") as fh:
+                    tar.addfile(file_info, fh)
+        for source, _name in members:
+            try:
+                source.unlink()  # the tar now holds the only needed copy
+            except OSError:
+                pass
         return tar_path
 
     @staticmethod
@@ -1302,6 +1505,7 @@ class RestoreDrillEngine:
     ) -> tuple[str, str]:
         timeout = self._load_timeout(prepared.size_bytes)
         load_started = time.monotonic()
+        roles_note = ""
         if spec.is_postgres:
             # The manifest / history name is authoritative; the dump's own
             # \\connect line is the fallback.
@@ -1314,6 +1518,8 @@ class RestoreDrillEngine:
                 "ARKIVE_DRILL_USER": spec.pg_user,
                 "ARKIVE_DRILL_MAINTDB": maintenance_db,
             }
+            if prepared.globals_path is not None:
+                roles_note = self._load_pg_globals(container, env)
             code = self._exec_long(container, ["sh", "-c", _PG_LOAD_SCRIPT], env, timeout)
             tool = "psql"
         else:
@@ -1322,7 +1528,14 @@ class RestoreDrillEngine:
             tool = spec.client or "mysql"
         load_seconds = int(time.monotonic() - load_started)
         if code != 0:
-            raise DrillFailure(f"{tool} load exited with code {code}: {self._load_errors(container)}")
+            errors = self._load_errors(container)
+            hint = ""
+            if spec.is_postgres and prepared.globals_path is None and re.search(r'role ".*" does not exist', errors):
+                hint = (
+                    " (the snapshot has no roles dump for this server, so the roles that own its objects "
+                    "could not be created first)"
+                )
+            raise DrillFailure(f"{tool} load exited with code {code}: {errors}{hint}")
 
         if spec.is_postgres:
             code, output = self._exec(
@@ -1342,7 +1555,7 @@ class RestoreDrillEngine:
                     "-N",
                     "-B",
                     "-e",
-                    _MYSQL_COUNT_SQL,
+                    _MYSQL_SYSTEM_COUNT_SQL.get(cand.db_name, _MYSQL_COUNT_SQL),
                 ],
                 {"MYSQL_PWD": spec.password},
             )
@@ -1351,7 +1564,7 @@ class RestoreDrillEngine:
             raise DrillFailure(f"could not count restored tables: {output.strip()[-300:] or code}")
         restored = int(numbers[-1])
         expected = prepared.create_tables
-        size_note = f"{_human_size(prepared.size_bytes)} loaded in {load_seconds}s into {spec.image}"
+        size_note = f"{_human_size(prepared.size_bytes)} loaded in {load_seconds}s into {spec.image}{roles_note}"
         if expected == 0:
             return "passed", f"dump declares no tables; loaded cleanly ({size_note})"
         if restored == 0:
@@ -1361,9 +1574,37 @@ class RestoreDrillEngine:
         extra = f" (dump declares {expected})" if restored != expected else ""
         return "passed", f"{restored} tables restored{extra}; {size_note}"
 
-    def _load_errors(self, container) -> str:
+    def _load_pg_globals(self, container, env: dict) -> str:
+        """Load the roles dump ahead of the database dump (see
+        ``_PG_GLOBALS_SCRIPT``). Raises DrillFailure when a role or grant did
+        not load; returns a note for the result detail."""
+        code = self._exec_long(container, ["sh", "-c", _PG_GLOBALS_SCRIPT], env, self.min_load_timeout_seconds)
+        if code != 0:
+            raise DrillFailure(
+                f"the roles dump (pg_dumpall --globals-only) did not load (psql exited with code "
+                f"{code}): {self._load_errors(container, CONTAINER_GLOBALS_ERR)}"
+            )
+        # Not knowing what went wrong is not "nothing went wrong".
+        code, output = self._exec(container, ["head", "-c", str(_GLOBALS_ERR_MAX_BYTES + 1), CONTAINER_GLOBALS_ERR])
+        if code != 0:
+            raise DrillFailure(f"could not read psql's messages from loading the roles dump (exit code {code})")
+        errors, existing = pg_globals_errors(output)
+        if len(output.encode()) > _GLOBALS_ERR_MAX_BYTES:
+            errors.append(f"more than {_GLOBALS_ERR_MAX_BYTES // 1024} KiB of messages; the rest was not checked")
+        if errors:
+            more = f" (and {len(errors) - 3} more)" if len(errors) > 3 else ""
+            raise DrillFailure(
+                "the roles dump (pg_dumpall --globals-only) did not load cleanly: "
+                + redact_credentials(" | ".join(errors[:3]))[:600]
+                + more
+            )
+        if existing:
+            return f"; roles dump loaded ({existing} already existed in the drill server, created by its image)"
+        return "; roles dump loaded"
+
+    def _load_errors(self, container, path: str = CONTAINER_LOAD_ERR) -> str:
         try:
-            _code, output = self._exec(container, ["tail", "-c", "1500", CONTAINER_LOAD_ERR])
+            _code, output = self._exec(container, ["tail", "-c", "1500", path])
         except Exception:
             output = ""
         lines = [ln for ln in output.strip().splitlines() if ln.strip()]

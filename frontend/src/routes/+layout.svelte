@@ -15,6 +15,7 @@
 	import { onMount } from 'svelte';
 	import { cn } from '$lib/utils/cn';
 	import ConnectionBanner from '$lib/components/shared/ConnectionBanner.svelte';
+	import Footer from '$lib/components/layout/Footer.svelte';
 
 	let commandPaletteOpen = false;
 
@@ -131,16 +132,18 @@
 			Skip to main content
 		</a>
 		<Sidebar />
-		<div id="main-content" tabindex="-1" class={cn('transition-all duration-300 focus:outline-none', $sidebarOpen ? 'lg:ml-64' : '')}>
+		<div id="main-content" tabindex="-1" class={cn('flex min-h-screen flex-col transition-all duration-300 focus:outline-none', $sidebarOpen ? 'lg:ml-64' : '')}>
 			<ConnectionBanner />
 			{#key $page.url.pathname}
 				<div
+					class="flex-1"
 					in:fly={{ y: 6, duration: 180, delay: 60 }}
 					out:fade={{ duration: 80 }}
 				>
 					<slot />
 				</div>
 			{/key}
+			<Footer />
 		</div>
 	</div>
 {/if}
