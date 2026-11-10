@@ -15,8 +15,9 @@ from app.core.security import decrypt_config
 from app.services.discovery_persistence import persist_discovery_results
 from app.services.freshness import describe_stale_job, evaluate_freshness, ping_heartbeat
 from app.services.lock_manager import BackupLockManager
+from app.services.offsite import OFFSITE_NOTIFIED_AT_KEY, OFFSITE_WARNING_SINCE_KEY, evaluate_offsite
 from app.services.retention import read_retention_settings
-from app.services.settings_store import DEFAULTS, get_bool_setting, get_setting
+from app.services.settings_store import DEFAULTS, get_bool_setting, get_setting, set_setting
 from app.utils.cron import crontab_trigger
 
 logger = logging.getLogger("arkive.scheduler")
@@ -275,6 +276,83 @@ class ArkiveScheduler:
                 logger.warning("Heartbeat ping failed: %s", result["error"])
         elif heartbeat_url:
             logger.info("Heartbeat withheld: backups need attention")
+
+        await self._check_offsite()
+
+    async def _check_offsite(self) -> None:
+        """Tell the user once when every target the jobs upload to is on this server.
+
+        A warning, not a freshness failure: it never withholds the heartbeat.
+        The activity entry is written when the condition starts; the
+        notification is retried each cycle until a channel actually receives
+        it, so a channel subscribed later still hears about it once. Both
+        reset when a job uploads offsite, so a later regression is told
+        again. An uncertain check (Docker or DNS unreachable) changes nothing.
+        """
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                offsite = await evaluate_offsite(
+                    db,
+                    config_dir=getattr(self.config, "config_dir", None),
+                    docker_client=getattr(self.discovery, "docker", None),
+                )
+                if offsite.get("uncertain"):
+                    logger.debug("Offsite check inconclusive (a target could not be checked); keeping last verdict")
+                    return
+                since = await get_setting(db, OFFSITE_WARNING_SINCE_KEY, "")
+                notified_at = await get_setting(db, OFFSITE_NOTIFIED_AT_KEY, "")
+                if not offsite["warning"]:
+                    if since or notified_at:
+                        await db.execute(
+                            "DELETE FROM settings WHERE key IN (?, ?)",
+                            (OFFSITE_WARNING_SINCE_KEY, OFFSITE_NOTIFIED_AT_KEY),
+                        )
+                        await db.commit()
+                        if offsite["has_offsite_copy"]:
+                            await log_activity(
+                                db,
+                                "target",
+                                "offsite",
+                                "Backups have an offsite copy again",
+                                {"offsite_targets": offsite["offsite_targets"]},
+                            )
+                    return
+                if not since:
+                    await set_setting(db, OFFSITE_WARNING_SINCE_KEY, now)
+                    await log_activity(
+                        db,
+                        "target",
+                        "no_offsite",
+                        offsite["message"],
+                        {"local_targets": offsite["local_targets"]},
+                        severity="warning",
+                    )
+                    logger.warning("No offsite copy: every target the backup jobs upload to is on this server")
+        except Exception as e:
+            logger.warning("System job: offsite check failed: %s", e)
+            return
+
+        if notified_at or not self.notifier:
+            return
+        names = ", ".join(str(t["name"]) for t in offsite["local_targets"])
+        try:
+            results = await self.notifier.send(
+                "backup.no_offsite",
+                "No Offsite Backup",
+                f"{offsite['message']}\n\nTargets on this server: {names}",
+                severity="warning",
+                dedupe_key="offsite",
+            )
+        except Exception as e:
+            logger.warning("Failed to send no-offsite notification: %s", e)
+            return
+        if isinstance(results, list) and any(isinstance(r, dict) and r.get("status") == "sent" for r in results):
+            try:
+                async with aiosqlite.connect(self.config.db_path) as db:
+                    await set_setting(db, OFFSITE_NOTIFIED_AT_KEY, now)
+            except Exception as e:
+                logger.warning("Could not record no-offsite notification: %s", e)
 
     async def _run_discovery_scan(self) -> None:
         """System job: run container discovery scan."""

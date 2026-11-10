@@ -19,6 +19,7 @@ describe('fallback catalog', () => {
 			'backup.partial',
 			'backup.failed',
 			'backup.stale',
+			'backup.no_offsite',
 			'verification.failed',
 			'drill.failed',
 			'target.error',
