@@ -20,6 +20,8 @@
 
 	let heartbeatUrl = '';
 	let staleHours: number | string = 0;
+	let shrinkPercent: number | string = 50;
+	let shrinkMinMb: number | string = 1;
 	let loading = true;
 	let error = '';
 	let saving = false;
@@ -29,14 +31,31 @@
 	let testError = '';
 	let original = '';
 
-	function snapshot(): string {
-		return JSON.stringify({ heartbeatUrl: heartbeatUrl.trim(), staleHours: String(staleHours ?? '') });
+	function snapshotOf(url: string, hours: unknown, percent: unknown, minMb: unknown): string {
+		return JSON.stringify({
+			heartbeatUrl: url.trim(),
+			staleHours: String(hours ?? ''),
+			shrinkPercent: String(percent ?? ''),
+			shrinkMinMb: String(minMb ?? ''),
+		});
 	}
 
-	$: currentSnapshot = JSON.stringify({ heartbeatUrl: heartbeatUrl.trim(), staleHours: String(staleHours ?? '') });
+	function snapshot(): string {
+		return snapshotOf(heartbeatUrl, staleHours, shrinkPercent, shrinkMinMb);
+	}
+
+	function numberSetting(value: unknown, fallback: number): number {
+		const n = typeof value === 'number' ? value : Number(value);
+		return Number.isFinite(n) ? n : fallback;
+	}
+
+	$: currentSnapshot = snapshotOf(heartbeatUrl, staleHours, shrinkPercent, shrinkMinMb);
 	$: isDirty = !loading && original !== currentSnapshot;
 	$: urlError = isValidHeartbeatUrl(heartbeatUrl) ? '' : 'Enter an http:// or https:// URL, or leave empty to disable';
 	$: hoursError = isIntInRange(staleHours, 0, 8760) ? '' : 'Enter a whole number of hours from 0 to 8760';
+	$: shrinkPercentError = isIntInRange(shrinkPercent, 0, 95) ? '' : 'Enter a whole number from 0 to 95';
+	$: shrinkMinError = isIntInRange(shrinkMinMb, 0, 1048576) ? '' : 'Enter a whole number of MB (0 or more)';
+	$: formError = urlError || hoursError || shrinkPercentError || shrinkMinError;
 	$: canTest = !!heartbeatUrl.trim() && !urlError && !testing;
 
 	onMount(async () => {
@@ -44,6 +63,8 @@
 			const data = await api.getSettings();
 			heartbeatUrl = data.heartbeat_url ?? '';
 			staleHours = typeof data.stale_backup_hours === 'number' ? data.stale_backup_hours : Number(data.stale_backup_hours ?? 0) || 0;
+			shrinkPercent = numberSetting(data.dump_shrink_alert_percent, 50);
+			shrinkMinMb = numberSetting(data.dump_shrink_min_mb, 1);
 			original = snapshot();
 		} catch (e: any) {
 			error = e?.message || 'Failed to load monitoring settings';
@@ -52,8 +73,8 @@
 	});
 
 	async function save() {
-		if (urlError || hoursError) {
-			addToast({ type: 'error', message: urlError || hoursError });
+		if (formError) {
+			addToast({ type: 'error', message: formError });
 			return;
 		}
 		saving = true;
@@ -61,6 +82,8 @@
 			await saveSettings({
 				heartbeat_url: heartbeatUrl.trim(),
 				stale_backup_hours: Number(staleHours),
+				dump_shrink_alert_percent: Number(shrinkPercent),
+				dump_shrink_min_mb: Number(shrinkMinMb),
 			});
 			heartbeatUrl = heartbeatUrl.trim();
 			original = snapshot();
@@ -182,8 +205,37 @@
 			</p>
 		</SectionCard>
 
+		<SectionCard
+			title="Shrinking database dumps"
+			description="A database that suddenly dumps much smaller than usual has usually lost data: an app that re-created an empty database, a container pointed at the wrong database, a migration gone wrong. The run is marked incomplete and a “Backup incomplete” notification is sent."
+		>
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-xl">
+				<FormInput
+					id="dump-shrink-alert-percent"
+					label="Flag a dump this much smaller (%)"
+					type="number"
+					bind:value={shrinkPercent}
+					error={shrinkPercentError}
+					mono={true}
+					hint="0 turns the check off"
+				/>
+				<FormInput
+					id="dump-shrink-min-mb"
+					label="Ignore databases smaller than (MB)"
+					type="number"
+					bind:value={shrinkMinMb}
+					error={shrinkMinError}
+					mono={true}
+					hint="0 checks every database"
+				/>
+			</div>
+			<p class="text-xs text-text-muted">
+				Each dump is compared with the median of that database's previous 5 successful dumps in the same format (at least 3 are needed). Real databases rarely lose half their data between two backups, so the default of 50% almost only fires when something is wrong. Flagged dumps never become the new normal on their own: runs stay incomplete until the size comes back, or until you accept the new size on the Databases page if the data was removed on purpose. Redis dumps are not checked, since they are cache and queue snapshots whose size swings.
+			</p>
+		</SectionCard>
+
 		<div class="flex items-center gap-3">
-			<button on:click={save} disabled={saving || !!urlError || !!hoursError} class="btn-primary disabled:opacity-50">
+			<button on:click={save} disabled={saving || !!formError} class="btn-primary disabled:opacity-50">
 				{#if saving}Saving...{:else}Save Settings{/if}
 			</button>
 			{#if saved}

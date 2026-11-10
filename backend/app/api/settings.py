@@ -67,6 +67,8 @@ _BOUNDED_INT_KEYS = {
     "stale_backup_hours": (0, 8760),
     "restore_drill_max_databases": (1, 100),
     "restore_drill_max_dump_mb": (1, 1024 * 1024),
+    "dump_shrink_alert_percent": (0, 95),
+    "dump_shrink_min_mb": (0, 1024 * 1024),
 }
 _BOOL_KEYS = {"restore_drill_enabled"}
 _CHOICE_KEYS = {"dump_compression": {"none", "gzip"}}
@@ -215,6 +217,10 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         "restore_drill_max_dump_mb": _int_setting(
             values, "restore_drill_max_dump_mb", int(DEFAULTS["restore_drill_max_dump_mb"])
         ),
+        "dump_shrink_alert_percent": _int_setting(
+            values, "dump_shrink_alert_percent", int(DEFAULTS["dump_shrink_alert_percent"])
+        ),
+        "dump_shrink_min_mb": _int_setting(values, "dump_shrink_min_mb", int(DEFAULTS["dump_shrink_min_mb"])),
         "recovery_kit_confirmed_at": values.get("recovery_kit_confirmed_at"),
         "api_key_set": "api_key_hash" in values,
         "encryption_password_set": ("encryption_password" in values or "restic_password" in values),
@@ -260,6 +266,8 @@ WRITABLE_SETTINGS = {
     "restore_drill_schedule",
     "restore_drill_max_databases",
     "restore_drill_max_dump_mb",
+    "dump_shrink_alert_percent",
+    "dump_shrink_min_mb",
 }
 # Settings whose change must re-register the restore drill system job.
 _DRILL_SCHEDULE_KEYS = {"restore_drill_enabled", "restore_drill_schedule"}

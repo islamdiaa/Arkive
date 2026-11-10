@@ -18,4 +18,6 @@ export const settingsSchema = z.object({
   restore_drill_schedule: cronExpression.optional(),
   restore_drill_max_databases: z.number().int('Must be a whole number').min(1).max(100).optional(),
   restore_drill_max_dump_mb: z.number().int('Must be a whole number').min(1).max(1048576).optional(),
+  dump_shrink_alert_percent: z.number().int('Must be a whole number').min(0).max(95).optional(),
+  dump_shrink_min_mb: z.number().int('Must be a whole number').min(0).max(1048576).optional(),
 });

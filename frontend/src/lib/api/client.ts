@@ -1,5 +1,6 @@
 import { mockApi } from './mock';
 import { handleUnauthorized } from './session';
+import type { DatabaseHealthResponse } from '$lib/types';
 
 const BASE_URL = '/api';
 
@@ -120,6 +121,12 @@ const realApi = {
 	runScan: () => request<any>('/discover/scan', { method: 'POST' }),
 	listContainers: () => request<any>('/discover/containers'),
 	listDatabases: () => request<any>('/databases'),
+	getDatabaseHealth: () => request<DatabaseHealthResponse>('/databases/health'),
+	acceptDatabaseSize: (key: string) =>
+		request<{ key: string; accepted_from: string }>('/databases/health/accept-size', {
+			method: 'POST',
+			body: JSON.stringify({ key }),
+		}),
 	dumpDatabase: (container: string, dbName: string) =>
 		request<any>(`/databases/${container}/${dbName}/dump`, { method: 'POST' }),
 	setDatabaseExcluded: (
