@@ -30,7 +30,7 @@
 	import { formatBytes, formatDuration } from '$lib/utils/format';
 	import { formatDate, timeAgo } from '$lib/utils/date';
 	import type { Snapshot } from '$lib/types';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/page';
 	import { goto } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
 	import { AlertTriangle, CheckCircle2, Circle, Copy, Database, Loader2, MinusCircle, RotateCcw, XCircle } from 'lucide-svelte';
@@ -135,7 +135,7 @@
 		try {
 			const result = await startRestore(sel, preview?.method === 'load' ? typed : '', preview?.method === 'load' ? stopSelection : []);
 			await showOperation(result.id);
-			goto(`/restore/database?id=${result.id}`, { replaceState: true, keepFocus: true, noScroll: true });
+			goto(`/restore/database?id=${result.id}`, { replace: true, reset: false });
 		} catch (e: any) {
 			addToast({ type: 'error', message: e?.message || 'Could not start the restore' });
 		}
@@ -191,7 +191,7 @@
 		try {
 			const result = await undoRestore(op.id, undoTyped);
 			await showOperation(result.id);
-			goto(`/restore/database?id=${result.id}`, { replaceState: true, keepFocus: true, noScroll: true });
+			goto(`/restore/database?id=${result.id}`, { replace: true, reset: false });
 			await refreshHistory();
 		} catch (e: any) {
 			addToast({ type: 'error', message: e?.message || 'Could not start the undo' });
@@ -203,7 +203,7 @@
 		stopPolling();
 		op = null;
 		resetPreview();
-		goto('/restore/database', { replaceState: true, keepFocus: true, noScroll: true });
+		goto('/restore/database', { replace: true, reset: false });
 	}
 
 	async function copy(command: string) {
@@ -569,7 +569,7 @@
 						</div>
 						<div class="flex items-center gap-3">
 							<span class={statusBadgeClass(item.status)}>{statusLabel(item.status)}</span>
-							<button class="btn-link text-xs" on:click={() => { showOperation(item.id); goto(`/restore/database?id=${item.id}`, { replaceState: true, keepFocus: true, noScroll: true }); }}>View</button>
+							<button class="btn-link text-xs" on:click={() => { showOperation(item.id); goto(`/restore/database?id=${item.id}`, { replace: true, reset: false }); }}>View</button>
 						</div>
 					</li>
 				{/each}
