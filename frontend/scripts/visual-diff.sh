@@ -8,7 +8,8 @@
 # widths, plus a few opened forms and dialogs, from the baseline build, then
 # from the candidate build (default: frontend/build), and fails on any pixel
 # that differs (VISUAL_THRESHOLD=0.01 ignores anti-aliasing noise of a level
-# or two). Diff images land in frontend/.playwright/visual/report.
+# or two). Native <select> option lists don't show in screenshots, so their
+# computed style is compared too. Diffs land in frontend/.playwright/visual/report.
 #
 # A baseline build of another ref, e.g. before a CSS or dependency change:
 #   git worktree add /tmp/arkive-base origin/main
@@ -26,7 +27,7 @@ FRONTEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG="tests/visual/playwright.config.ts"
 
 usage() {
-  sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 

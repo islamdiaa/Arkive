@@ -131,6 +131,18 @@ describe('compiled utilities', () => {
 		expect(css).toContain('.dark\\:bg-page:where([data-theme="dark"], [data-theme="dark"] *) {');
 	});
 
+	it('keeps the browser padding on table cells and options', () => {
+		// Tailwind 4's preflight zeroes it, Tailwind 3's left it; the drill results
+		// table sets only some sides and relies on the 1px for the rest. In the
+		// base layer, so p-*/px-* utilities still override it.
+		for (const pattern of [/td,\s*th\s*\{\s*padding: 1px;\s*\}/, /\boption\s*\{\s*padding: revert;\s*\}/]) {
+			const match = pattern.exec(css);
+			expect(match, String(pattern)).not.toBeNull();
+			const layers = [...css.slice(0, match!.index).matchAll(/@layer (\w+) \{/g)];
+			expect(layers.at(-1)?.[1]).toBe('base');
+		}
+	});
+
 	it('emits the component classes', () => {
 		expect(rule(css, '.badge-success')).toContain('rgba(63, 185, 80, 0.15)');
 		expect(css).toMatch(/\.badge-success[,\s][\s\S]*?display: inline-flex/);

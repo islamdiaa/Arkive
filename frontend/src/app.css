@@ -152,6 +152,18 @@
 	[role='button']:not(:disabled) {
 		cursor: pointer;
 	}
+	/* Tailwind 4 zeroes the padding of every element; Tailwind 3 kept the
+	   browser default on table cells and options (the drill results table
+	   relies on it). Cells get 1px in every browser, but Chromium sets it as a
+	   presentational hint, which `revert` skips. Option padding differs per
+	   browser and comes from its own stylesheet, so `revert` restores it. */
+	td,
+	th {
+		padding: 1px;
+	}
+	option {
+		padding: revert;
+	}
 
 	:root {
 		/* === Background Scale (6 stops + input + sidebar) === */

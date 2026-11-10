@@ -99,7 +99,43 @@ const STATES: ({ name: string; path: string; phoneOnly?: boolean; act: (page: Pa
 		phoneOnly: true, // the toggle is hidden at lg and up
 		act: (page) => page.getByRole('button', { name: 'Toggle sidebar' }).click(),
 	},
+	// The drill results table: the app's only table whose cells rely on the
+	// browser's default cell padding.
+	...['passed', 'failed'].map((status, row) => ({
+		name: `drill-${status}`,
+		path: '/',
+		act: async (page: Page) => {
+			const panel = page.getByTestId('restore-drills-panel');
+			await panel.locator('button[aria-expanded]').nth(row).click();
+			await expect(panel.locator('table')).toBeVisible();
+		},
+	})),
 ];
+
+// Colours set through color-mix() compute to color(srgb r g b) and plain ones
+// to rgb(); write both as 8-bit rgb() so only a different colour counts.
+function rgb(text: string): string {
+	return text.replace(/color\(srgb ([\d.e-]+) ([\d.e-]+) ([\d.e-]+)(?: \/ ([\d.]+))?\)/g, (_, r, g, b, alpha) => {
+		const [red, green, blue] = [r, g, b].map((v: string) => Math.round(Number(v) * 255));
+		return alpha === undefined || alpha === '1'
+			? `rgb(${red}, ${green}, ${blue})`
+			: `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+	});
+}
+
+// Native <select> option lists open outside the page, so no screenshot shows
+// them. Compare the computed style of every <option> on the page instead.
+async function expectOptionsToMatch(page: Page, name: string) {
+	const options = await page.locator('option').evaluateAll((elements) =>
+		elements.map((el) => {
+			const s = getComputedStyle(el);
+			const select = el.closest('select');
+			const owner = select?.id || select?.getAttribute('aria-label') || 'select';
+			return `${owner} > ${el.textContent?.trim()}: padding ${s.padding}; margin ${s.margin}; font ${s.font}; color ${s.color}; background ${s.backgroundColor}`;
+		}),
+	);
+	expect.soft(rgb(options.join('\n')) || '(no options)').toMatchSnapshot(`${name}.options.txt`);
+}
 
 async function open(page: Page, path: string, theme: string, { frozen, session }: Open = {}) {
 	if (frozen) {
@@ -143,7 +179,8 @@ test('every route is listed', ({}, testInfo) => {
 for (const { name, path, ...opts } of ROUTES) {
 	test(`route ${name}`, async ({ page }, testInfo) => {
 		await open(page, path, themeOf(testInfo.project.metadata), opts);
-		await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+		await expect.soft(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+		await expectOptionsToMatch(page, name);
 	});
 }
 
@@ -153,6 +190,7 @@ for (const { name, path, phoneOnly, act, ...opts } of STATES) {
 		await open(page, path, themeOf(testInfo.project.metadata), opts);
 		await act(page);
 		await page.waitForTimeout(400);
-		await expect(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+		await expect.soft(page).toHaveScreenshot(`${name}.png`, { fullPage: true });
+		await expectOptionsToMatch(page, name);
 	});
 }

@@ -8,7 +8,8 @@ import { defineConfig } from '@playwright/test';
  * static build in $VISUAL_BUILD_DIR, served on port 5320, in both themes at
  * desktop and phone widths. Run once with --update-snapshots=all against the
  * baseline build, then without it against the candidate build: any pixel that
- * differs fails, with a diff image in the HTML report.
+ * differs fails, with a diff image in the HTML report. The computed style of
+ * native <select> options, which screenshots can't show, is compared as text.
  */
 const buildDir = resolve(process.env.VISUAL_BUILD_DIR ?? 'build');
 const desktop = { width: 1280, height: 800 };
