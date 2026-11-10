@@ -50,6 +50,7 @@ To explore the interface with sample data before you configure anything, open an
 - **Overdue-backup watchdog.** If a job hasn't produced a good backup within its schedule window, the dashboard turns red and you get an alert.
 - **Heartbeat.** Point Arkive at an Uptime Kuma push monitor or a healthchecks.io check. Arkive pings it only while every job is healthy, so you're also alerted when Arkive itself is down.
 - **Restore drills.** Every week, Arkive restores recent database dumps from the latest snapshot and loads each into a temporary, network-isolated copy of its own database image.
+- **Per-database health.** The Databases page shows, for every database, its last good dump, dump size and trend, last restore drill and the point in time it can be restored to. A dump that suddenly shrinks to half its usual size or less (configurable) makes runs `partial` until the size comes back or you accept it, since that usually means lost data. Redis dumps, which are cache and queue snapshots, are not checked.
 - **Repository checks.** A weekly `restic check`, a test restore of a random file, and a trust score on the dashboard.
 - **Notifications** through Apprise: Discord, Slack, ntfy, Telegram, email, Gotify, Pushover, Uptime Kuma and webhooks.
 

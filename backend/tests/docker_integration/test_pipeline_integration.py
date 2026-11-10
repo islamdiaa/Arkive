@@ -10,7 +10,7 @@ import pytest
 
 import app.services.orchestrator as orch_mod
 from app.core.config import ArkiveConfig
-from app.core.database import init_db
+from app.core.database import init_db, run_migrations
 from app.core.event_bus import EventBus
 from app.core.platform import Platform
 from app.services.backup_engine import BackupEngine
@@ -53,6 +53,7 @@ async def _setup_db(config: ArkiveConfig, target_path: str) -> tuple[str, str]:
     _load_fernet_from_dir(str(config.config_dir))
 
     await init_db(config.db_path)
+    await run_migrations(config.db_path)
 
     job_id = str(uuid.uuid4())[:8]
     target_id = str(uuid.uuid4())[:8]
