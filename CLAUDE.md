@@ -27,9 +27,10 @@ This repo is now the clean public repository:
 
 ## Current Repo State
 
-Branch: `main` (v0.4.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
+Branch: `main` (v0.5.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
 work" releases landed together in PR #52; sections 12 and 13 below describe
-them. Use `git log` for the commit history.
+them, and section 17 describes v0.5.0. Use `git log` for the commit history
+and `CHANGELOG.md` for what each release changed for users.
 
 Public-repo cleanup already happened:
 - hosted/paid product surface was removed
@@ -500,6 +501,45 @@ Rules that follow from this:
   themes, desktop and phone, plus opened forms and dialogs) from two builds and
   diffs them. Run it for CSS or frontend dependency changes.
 
+### 17. What is still missing (v0.5.0)
+
+v0.4.0 checks that backups happen. v0.5.0 adds what a healthy-looking install
+can still lack, and a way back for one database.
+
+- **Offsite awareness** (`services/offsite.py`, `/api/status` `offsite`, event
+  `backup.no_offsite`, migration 7). Warns when every target the enabled jobs
+  upload to is on this server. It follows the jobs' target lists, not the
+  target table. It is a warning only and must stay out of `status`, the
+  freshness verdict and the heartbeat. Detection errs towards silence, and a
+  failed lookup keeps the last verdict instead of resetting it.
+- **Per-database health** (`services/database_health.py`, migration 8:
+  `job_run_databases.db_key`, `dumped_at`, `shrink_flagged`). The dump-shrink
+  check makes a run `partial`; a flagged dump never joins the size baseline,
+  so the warning lasts until the size returns or the user accepts it on the
+  Databases page. Redis is exempt.
+- **Setup checklist** (`api/setup_checklist.py`). Every step is judged from
+  evidence in the database, never from a flag the UI sets. Dismissal is stored
+  server-side and left out of config export.
+- **Guided database restore** (`services/guided_restore.py`, table
+  `guided_restores`, route `/restore/database`). Holds the backup lock from
+  start to finish, takes a safety dump first (undo loads it back), and streams
+  the dump into the container's own client over `docker exec` stdin: never
+  through a shell, never with user input in an option position. SQLite files
+  are never written by Arkive; the operation ends `action_required` with the
+  steps to swap the file in.
+- **Accessibility** (`frontend/tests/e2e/a11y.spec.ts`): axe runs on every
+  route in both themes at desktop and phone widths.
+- **Unraid Community Applications** (`unraid-template.xml`, `ca_profile.xml`,
+  `docs/unraid-community-apps.md`): the template uses `islamdiaa/arkive:0`.
+
+Rules that follow from this:
+- a signal about where backups go or how the install is configured is a
+  warning; only "backups are not happening" belongs in `evaluate_freshness`
+- a new page goes into the axe route list and into `ROUTES` in
+  `frontend/tests/visual/routes.spec.ts`; don't dim text with `opacity-*`
+  (it fails contrast), use the secondary text colour
+- the next schema migration is 9
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -658,12 +698,15 @@ If picking this repo up cold:
 
 ## Last Known Intent
 
-At the time this handoff was updated (v0.4.0):
+At the time this handoff was updated (v0.5.0):
 - v0.3.0/v0.4.0 were merged (PR #52) after two rounds of adversarial review;
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
+- v0.5.0 (section 17) was built as separate PRs, each reviewed adversarially;
+  known gaps: MariaDB/MySQL users and grants are not dumped, and guided
+  restore does not cover MongoDB or Redis
 - the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
 - the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
   (there is no svelte.config.js), `$lib` still works through the deprecated

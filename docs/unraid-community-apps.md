@@ -25,7 +25,7 @@ links into this repository, valid CA categories, the icon, the image tag and the
 - **Image tag `islamdiaa/arkive:0`.** `latest` follows the newest stable release, including the next
   major version, so a template on `:latest` would move users to 1.0 without a template
   change. The `0` tag is published only by `v0.*` release tags (`type=semver,pattern={{major}}`
-  in `.github/workflows/build.yml`). Today it points at the same image as `0.4.0`.
+  in `.github/workflows/build.yml`). It always points at the newest `0.x` release.
   docker/metadata-action's docs suggest turning that pattern off for 0.x versions. Keep it on
   while the template uses `:0`; the template test fails if it gets a condition.
 - **Read-only data.** `/mnt/user/appdata`, `/boot/config` (as `/boot-config`) and the Docker
@@ -81,7 +81,7 @@ All three must print `200`.
 
 ```bash
 docker buildx imagetools inspect islamdiaa/arkive:0     | grep -m1 Digest
-docker buildx imagetools inspect islamdiaa/arkive:0.4.0 | grep -m1 Digest
+docker buildx imagetools inspect islamdiaa/arkive:0.5.0 | grep -m1 Digest
 ```
 
 Both digests must match the newest release. Only a plain `vX.Y.Z` tag moves `0`;

@@ -68,6 +68,28 @@ Otherwise the ping is withheld and the log says "Heartbeat withheld: backups nee
 
 **Send test ping** always sends, whatever the state of the backups, so you can check the URL. The URL must start with `http://` or `https://`. Leave the field empty to turn the heartbeat off.
 
+## No offsite copy
+
+A backup kept only on the server it protects is lost with that server: a dead disk controller, a fire, theft, ransomware. Arkive looks at the storage targets your enabled jobs actually upload to and warns on the dashboard when every one of them is on this server:
+
+- a local folder, unless it is a network share (NFS, SMB, sshfs, an rclone mount);
+- an SFTP or S3 target whose host points back at this server: `localhost`, the server's own name or addresses, or a container running on it, such as a MinIO container.
+
+An offsite target that no enabled job uploads to does not count; the warning tells you when you have one. Add it to a job, or leave the job's target list empty so it uploads to every enabled target.
+
+This is a warning, not an error. It does not change the system status, the overdue-backup check or the heartbeat. Channels subscribed to **No offsite copy** (`backup.no_offsite`) are notified. When Arkive can't tell where a target is, for example because DNS is down, it keeps its last answer.
+
+## Database health and shrinking dumps
+
+The **Databases** page shows the state of each database on its own: when it was last dumped successfully, how large that dump was, and what is wrong if something is.
+
+Arkive also compares each new dump with that database's recent ones. A dump at least 50% smaller than the median of the previous five successful dumps is flagged, the run becomes `partial`, and the usual `backup.partial` notification says which database shrank. That is what an app re-creating an empty database, a container pointed at the wrong database after an update, or a botched migration looks like. The small dump is still uploaded, and earlier snapshots keep the earlier one.
+
+- A database is only judged once it has three successful dumps, and only when its usual dump is at least 1 MB.
+- Redis is not checked: a cache legitimately empties.
+- If the database really is smaller now, click **Accept new size** next to it on the Databases page. Until then, or until the size comes back, every run stays `partial`.
+- **Settings → Monitoring** has both thresholds. Setting the percentage to 0 turns the check off.
+
 ## Other scheduled checks
 
 The watchdog and heartbeat sit alongside these system jobs (times in the container's time zone):
