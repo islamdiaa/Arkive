@@ -133,4 +133,11 @@ describe('StatusBadge', () => {
 		const badge = container.querySelector('span');
 		expect(badge?.className).toContain('rounded-full');
 	});
+
+	it('hides the glyph from screen readers so only the status word is read', () => {
+		const { container } = render(StatusBadge, { props: { status: 'partial' } });
+		const glyph = container.querySelector('span > span');
+		expect(glyph?.textContent).toBe('~');
+		expect(glyph).toHaveAttribute('aria-hidden', 'true');
+	});
 });

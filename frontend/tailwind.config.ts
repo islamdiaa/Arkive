@@ -118,6 +118,20 @@ export default {
         // Flat legacy aliases still used by components
         elevated: 'var(--bg-elevated)',
       }),
+      // Filled backgrounds sit under white text, so they need a darker shade
+      // than the same accent used as text on dark surfaces (see the
+      // --color-*-fill tokens in app.css). Only bg-* utilities change;
+      // text-primary, border-primary and ring-primary keep the text colour.
+      backgroundColor: withAlpha({
+        primary: {
+          DEFAULT: 'var(--color-primary-fill)',
+          hover: 'var(--color-primary-fill-hover)',
+        },
+        danger: {
+          DEFAULT: 'var(--color-danger-fill)',
+          hover: 'var(--color-danger-fill-hover)',
+        },
+      }),
       fontFamily: {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'SF Mono', 'monospace'],
