@@ -7,7 +7,7 @@
 	<div class="flex flex-col items-center justify-between gap-2 sm:flex-row">
 		<span>
 			Arkive{$systemStatus?.version ? ` v${$systemStatus.version}` : ''} · open-source backup for Unraid, by
-			Islam Diaa
+			Islam ElTayar
 		</span>
 		<nav aria-label="Project links" class="flex items-center gap-4">
 			<a
