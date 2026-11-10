@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-Security fixes go into the latest release. Upgrade by pulling `islamdiaa/arkive:latest`
-(or the newest version tag) and recreating the container.
+Security fixes go into the latest release. Upgrade by pulling the newest version tag
+(for example `islamdiaa/arkive:0.4`, which moves to each new 0.4.x release) and recreating
+the container. [Upgrading](docs/upgrading.md) lists what each image tag follows.
 
 | Version | Supported |
 |---------|-----------|
@@ -29,9 +30,10 @@ Arkive needs broad access to do its job, so treat its web port like an admin con
   control Docker on the host.
 - **Keep the port on your LAN or behind an authenticating reverse proxy.** Don't expose
   port 8200 to the internet.
-- **Finish setup right after installing.** Until the setup wizard has run, only the
-  container and directory scans it needs are reachable. Every other API route requires
-  the API key or a browser session, and setup can be completed only once.
+- **Finish setup right after installing.** Until the setup wizard has run, the only
+  protected API routes that answer are the container and directory scans it needs; the
+  rest return 401. Setup can be completed only once, and whoever completes it first owns
+  the instance.
 - **Protect `/config`.** It holds the database, the keyfile that encrypts stored
   secrets, and local restores. Save the recovery kit somewhere other than the server.
 
@@ -43,5 +45,8 @@ Arkive needs broad access to do its job, so treat its web port like an admin con
   `SameSite=Strict` cookies with origin checks, and repeated failed logins are rate-limited.
 - External tools are run without a shell, and user-supplied values are validated and
   passed so they can't be read as command-line options.
-- Restores only write to `/config/restores`, so backed-up data can stay mounted read-only.
-- CI runs bandit on every pull request, and release images are scanned with Trivy.
+- Restores only write to Arkive's own restore folders (`/config/restores`, or
+  `/tmp/arkive-restore` and `/var/tmp/arkive-restore` inside the container), so backed-up
+  data can stay mounted read-only.
+- CI runs bandit on every pull request, and release images are scanned with Trivy after
+  they are pushed.

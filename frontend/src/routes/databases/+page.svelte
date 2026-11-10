@@ -204,7 +204,7 @@
 								<button
 									on:click={() => dumpDb(db)}
 									disabled={dumpingDb === `${db.container_name}:${db.db_name}`}
-									class="text-xs text-primary hover:text-primary-hover disabled:opacity-50 transition-colors"
+									class="py-1 text-xs text-primary hover:text-primary-hover disabled:opacity-50 transition-colors"
 								>
 									{dumpingDb === `${db.container_name}:${db.db_name}` ? 'Dumping…' : 'Dump Now'}
 								</button>
@@ -215,7 +215,7 @@
 								title={db.excluded
 									? 'Back up this database again'
 									: 'Stop backing up this database (e.g. a cache the app rebuilds)'}
-								class="text-xs text-text-secondary hover:text-text disabled:opacity-50 transition-colors"
+								class="py-1 text-xs text-text-secondary hover:text-text disabled:opacity-50 transition-colors"
 							>
 								{db.excluded ? 'Include' : 'Exclude'}
 							</button>

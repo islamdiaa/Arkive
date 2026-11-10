@@ -138,9 +138,9 @@
 
 <Header title="General Settings" />
 
-<div class="p-6 space-y-6">
+<main class="p-6 space-y-6">
   <div>
-    <h1 class="text-2xl font-semibold text-text">General Settings</h1>
+    <h2 class="text-2xl font-semibold text-text">General Settings</h2>
     <p class="text-sm text-text-secondary mt-1">Configure server identity and retention policies</p>
   </div>
 
@@ -287,4 +287,4 @@
       {/if}
     </div>
   {/if}
-</div>
+</main>

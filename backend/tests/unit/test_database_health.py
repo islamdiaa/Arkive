@@ -634,7 +634,7 @@ async def test_no_discovered_databases(db):
     assert body["items"] == [] and body["total"] == 0
 
 
-async def test_migration_7_adds_identity_and_dump_time(db):
+async def test_migration_8_adds_identity_and_dump_time(db):
     cursor = await db.execute("PRAGMA table_info(job_run_databases)")
     columns = {row[1] for row in await cursor.fetchall()}
     assert {"db_key", "dumped_at", "shrink_flagged"} <= columns

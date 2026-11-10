@@ -112,9 +112,9 @@
 
 <Header title="Monitoring" />
 
-<div class="p-6 space-y-6">
+<main class="p-6 space-y-6">
 	<div>
-		<h1 class="text-2xl font-semibold text-text">Monitoring</h1>
+		<h2 class="text-2xl font-semibold text-text">Monitoring</h2>
 		<p class="text-sm text-text-secondary mt-1">Get alerted when backups stop happening — even if this server can't tell you itself</p>
 	</div>
 
@@ -249,4 +249,4 @@
 			{/if}
 		</div>
 	{/if}
-</div>
+</main>

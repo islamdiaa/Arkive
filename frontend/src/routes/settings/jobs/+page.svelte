@@ -168,9 +168,9 @@
 		<div class="space-y-3">
 			{#each jobs as job}
 				<div class="card {job.enabled ? '' : 'opacity-60'}">
-					<div class="flex items-center justify-between">
+					<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
 						<div class="flex-1 min-w-0">
-							<div class="flex items-center gap-2 mb-1">
+							<div class="flex flex-wrap items-center gap-2 mb-1">
 								<p class="text-sm font-medium text-text">{job.name}</p>
 								{#if !job.enabled}
 									<span class="text-xs text-text-secondary">Paused</span>
@@ -187,9 +187,10 @@
 							</p>
 							<p class="text-xs text-text-secondary mt-0.5">{describeCron(job.schedule)}</p>
 						</div>
-						<div class="flex items-center gap-3">
+						<div class="flex items-center gap-3 shrink-0">
 							<FormToggle
 								checked={job.enabled}
+								ariaLabel="Enable {job.name}"
 								on:change={(e) => toggleJob(job, e.detail.checked)}
 							/>
 							<button
@@ -199,8 +200,8 @@
 							>
 								{runningJob === job.id ? 'Running...' : 'Run Now'}
 							</button>
-							<button on:click={() => openDeleteConfirm(job)} class="text-text-secondary hover:text-danger" aria-label="Delete job">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+							<button on:click={() => openDeleteConfirm(job)} class="-m-1.5 p-1.5 rounded text-text-secondary hover:text-danger" aria-label="Delete {job.name}">
+								<svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
 							</button>
 						</div>
 					</div>

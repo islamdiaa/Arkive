@@ -25,7 +25,16 @@
 </script>
 
 <div class="flex flex-col items-center gap-1.5">
-	<div class="relative w-[88px] h-[88px]">
+	<!-- One accessible name for the ring + number, instead of a bare "94". -->
+	<div
+		class="relative w-[88px] h-[88px]"
+		role="img"
+		aria-label={verifying
+			? 'Backup trust score: verifying'
+			: hasScore
+				? `Backup trust score ${displayScore} out of 100`
+				: 'Backup trust score not available'}
+	>
 		<svg viewBox="0 0 80 80" class="w-full h-full -rotate-90">
 			<!-- Background ring -->
 			<circle

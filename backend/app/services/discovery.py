@@ -11,7 +11,7 @@ import yaml
 
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredContainer, DiscoveredDatabase
-from app.services.db_dumper import postgres_user_from_env
+from app.services.db_dumper import mysql_credentials_from_env, postgres_user_from_env
 from app.utils.redact import redact_credentials
 
 logger = logging.getLogger("arkive.discovery")
@@ -64,6 +64,17 @@ PG_HAS_USER_TABLES_SQL = (
 PG_MAINTENANCE_DB = "postgres"
 # Keep a hung server from stalling discovery.
 _PSQL_ENV = {"PGCONNECT_TIMEOUT": "5", "PGOPTIONS": "-c statement_timeout=15000"}
+
+# Every application database in a MariaDB/MySQL server is dumped too (a shared
+# MariaDB container commonly serves several apps), not only MYSQL_DATABASE.
+# The connecting user only sees databases it has privileges on.
+MYSQL_LIST_DATABASES_SQL = (
+    "SELECT schema_name FROM information_schema.schemata "
+    "WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys') "
+    "ORDER BY schema_name"
+)
+# MariaDB 11+ images only ship "mariadb", MySQL images only "mysql".
+_MYSQL_CLIENTS = ("mariadb", "mysql")
 
 SQLITE_HEADER = b"SQLite format 3\x00"
 SKIP_DIRS = {
@@ -423,16 +434,85 @@ class DiscoveryEngine:
         return list(databases)
 
     def _detect_mysql(self, container, env: dict) -> list[DiscoveredDatabase]:
-        """Detect MySQL/MariaDB databases from env vars."""
+        """Detect MySQL/MariaDB databases: the env-configured one plus every
+        other application database in the server (see ``_mysql_databases``)."""
         db_name = env.get("MYSQL_DATABASE") or env.get("MARIADB_DATABASE") or "mysql"
-        return [
-            DiscoveredDatabase(
-                container_name=container.name,
-                db_type="mariadb",
-                db_name=db_name,
-                host_path=None,
-            )
+        return self._mysql_databases(container, env, db_name)
+
+    def _mysql_query(self, container, env: dict, sql: str) -> tuple[list[str] | None, str]:
+        """Run a read-only query with the container's mariadb/mysql client.
+
+        Returns ``(rows, "")`` on success, ``(None, error)`` on failure.
+        """
+        user, password = mysql_credentials_from_env(env)
+        exec_env = {"MYSQL_PWD": password} if password else {}
+        error = ""
+        for client in _MYSQL_CLIENTS:
+            try:
+                exit_code, output = container.exec_run(
+                    [client, "-u", user, "--connect-timeout=5", "-N", "-B", "-e", sql],
+                    environment=exec_env or None,
+                    demux=True,
+                )
+            except Exception as e:
+                return None, redact_credentials(str(e))[:200] or type(e).__name__
+            stdout, stderr = output if isinstance(output, tuple) else (output, b"")
+            if exit_code == 0:
+                # No rows (a server without application databases) is no output at all.
+                text = stdout.decode(errors="replace") if isinstance(stdout, (bytes, bytearray)) else ""
+                return [line for line in text.splitlines() if line.strip()], ""
+            message = ""
+            for stream in (stderr, stdout):
+                if isinstance(stream, (bytes, bytearray)) and stream.strip():
+                    message = stream.decode(errors="replace").strip().splitlines()[-1]
+                    break
+            error = redact_credentials(message)[:200] or f"{client} exited with code {exit_code}"
+            if exit_code in (126, 127) or "executable file not found" in message:
+                continue  # this image ships the other client
+            break
+        return None, error
+
+    def _mysql_databases(self, container, env: dict, configured_db: str) -> list[DiscoveredDatabase]:
+        """All databases to dump for a MariaDB/MySQL container.
+
+        The configured database always comes first (so nothing discovered
+        before enumeration existed disappears), then every other non-system
+        database the connecting user can see. A stopped container is not
+        queried. When listing fails on a running container, only the
+        configured database is returned and a coverage warning is recorded
+        for the container (``DiscoveredContainer.warnings``).
+        """
+        cache = self.__dict__.setdefault("_pg_database_cache", {})
+        cache_key = f"mysql\x00{container.name}\x00{configured_db}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        names = [configured_db]
+        if getattr(container, "status", None) == "running":
+            enumerated, error = self._mysql_query(container, env, MYSQL_LIST_DATABASES_SQL)
+            if enumerated is None:
+                logger.warning(
+                    "MySQL/MariaDB %s: could not list databases (%s); using %s only",
+                    container.name,
+                    error,
+                    configured_db,
+                )
+                self._add_pg_warning(
+                    container.name,
+                    f"could not list databases in {container.name} ({error}); only {configured_db} is being backed up",
+                )
+            else:
+                names.extend(name for name in enumerated if name not in names)
+        else:
+            logger.debug("MySQL/MariaDB %s is not running; not listing its databases", container.name)
+
+        databases = [
+            DiscoveredDatabase(container_name=container.name, db_type="mariadb", db_name=name, host_path=None)
+            for name in names
         ]
+        cache[cache_key] = databases
+        return list(databases)
 
     def _detect_mongo(self, container, env: dict) -> list[DiscoveredDatabase]:
         """Detect MongoDB databases."""
@@ -584,14 +664,7 @@ class DiscoveryEngine:
                         break
                 if not db_name:
                     db_name = db_def.get("default_db", "mysql")
-                dbs.append(
-                    DiscoveredDatabase(
-                        container_name=container.name,
-                        db_type="mariadb",
-                        db_name=db_name,
-                        host_path=None,
-                    )
-                )
+                dbs.extend(self._mysql_databases(container, env, db_name))
 
             elif db_type == "mongodb":
                 env_vars = db_def.get("env_vars", {})

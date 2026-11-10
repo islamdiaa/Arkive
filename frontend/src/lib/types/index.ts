@@ -230,6 +230,36 @@ export interface SystemStatus {
   /** False until the user confirms they stored a recovery kit off-server. */
   recovery_kit_confirmed?: boolean;
   last_drill?: LastDrill | null;
+  /** 3-2-1 awareness: whether any backup job uploads off this server. A warning only. */
+  offsite?: OffsiteStatus | null;
+}
+
+// ── Offsite copy (3-2-1) ──
+export interface OffsiteTarget {
+  id: string;
+  name: string;
+  type: string;
+}
+
+export interface OffsiteLocalTarget extends OffsiteTarget {
+  /** Why the target counts as on this server, e.g. "localhost is a loopback address". */
+  reason: string;
+}
+
+export interface OffsiteStatus {
+  has_offsite_copy: boolean;
+  /** True when the enabled jobs upload somewhere and every target they use is on this server. */
+  warning: boolean;
+  /** A target could not be checked (Docker or DNS unreachable); `warning` keeps its last verdict. */
+  uncertain: boolean;
+  enabled_targets: number;
+  /** Targets the enabled jobs upload to that are not on this server. */
+  offsite_targets: number;
+  /** Targets the enabled jobs upload to that are on this server. */
+  local_targets: OffsiteLocalTarget[];
+  /** Enabled offsite targets that no enabled job uploads to (a job is pinned to other targets). */
+  unused_offsite_targets: OffsiteTarget[];
+  message: string | null;
 }
 
 // ── Backup freshness (stale backups) ──
