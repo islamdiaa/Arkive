@@ -47,14 +47,17 @@ At the end, the wizard shows your **API key** once. Save it in your password man
 
 ## 3. After setup
 
-Do these before you rely on Arkive:
+The dashboard opens with a **Finish protecting this server** checklist. Work through it before you rely on Arkive. Each step ticks itself off once Arkive has seen it done, and [Finish protecting this server](setup-checklist.md) explains exactly what completes each one.
 
-1. **Save the recovery kit** (Settings → Recovery Kit). It holds the encryption password and the location of every repository. Without the password no snapshot can be opened, and the copy inside Arkive is lost with the server. See [Recovery kit](recovery-kit.md).
-2. **Add a notification channel** (Settings → Notifications) so failures and overdue backups reach you. See [Notifications](notifications.md).
-3. **Add an off-site target.** A local target on the same array protects against mistakes and corruption, not against losing the server. See [Storage providers](storage-providers.md).
-4. **Set a heartbeat URL** (Settings → Monitoring) so an outside monitor alerts you when Arkive itself stops. See [Overdue backups and heartbeat](monitoring.md).
-5. **Run the first backup.** On the dashboard, **Run Backup** starts the Full Backup job. You can also choose any job under **Backups → Backup Now**. Watch the run on the **Backups** page. It should end as `success`. If it ends as `partial`, the run lists what was missed. See [Troubleshooting](troubleshooting.md).
-6. **Run a restore drill.** Once a snapshot with database dumps exists, click **Run drill now** in the Restore Drills panel on the dashboard. See [Restore drills](restore-drills.md).
+![Arkive dashboard after setup: the "Finish protecting this server" checklist with four of five steps done, above the system, last backup, storage and trust score cards](images/dashboard-dark.png)
+
+1. **Run the first backup.** **Run first backup now** in the checklist, or **Run Backup** at the top of the dashboard, starts the Full Backup job. You can also choose any job under **Backups → Backup Now**. Watch the run on the **Backups** page. It should end as `success`; a `partial` run doesn't complete the step. If it ends as `partial`, the run lists what was missed. See [Troubleshooting](troubleshooting.md).
+2. **Prove a restore works.** Once the first backup has completed, **Run restore test now** runs a restore drill, which loads recent database dumps into throwaway containers. See [Restore drills](restore-drills.md).
+3. **Keep a copy off this server.** A local target on the same array protects against mistakes and corruption, not against losing the server. Add a cloud or SFTP target. See [Storage providers](storage-providers.md).
+4. **Add a notification channel** (Settings → Notifications) so failures and overdue backups reach you. See [Notifications](notifications.md).
+5. **Save the recovery kit** (Settings → Recovery Kit). It holds the encryption password and the location of every repository. Without the password no snapshot can be opened, and the copy inside Arkive is lost with the server. See [Recovery kit](recovery-kit.md).
+
+One more thing the checklist doesn't track: **set a heartbeat URL** (Settings → Monitoring) so an outside monitor alerts you when Arkive itself stops. See [Overdue backups and heartbeat](monitoring.md).
 
 ## Other Docker hosts
 

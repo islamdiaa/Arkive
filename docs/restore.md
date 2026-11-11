@@ -85,6 +85,8 @@ Restoring an app's folder brings back its database files as they were on disk du
 2. **Choose a restore point** and click **Check snapshot**. Arkive finds that database's dump in the snapshot and checks the container. Nothing is changed yet.
 3. **Review and confirm.** You see what will happen and which apps use the database. Arkive can stop those apps for the restore and start them again afterwards. For an in-place restore you type the database's name to confirm.
 
+![Step 3 of a guided restore of the immich PostgreSQL database: the snapshot and dump file, a warning that apps using the database are running, the nine steps Arkive will take, a ticked option to stop immich-server during the restore, and a field to type the database name](images/guided-restore-review.png)
+
 Before it changes anything, Arkive takes a safety dump of the database as it is now. If the result is not what you wanted, **Undo this restore** loads that safety dump back the same way. The restored dump and the safety dump are kept in `/config/restores/guided-<id>/`; delete the folder when you no longer need them.
 
 No backup, restore drill or other restore runs while a guided restore is in progress. Scheduled backups wait for it.
