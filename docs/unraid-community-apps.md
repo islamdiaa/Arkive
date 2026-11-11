@@ -81,11 +81,11 @@ All three must print `200`.
 
 ```bash
 docker buildx imagetools inspect islamdiaa/arkive:0     | grep -m1 Digest
-docker buildx imagetools inspect islamdiaa/arkive:0.5.0 | grep -m1 Digest
+docker buildx imagetools inspect islamdiaa/arkive:0.6.0 | grep -m1 Digest
 ```
 
 Both digests must match the newest release. Only a plain `vX.Y.Z` tag moves `0`;
-pre-release tags such as `v0.5.0-rc1` don't.
+pre-release tags such as `v0.6.0-rc1` don't.
 
 ### 4. Test-install the template
 

@@ -149,7 +149,7 @@ The browser may then ask for the admin API key once, to create a session.
 
 Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
 
-`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.5.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.6.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
