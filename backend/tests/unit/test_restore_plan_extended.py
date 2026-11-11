@@ -166,6 +166,25 @@ class TestRestoreCommandsRedis:
         result = generator._get_restore_commands("redis", "cache", "ctr")
         assert isinstance(result[0], str) and isinstance(result[1], str)
 
+    def test_steps_handle_the_append_only_file_and_are_valid_sh(self, generator):
+        import subprocess
+
+        from app.services import redis_swap
+
+        _short, full = generator._get_restore_commands("redis", "redis", "redis_ctr")
+        script = full.split("\n# dumps from")[0]
+        # Stopped before the file is replaced, started after; never a guessed appdata path.
+        assert script.index('docker stop "$C"') < script.index('cp "$R" "$D/$F"') < script.index('docker start "$C"')
+        assert "/mnt/user/appdata/" not in script
+        # The commands that change files are the ones guided restore prints.
+        assert redis_swap.keep_copy('"$D/$F"') in script
+        assert redis_swap.move_aside('"$D/$AD"') in script and redis_swap.move_aside('"$D/$AF"') in script
+        assert "appendonly.aof.manifest" not in script  # names come from CONFIG GET / defaults
+        assert "printf 'file %s seq 1 type b\\n'" in script
+        # It runs in a subshell (a failed check must not close the user's terminal).
+        assert script.splitlines()[4] == "(set -e" and script.endswith('docker start "$C")')
+        assert subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True).returncode == 0
+
 
 # ---------------------------------------------------------------------------
 # _get_restore_commands — unknown types

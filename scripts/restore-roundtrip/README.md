@@ -6,8 +6,9 @@ back, using real database servers and a real Arkive instance:
 1. starts a throwaway Docker-in-Docker daemon (nothing on the host is
    discovered, dumped, or swept by the Arkive under test)
 2. starts the fixtures: Postgres 16 and 17, MariaDB 11.4 (with and without
-   `MARIADB_DATABASE`), MySQL 8.4, and an app that holds SQLite databases open
-   in WAL mode
+   `MARIADB_DATABASE`), MySQL 8.4, an app that holds SQLite databases open
+   in WAL mode, and Redis 7.4 and 6.2 with the append-only file and 8.0
+   without it
 3. sets Arkive up through its API and runs the `full` backup job
 4. restores `/config/dumps` from the snapshot through the restore API
 5. follows the database steps of the restore plan Arkive generates
@@ -22,7 +23,9 @@ back, using real database servers and a real Arkive instance:
    the system accounts and the MariaDB healthcheck stay as the new server
    created them. The accounts step is also run from a folder without an
    accounts dump (what a restore holds when Arkive had no root password),
-   where it must say so and succeed
+   where it must say so and succeed. For Redis, the plan's steps run against
+   fresh servers that already hold other data (and their own append-only
+   files), and the data must survive a restart
 6. runs a restore drill and expects every database to pass
 7. gives a MariaDB user, and a database name in a MySQL grant, a line break
    and runs the backup again: the accounts dumps of those servers must fail
@@ -46,7 +49,8 @@ Requirements: Python 3.9+, a Docker host that can run a privileged
 (about 2 GB; `--load-local-images` copies them from the host instead). A run
 takes 10-20 minutes. Everything it creates is named after `--prefix`
 (default `arkive-rt`) and lives in `--workdir` (default `/tmp/<prefix>`); the
-API listens on `127.0.0.1:--port` (default 8320). The workdir must be new or
+API listens on `--port` (default 8320) inside the Arkive container only, and
+the harness calls it from there, so no port is published on the host. The workdir must be new or
 empty: the harness marks it with a `.arkive-restore-roundtrip` file, refuses a
 non-empty directory without that marker, and teardown deletes only a marked
 directory (its contents are removed as root).

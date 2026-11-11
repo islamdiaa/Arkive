@@ -15,6 +15,7 @@ from jinja2 import Environment, select_autoescape
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
+from app.services import redis_swap
 from app.services.db_dumper import GLOBALS_DB_NAME, dump_prefix, safe_name
 from app.services.mysql_accounts import ACCOUNTS_DB_NAME, ACCOUNTS_KIND
 from app.services.repo_paths import build_repo_path
@@ -357,6 +358,69 @@ class RestorePlanGenerator:
             'exec "$(command -v mariadb || command -v mysql)" -uroot ${p:+"-p$p"}\''
         )
 
+    @staticmethod
+    def _redis_restore(container: str, glob: str) -> str:
+        """POSIX sh that puts the newest Redis dump matching ``glob`` in place.
+
+        The plan is written without asking Redis anything, so the steps find
+        out what they need before stopping it: the data folder, file names
+        and whether the append-only file is on from ``CONFIG GET`` while it
+        runs (with REDIS_PASSWORD when the container has one), otherwise the
+        redis image's defaults (/data, dump.rdb), the container's command line
+        (``--appendonly yes``) and append-only files already in the folder;
+        the data folder on the server from the container's mount of it; the
+        Redis version (7+ keeps the append-only file in a folder) from its
+        image. The commands that change files are the ones guided restore
+        prints (redis_swap.py). Everything runs in a subshell, so a failed
+        check stops the steps without closing the terminal.
+        """
+        d, rdb = '"$D/$F"', '"$R"'
+        aof_dir, aof_file = '"$D/$AD"', '"$D/$AF"'
+        lines = [
+            "# Redis reads its data file when it starts and writes it as it stops, so the file is replaced while",
+            "# the container is stopped. With the append-only file on, Redis loads that instead (moving it aside",
+            "# alone makes Redis start empty), so it is rebuilt from the dump. Assumes the data folder is a volume",
+            "# or bind mount; Restore > Restore a database shows the same steps with this server's exact paths.",
+            "(set -e",
+            f"C={container}",
+            f"R=$(ls {glob} | tail -n 1)",
+            '[ -n "$R" ] || { echo "no Redis dump here" >&2; exit 1; }',
+            'cfg() { docker exec "$C" sh -c \'[ -z "$REDIS_PASSWORD" ] || export REDISCLI_AUTH="$REDIS_PASSWORD"; '
+            'exec redis-cli CONFIG GET "$1"\' sh "$1" 2>/dev/null | awk -v k="$1" \'NR == 1 && $0 != k { exit } '
+            "NR == 2 { print }'; }",
+            "DIR=$(cfg dir); F=$(cfg dbfilename); AOF=$(cfg appendonly); AD=$(cfg appenddirname); AF=$(cfg appendfilename)",
+            "DIR=${DIR:-/data}; F=${F:-dump.rdb}; AD=${AD:-appendonlydir}; AF=${AF:-appendonly.aof}",
+            'D=$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \\"$DIR\\"}}{{.Source}}{{end}}{{end}}" "$C")',
+            '[ -n "$D" ] || { echo "$DIR in $C is not a volume or bind mount; copy the dump in with docker cp" >&2; exit 1; }',
+            'if [ -z "$AOF" ]; then',
+            "  if docker inspect -f '{{json .Config.Cmd}}' \"$C\" | grep -Eq 'appendonly(\",\"| +)yes' \\",
+            '    || [ -e "$D/$AD" ] || [ -e "$D/$AF" ]; then AOF=yes; else AOF=no; fi',
+            "fi",
+            'V=$(docker run --rm --network none --entrypoint redis-server "$(docker inspect -f \'{{.Image}}\' "$C")" '
+            "--version | sed -n 's/.* v=\\([0-9]*\\)\\..*/\\1/p')",
+            '[ "$AOF" != yes ] || [ -n "$V" ] || { echo "cannot tell the Redis version of $C" >&2; exit 1; }',
+            'docker stop "$C"',
+            'O=$(stat -c %u:%g "$D/$F" 2>/dev/null || stat -c %u:%g "$D")',
+            redis_swap.keep_copy(d),
+            f"cp {rdb} {d}",
+            'if [ "$AOF" = yes ] && [ "$V" -ge 7 ]; then',
+            f"  {redis_swap.move_aside(aof_dir)}",
+            "  "
+            + redis_swap.aof_folder_from_rdb(
+                rdb, aof_dir, '"$AF.1.base.rdb"', '"$D/$AD/$AF.1.base.rdb"', '"$D/$AD/$AF.manifest"'
+            ),
+            f'  chown -R "$O" {d} {aof_dir}',
+            'elif [ "$AOF" = yes ]; then',
+            f"  {redis_swap.move_aside(aof_file)}",
+            f"  {redis_swap.aof_file_from_rdb(rdb, aof_file)}",
+            f'  chown "$O" {d} {aof_file}',
+            "else",
+            f'  chown "$O" {d}',
+            "fi",
+            'docker start "$C")',
+        ]
+        return "\n".join(lines)
+
     def _get_globals_restore_commands(self, container: str) -> tuple[str, str]:
         """Restore commands for a Postgres cluster's roles (run before the database dumps)."""
         short = 'psql -U "$POSTGRES_USER" -d postgres < globals.sql  (restore before the databases)'
@@ -461,12 +525,12 @@ class RestorePlanGenerator:
                 self._plain_or_gzip(glob, ".archive", restore) + self._legacy_note(container, db_name, ".archive.gz")
             )
         elif db_type == "redis":
-            short = "cp dump.rdb /data/dump.rdb && redis-cli SHUTDOWN NOSAVE"
-            glob = self._dump_glob(container, db_type, db_name or "redis", ".rdb")
-            full = f"cp {glob} /mnt/user/appdata/{container}/data/dump.rdb" + self._legacy_note(
-                container, "redis", ".rdb"
+            short = (
+                "stop the Redis container, copy the dump over its data file (rebuilding the append-only file when it "
+                "is on), start it"
             )
-            return short, full
+            glob = self._dump_glob(container, db_type, db_name or "redis", ".rdb")
+            return short, self._redis_restore(container, glob) + self._legacy_note(container, "redis", ".rdb")
         return "See documentation", "See documentation"
 
     def _format_bytes(self, size: int) -> str:

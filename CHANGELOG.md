@@ -14,9 +14,11 @@ When a version is tagged, its section here becomes the GitHub release notes
 - **Guided restore for MongoDB and Redis.** MongoDB is restored in place like PostgreSQL and MariaDB: Arkive checks every collection's checksum in the archive first, takes a safety dump, drops the database (or, for a server dumped whole, every database except `admin`, `config` and `local`) and loads the archive with `mongorestore`; Undo puts the safety dump back the same way. The MongoDB password never appears on a command line. Redis is prepared like SQLite: Arkive restores the `.rdb` file, checks its checksum and that the running Redis can read it, saves the current data and gives you the exact steps to swap it in, including a new append-only file when `appendonly` is on (moving the old one aside alone makes Redis start empty).
 
 ### Changed
+- Backups give `mongodump` the MongoDB password on its input (`--config=/dev/stdin`) instead of on the command line, so it no longer shows in process listings. Images with the legacy tools of MongoDB 4.2 and older have no `--config`; there the password still goes on the command line, and the log says so.
 - Backend dependencies updated: sse-starlette 3.6 (live event and log streams), FastAPI 0.162, uvicorn 0.54, pydantic 2.14, docker 7.2, python-multipart 0.0.33 and click 8.5.1; test and lint tooling moves to pytest 9.2, ruff 0.17.4 and bandit 1.9.4.
 
 ### Fixed
+- The restore plan's Redis steps copied the dump to a guessed folder while Redis ran, and with the append-only file on Redis would have started empty. They now stop the container, find the data folder, file name and append-only settings (from Redis while it runs, otherwise the image's defaults, its command line and the files in the folder), copy the dump in, rebuild the append-only file from it when it is on and start Redis again.
 - The manual MongoDB and Redis restore steps in the restore guide: a `.archive.gz` dump is decompressed with `gunzip -c` (not `mongorestore --gzip`), and Redis with the append-only file needs a new one made from the dump.
 
 ## [0.5.0] - 2026-11-10

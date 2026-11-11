@@ -448,8 +448,10 @@ Rules that follow from this:
 
 `scripts/restore-roundtrip/restore_roundtrip.py` runs dump -> backup ->
 restore -> load (following the generated restore plan) and a drill against
-Postgres 16/17, MariaDB 11.4, MySQL 8.4 and WAL-mode SQLite inside a
-throwaway Docker-in-Docker daemon (see its README). Its first run found:
+Postgres 16/17, MariaDB 11.4, MySQL 8.4 and WAL-mode SQLite (and, since
+the guided-restore work, Redis 6.2/7.4/8.0 with and without the append-only
+file) inside a throwaway Docker-in-Docker daemon that publishes no host port
+(see its README). Its first run found:
 - pg_dump ran with `--no-owner --no-privileges`: a database owned by an app
   role came back owned by the restoring superuser, and the app got
   "permission denied" on its own tables. Dumps now keep owners and GRANTs;
@@ -551,7 +553,9 @@ can still lack, and a way back for one database.
   (safety `mongodump` of exactly that set) is exact. Passwords: mongosh and
   mongodump read them on stdin (`--file=/dev/stdin`, `--config=/dev/stdin`),
   mongorestore from a file in a `mktemp -d` folder in the container's own
-  /tmp (never a mounted one), argv only as a stated fallback. Redis is a
+  /tmp (never a mounted one), argv only as a stated fallback. The backup
+  dumper does the same for mongodump when `mongodump --help` lists
+  `--config` (Database Tools 100.3+: mongo:4.4 and later images). Redis is a
   `manual` type with a `check_container` step: it reads `dir`, `dbfilename`,
   `appendonly`, `appenddirname`, the version and the data volume, checks the
   RDB (header, CRC-64, format the running Redis reads) and returns steps that
@@ -743,8 +747,12 @@ At the time this handoff was updated (v0.5.0):
   MariaDB/MySQL users and grants are dumped (the accounts dump, see section
   15). Guided restore now covers MongoDB (in place) and Redis (prepared,
   swapped in by hand); MongoDB sharded clusters, secondaries and pre-6.0
-  images (no mongosh) are refused, and the restore plan's own Redis command
-  is still the naive one
+  images (no mongosh) are refused. The restore plan's Redis steps use the
+  same commands (`services/redis_swap.py`) and are run by
+  `restore_roundtrip.py` on Redis 6.2/7.4/8.0 with and without the
+  append-only file; backups give mongodump its password on stdin
+  (`--config=/dev/stdin`, Database Tools 100.3+, argv only on the legacy
+  4.2 tools)
 - the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
 - the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
   (there is no svelte.config.js), `$lib` still works through the deprecated

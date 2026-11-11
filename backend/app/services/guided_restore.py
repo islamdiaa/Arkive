@@ -75,6 +75,7 @@ from app.core.activity import log_activity
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 from app.models.discovery import DiscoveredDatabase
+from app.services import redis_swap
 from app.services.backup_engine import ResticError
 from app.services.db_dumper import (
     DBDumper,
@@ -1469,8 +1470,6 @@ def redis_instructions(
     q = shlex.quote
     folder = setup.host_dir.rstrip("/") or "/"
     live = f"{folder}/{setup.dbfilename}"
-    # Double-quoted so the shell expands it; appended to a shell-quoted path.
-    suffix = '".before-restore-$(date +%Y%m%d-%H%M%S)"'
     steps: list[dict[str, str | None]] = [
         {
             "text": (
@@ -1481,7 +1480,7 @@ def redis_instructions(
         },
         {
             "text": "Keep a copy of the current data file next to it:",
-            "command": f"if [ -e {q(live)} ]; then cp -a {q(live)} {q(live)}{suffix}; fi",
+            "command": redis_swap.keep_copy(q(live)),
         },
     ]
     owned = [live]
@@ -1496,12 +1495,11 @@ def redis_instructions(
                         "Redis has the append-only file turned on and loads it instead of the data file, so move "
                         "the current append-only folder aside:"
                     ),
-                    "command": f"if [ -e {q(aof_path)} ]; then mv {q(aof_path)} {q(aof_path)}{suffix}; fi",
+                    "command": redis_swap.move_aside(q(aof_path)),
                 }
             )
-            rebuild = (
-                f"mkdir {q(aof_path)} && cp {q(restored_path)} {q(aof_path + '/' + base)} && "
-                f"printf 'file %s seq 1 type b\\n' {q(base)} > {q(manifest)}"
+            rebuild = redis_swap.aof_folder_from_rdb(
+                q(restored_path), q(aof_path), q(base), q(aof_path + "/" + base), q(manifest)
             )
             rebuild_text = "Create a new append-only folder that starts from the restored data:"
         else:
@@ -1512,10 +1510,10 @@ def redis_instructions(
                         "Redis has the append-only file turned on and loads it instead of the data file, so move "
                         "the current append-only file aside:"
                     ),
-                    "command": f"if [ -e {q(aof_path)} ]; then mv {q(aof_path)} {q(aof_path)}{suffix}; fi",
+                    "command": redis_swap.move_aside(q(aof_path)),
                 }
             )
-            rebuild = f"cp {q(restored_path)} {q(aof_path)}"
+            rebuild = redis_swap.aof_file_from_rdb(q(restored_path), q(aof_path))
             rebuild_text = "Use the restored data as the new append-only file (Redis reads RDB data at its start):"
         owned.append(aof_path)
     steps.append(
@@ -1543,7 +1541,7 @@ def redis_instructions(
         {
             "text": (
                 f"{check_text}. If Redis does not start, docker logs {container_name} says why, and the copies "
-                "ending in .before-restore-<date>-<time> hold what was there before:"
+                f"ending in {redis_swap.KEEP_SUFFIX_TEXT} hold what was there before:"
             ),
             "command": check,
         }

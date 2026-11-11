@@ -58,6 +58,29 @@ MONGO = {
     "mongo8": ("mongo:8.0", {}, [], "admin"),
     "mongo7rs": ("mongo:7.0", {}, ["--replSet", "rs0"], "admin"),
 }
+# Backed up only (their images have no mongosh, so guided restore refuses
+# them): the backup dumper must give mongodump its password on stdin where
+# the Database Tools support --config (100.3.0+, mongo:4.4 and later) and
+# fall back to argv on the legacy 4.2 tools.
+MONGO_BACKUP_ONLY = {
+    "mongo44auth": ("mongo:4.4", "root", 'p@ss w"rd $44', "100.3+"),
+    "mongo42auth": ("mongo:4.2", "root", 'legacy w"rd $42', "legacy"),
+}
+DUMP_CHECK = r"""
+import glob, json, sys
+from app.services.db_dumper import dump_prefix
+from app.services.dump_checks import read_mongo_archive
+out = {}
+for container, db_name in json.loads(sys.argv[1]):
+    files = sorted(glob.glob(f"/config/dumps/{dump_prefix(container, 'mongodb', db_name)}_*.archive"))
+    try:
+        archive = read_mongo_archive(files[-1])
+        out[container] = {f"{c.db}.{c.name}": c.documents for c in archive.collections if c.db != "admin"}
+    except Exception as exc:
+        out[container] = {"error": f"{type(exc).__name__}: {exc}"}
+print(json.dumps(out))
+"""
+
 REDIS = {
     "redis74aof": (
         "redis:7.4",
@@ -66,23 +89,6 @@ REDIS = {
     "redis80": ("redis:8.0", []),
     "redis62aof": ("redis:6.2", ["redis-server", "--appendonly", "yes"]),
 }
-
-API_CLIENT = r"""
-import json, sys, urllib.error, urllib.request
-req = json.load(sys.stdin)
-request = urllib.request.Request(req["url"], method=req["method"],
-    data=json.dumps(req["body"]).encode() if req["body"] is not None else None,
-    headers={"Content-Type": "application/json"})
-if req["key"]:
-    request.add_header("X-API-Key", req["key"])
-try:
-    with urllib.request.urlopen(request, timeout=120) as response:
-        print(json.dumps({"status": response.status, "body": response.read().decode()}))
-except urllib.error.HTTPError as exc:
-    print(json.dumps({"status": exc.code, "body": exc.read().decode()}))
-except Exception as exc:
-    print(json.dumps({"status": None, "body": str(exc)}))
-"""
 
 # State of the databases a restore touches, plus what it must not touch.
 MONGO_FINGERPRINT = r"""
@@ -136,7 +142,9 @@ class GuidedHarness(Harness):
             60,
         )
         images = sorted(
-            {spec[0] for spec in MONGO.values()} | {spec[0] for spec in REDIS.values()}
+            {spec[0] for spec in MONGO.values()}
+            | {spec[0] for spec in REDIS.values()}
+            | {spec[0] for spec in MONGO_BACKUP_ONLY.values()}
         )
         for image in images:
             self.dind("pull", "-q", image)
@@ -170,12 +178,17 @@ class GuidedHarness(Harness):
                 image,
                 *args,
             )
+        for key, (image, user, password, _tools) in MONGO_BACKUP_ONLY.items():
+            self.dind(
+                "run", "-d", "--name", self.name(key), "-e", f"MONGO_INITDB_ROOT_USERNAME={user}",
+                "-e", f"MONGO_INITDB_ROOT_PASSWORD={password}", image,
+            )  # fmt: skip
         self.sh_dind(f"mkdir -p {NOTES_DIR} && echo hello > {NOTES_DIR}/readme.txt")
         for key in MONGO:
             self.wait_for(
                 key,
                 lambda k=key: self.mongo(k, "print('FP 1')", check=False) is not None,
-                120,
+                300,
             )
         self.mongo(
             "mongo7rs",
@@ -196,60 +209,64 @@ class GuidedHarness(Harness):
             self.wait_for(
                 key, lambda k=key: self.redis(k, "PING", check=False) == "PONG", 60
             )
+        for key in MONGO_BACKUP_ONLY:
+            self.wait_for(key, lambda k=key: self.legacy_mongo(k, "print('FP 1')", check=False) == 1, 300)
 
-    def start_arkive(self) -> None:
-        print("== starting Arkive (no published port)", flush=True)
-        args = [
-            "run", "-d", "--name", self.name("arkive"), "--user", "0:0", "-e", "TZ=UTC",
-            "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "-v", "/mnt/user:/mnt/user:ro",
-            "-v", f"{APPDATA}/arkive-rt:/config",
-            "-v", f"{BACKUPS}:{BACKUPS}",
-        ]  # fmt: skip
-        if self.args.live_code:
-            args += ["-v", "/src/backend:/app/backend:ro"]
-        args += [
-            self.args.image, "python", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
-            "--port", str(self.port), "--workers", "1", "--log-config", "/app/backend/logging.json",
-        ]  # fmt: skip
-        self.dind(*args)
-        self.wait_for(
-            "the Arkive API",
-            lambda: self.api("GET", "/api/status", auth=False, check=False) is not None,
-        )
+    def legacy_mongo(self, key: str, script: str, check: bool = True):
+        """The legacy ``mongo`` shell of the 4.x images (test data only; the password is in argv here)."""
+        _image, user, password, _tools = MONGO_BACKUP_ONLY[key]
+        result = self.dind(
+            "exec", self.name(key), "mongo", "--quiet", "--norc", "-u", user, "-p", password,
+            "--authenticationDatabase", "admin", "--eval", script, check=False,
+        )  # fmt: skip
+        for line in reversed(result.stdout.splitlines()):
+            if line.startswith("FP "):
+                return json.loads(line[3:])
+        if check:
+            raise RuntimeError(f"mongo in {key} failed: {result.stderr.strip()[-500:] or result.stdout[-500:]}")
+        return None
+
+    def watch_mongodump_argv(self) -> subprocess.Popen:
+        """Record the command line of every mongodump process while a backup runs."""
+        return subprocess.Popen(
+            [
+                "docker", "exec", self.name("dind"), "sh", "-c",
+                "rm -f /tmp/arkive-stop-watch; while [ ! -e /tmp/arkive-stop-watch ]; do "
+                "ps -o args | grep '^mongodump' || true; sleep 0.02; done",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )  # fmt: skip
+
+    def check_backup_dumps(self, seen_argv: list[str]) -> None:
+        """mongodump argv during the backup, and the dumps it wrote, for every MongoDB fixture."""
+        r = self.report
+        lines = sorted(set(seen_argv))
+        print(f"   mongodump command lines seen during the backup: {len(lines)}", flush=True)
+        for line in lines:
+            print(f"     {line}", flush=True)
+        r.check(any("--config=/dev/stdin" in line for line in lines), "mongodump seen reading --config from stdin")
+        for password in (MONGO_PASSWORD, MONGO_BACKUP_ONLY["mongo44auth"][2]):
+            r.check(not any(password in line for line in lines), "no supported mongodump had its password in argv")
+        legacy = MONGO_BACKUP_ONLY["mongo42auth"][2]
+        if any(legacy in line for line in lines):
+            self.report.note("mongo:4.2 (legacy tools) mongodump ran with its password in argv, as documented")
+        pairs = [[self.name(k), spec[3]] for k, spec in MONGO.items()]
+        pairs += [[self.name(k), "admin"] for k in MONGO_BACKUP_ONLY]
+        result = self.dind("exec", self.name("arkive"), "python", "-c", DUMP_CHECK, json.dumps(pairs), check=False)
+        try:
+            found = json.loads(result.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            found = {}
+        for key in [*MONGO, *MONGO_BACKUP_ONLY]:
+            counts = found.get(self.name(key), {"error": result.stderr[-300:]})
+            r.check("error" not in counts, f"{key}: backup dump is a complete archive", str(counts)[:300])
+            if key in MONGO_BACKUP_ONLY:
+                r.check(counts.get("app.notes") == 120, f"{key}: backup dump holds all documents", str(counts)[:300])
 
     def sh_dind(self, script: str, check: bool = True):
         """Run a POSIX sh script on the DinD "server" (it has a docker CLI and the bind-mounted shares)."""
         return self.host("exec", self.name("dind"), "sh", "-ec", script, check=check)
-
-    def api(self, method, path, body=None, auth=True, check=True, raw=False):
-        request = {
-            "method": method,
-            "url": f"http://127.0.0.1:{self.port}{path}",
-            "body": body,
-            "key": self.api_key if auth else None,
-        }
-        result = self.dind(
-            "exec",
-            "-i",
-            self.name("arkive"),
-            "python",
-            "-c",
-            API_CLIENT,
-            input=json.dumps(request),
-            check=False,
-        )
-        try:
-            reply = json.loads(result.stdout.strip().splitlines()[-1])
-        except (IndexError, ValueError):
-            reply = {"status": None, "body": result.stderr}
-        if reply["status"] is None or reply["status"] >= 400:
-            if check:
-                raise RuntimeError(
-                    f"{method} {path} failed: {reply['status']} {reply['body'][:500]}"
-                )
-            return None
-        return json.loads(reply["body"]) if reply["body"] else {}
 
     # ---- engines ----
 
@@ -307,6 +324,12 @@ class GuidedHarness(Harness):
 
     def write_state_a(self) -> None:
         print("== writing state A", flush=True)
+        for key in MONGO_BACKUP_ONLY:
+            self.legacy_mongo(
+                key,
+                "db.getSiblingDB('app').notes.insertMany(Array.from({length: 120}, (_, i) => ({_id: i, n: i})));"
+                " print('FP 1')",
+            )
         self.mongo(
             "mongo8auth",
             """
@@ -633,7 +656,12 @@ class GuidedHarness(Harness):
         self.write_state_a()
         mongo_a = {key: self.mongo_fingerprint(key) for key in MONGO}
         redis_a = {key: self.redis_fingerprint(key) for key in REDIS}
-        run = self.run_backup(jobs)
+        watcher = self.watch_mongodump_argv()
+        try:
+            run = self.run_backup(jobs)
+        finally:
+            self.sh_dind("touch /tmp/arkive-stop-watch", check=False)
+            seen_argv = (watcher.communicate(timeout=60)[0] or "").splitlines()
         print(
             f"== backup run {run['id']}: {run['status']} {run.get('error_message') or ''}",
             flush=True,
@@ -660,6 +688,10 @@ class GuidedHarness(Harness):
                 f"dumped {key}",
                 str(entry),
             )
+        for key in MONGO_BACKUP_ONLY:
+            entry = dumped.get((self.name(key), "admin"))
+            r.check(bool(entry) and entry["status"] == "success", f"dumped {key}", str(entry))
+        self.check_backup_dumps(seen_argv)
         snapshot_id = next(
             (t["snapshot_id"] for t in run.get("targets", []) if t.get("snapshot_id")),
             None,
