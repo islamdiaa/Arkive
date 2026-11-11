@@ -809,6 +809,76 @@ class Harness:
         r.check(app.get("ticks") == [[1]], "sqlite: rows written while running restored", str(app.get("ticks")))
         r.check(other.get("theme") == [["dark"]], "sqlite: rollback-journal database restored", str(other))
 
+    def verify_missing_accounts_step(self, plan: list[dict]) -> None:
+        """The accounts step from a restore that has no accounts dump (Arkive
+        had no root password): it must say so and not fail or load anything."""
+        r = self.report
+        container = self.name("mariadb")
+        step = next((s for s in plan if s["container"] == container and s["db_name"] == ACCOUNTS_STEP_LABEL), None)
+        if step is None:
+            r.check(False, "mariadb: accounts step present for the missing-dump check")
+            return
+        self.host("exec", self.name("dind"), "mkdir", "-p", "/tmp/no-accounts-dump")
+        result = self.run_plan_step(step, {}, Path("/tmp/no-accounts-dump"))
+        r.check(
+            result.returncode == 0 and "No users-and-grants dump of" in result.stdout,
+            "mariadb: accounts step without an accounts dump says so and succeeds",
+            (result.stdout + result.stderr).strip()[-300:],
+        )
+
+    def accounts_files(self) -> dict[str, list[str]]:
+        dumps = self.workdir / "mnt-user" / ARKIVE_CONFIG.removeprefix("/mnt/user/") / "dumps"
+        out: dict[str, list[str]] = {}
+        for path in sorted(dumps.iterdir()):
+            if "_accounts-" in path.name:
+                out.setdefault(path.name.split("_accounts-")[0], []).append(path.name)
+        return out
+
+    def verify_line_break_names(self, jobs: list[dict]) -> None:
+        """A user name, and a database name in a grant, containing a line
+        break must fail the accounts dump (run partial) and keep the previous
+        file, instead of writing statements split across lines."""
+        r = self.report
+        print("== accounts dump with line breaks in names", flush=True)
+        before = self.accounts_files()
+        self.dind(
+            "exec", "-e", f"MYSQL_PWD={NODB_KEY}-root", self.name(NODB_KEY), "mariadb", "-uroot",
+            "--execute=CREATE USER 'evil\nGRANT ALL ON *.* TO x'@'%' IDENTIFIED BY 'evil-pass'",
+        )  # fmt: skip
+        self.dind(
+            "exec", "-e", "MYSQL_PWD=mysql-root", self.name("mysql"), "mysql", "-uroot",
+            "--execute=GRANT SELECT ON `a\nGRANT SUPER ON *.* TO evil`.* TO 'alice'@'%'",
+        )  # fmt: skip
+        run = self.run_backup(jobs)
+        message = run.get("error_message") or ""
+        r.check(run["status"] == "partial", "line-break names: backup run is partial", f"{run['status']}: {message}")
+        for key in (NODB_KEY, "mysql"):
+            container = self.name(key)
+            r.check(
+                f"accounts dump failed for {container}" in message or f"; {container} (" in message,
+                f"{key}: line-break name fails the accounts dump",
+                message[:400],
+            )
+            entry = next(
+                (
+                    d
+                    for d in run.get("databases", [])
+                    if d["container_name"] == container and d["db_name"] == "accounts"
+                ),
+                None,
+            )
+            r.check(
+                entry is not None and entry["status"] == "failed" and "line break" in (entry.get("error") or ""),
+                f"{key}: accounts dump error names the line break",
+                str(entry and entry.get("error"))[:300],
+            )
+            r.check(
+                self.accounts_files().get(container) == before.get(container),
+                f"{key}: previous accounts dump kept, no new file",
+                f"before={before.get(container)} after={self.accounts_files().get(container)}",
+            )
+        r.note(f"line-break run message: {message[:300]}")
+
     def run_drill(self) -> None:
         r = self.report
         print("== running a restore drill", flush=True)
@@ -859,8 +929,10 @@ class Harness:
         for key in MYSQL_IMAGES:
             self.verify_mysql(key, dumps_dir, entries, plan, mysql_source[key])
         self.verify_sqlite(dumps_dir, entries, plan)
+        self.verify_missing_accounts_step(plan)
         self.remove_scratch()
         self.run_drill()
+        self.verify_line_break_names(jobs)
         r = self.report
         print(f"\n== {len(r.passed)} passed, {len(r.failed)} failed, {len(r.notes)} notes", flush=True)
         for line in r.failed:

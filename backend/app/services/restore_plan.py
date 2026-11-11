@@ -395,7 +395,26 @@ class RestorePlanGenerator:
         """Restore commands for a MariaDB/MySQL server's users and grants (after its databases)."""
         short = "mariadb -u root -p < accounts.sql  (MySQL: mysql; after this server's databases)"
         glob = self._dump_glob(container, "mariadb", ACCOUNTS_DB_NAME, ".sql", kind=ACCOUNTS_KIND)
-        return short, self._plain_or_gzip(glob, ".sql", self._mysql_restore(container))
+        # The dump is missing when Arkive had no root password for the server
+        # (recorded as skipped in the backup run): say so instead of a cat
+        # error, and still report a failed load through the exit status.
+        missing = (
+            f"No users-and-grants dump of {container} in this restore: Arkive had no root password "
+            "for this server, see the backup run. Recreate its users by hand."
+        )
+        full = (
+            "# loads the plain (.sql) or gzip (.sql.gz) dump, whichever is there\n"
+            'found=""; failed=""\n'
+            f"for f in {glob} {glob}.gz; do\n"
+            '  [ -e "$f" ] || continue\n'
+            "  found=1\n"
+            '  case "$f" in *.gz) gunzip -c "$f" ;; *) cat "$f" ;; esac | '
+            f"{self._mysql_restore(container)} || failed=1\n"
+            "done\n"
+            f'[ -n "$found" ] || echo {shlex.quote(missing)}\n'
+            '[ -z "$failed" ]'
+        )
+        return short, full
 
     def _get_restore_commands(
         self, db_type: str, db_name: str, container: str, host_path: str | None = None

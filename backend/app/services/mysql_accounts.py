@@ -149,8 +149,37 @@ def parse_accounts(rows: list[str], flavor: str) -> list[Account]:
             host = bytes.fromhex(parts[1]).decode("utf-8")
         except ValueError as e:
             raise AccountsDumpError(f"unexpected account listing row: {row[:120]!r}") from e
+        if _CONTROL_RE.search(user) or _CONTROL_RE.search(host):
+            # A line break in a name would split statements (and the header's
+            # account list) across lines of a file that is run as root.
+            raise AccountsDumpError(
+                f"account {user[:60]!r}@{host[:60]!r}: the name contains a line break or another control "
+                "character; not supported"
+            )
         accounts.append(Account(user=user, host=host, is_role=flavor == "mariadb" and parts[2].strip() == "Y"))
     return accounts
+
+
+def quotes_close(line: str) -> bool:
+    """Whether every string literal and backtick identifier opened on ``line``
+    also closes on it (``''`` and backslash escapes in strings, doubled
+    backticks in identifiers)."""
+    state = ""
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if not state:
+            if char in "'`":
+                state = char
+        elif state == "'" and char == "\\":
+            i += 1  # escaped character
+        elif char == state:
+            if line[i + 1 : i + 2] == state:
+                i += 1  # doubled quote: still inside
+            else:
+                state = ""
+        i += 1
+    return not state
 
 
 def _lines(text: str) -> list[str]:
@@ -162,6 +191,13 @@ def _check_statement(line: str, account: Account) -> str:
         raise AccountsDumpError(
             f"{account.label}: SHOW output contains control characters "
             "(a binary password hash this server version cannot print safely)"
+        )
+    if not quotes_close(line):
+        # An identifier or string that does not close on its own line: a
+        # database, table, column or role name with a line break, which the
+        # line-based output cannot carry.
+        raise AccountsDumpError(
+            f"{account.label}: a name in SHOW output contains a line break; not supported ({line[:120]!r})"
         )
     return line
 
@@ -179,6 +215,8 @@ def dump_accounts(run_sql: Callable[[str], str]) -> AccountsDump:
     if len(version_lines) != 1:
         raise AccountsDumpError("could not read the server version")
     version = version_lines[0].strip()
+    if _CONTROL_RE.search(version):
+        raise AccountsDumpError(f"unexpected server version: {version[:80]!r}")
     flavor = _flavor(version)
     hex_hashes = flavor == "mysql" and _supports_hex_hashes(version)
     listing = run_sql(MARIADB_LIST_SQL if flavor == "mariadb" else MYSQL_LIST_SQL)

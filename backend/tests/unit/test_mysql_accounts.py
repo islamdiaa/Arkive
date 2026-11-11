@@ -9,6 +9,7 @@ exercised by scripts/restore-roundtrip.
 import gzip
 import json
 import os
+import subprocess  # nosec B404 - runs the generated restore command in sh
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -36,6 +37,7 @@ from app.services.mysql_accounts import (
     AccountsDumpError,
     dump_accounts,
     excluded_reason,
+    quotes_close,
 )
 from app.services.restore_drill import candidates_from_manifest, infer_candidates, select_candidates
 from app.services.restore_plan import ACCOUNTS_STEP_LABEL, RestorePlanGenerator
@@ -351,6 +353,131 @@ class TestDumpAccounts:
 
 
 # ---------------------------------------------------------------------------
+# Names with line breaks: the output is line-based and the file is run as
+# root, so these must fail instead of producing a file.
+# ---------------------------------------------------------------------------
+
+ALICE_SHOW = "SHOW CREATE USER `alice`@`%`; SHOW GRANTS FOR `alice`@`%`"
+
+
+def newline_user_server() -> FakeServer:
+    server = mariadb_server()
+    server.accounts = [*MARIADB_ACCOUNTS, ("evil\nGRANT ALL ON *.* TO x", "%", "N")]
+    return server
+
+
+def newline_host_server() -> FakeServer:
+    server = mariadb_server()
+    server.accounts = [*MARIADB_ACCOUNTS, ("carol", "%\nDROP USER x", "N")]
+    return server
+
+
+def excluded_newline_server() -> FakeServer:
+    # Anonymous accounts are left out, but their labels would go in the header.
+    server = mariadb_server()
+    server.accounts = [*MARIADB_ACCOUNTS, ("", "local\nhost", "N")]
+    return server
+
+
+def newline_database_server() -> FakeServer:
+    # GRANT SELECT ON `a<newline>GRANT SUPER ON *.* TO evil`.* TO alice: the
+    # second physical line starts with "GRANT ".
+    server = mariadb_server()
+    server.show[ALICE_SHOW] = (
+        f"CREATE USER `alice`@`%` IDENTIFIED BY PASSWORD '{ALICE_HASH}'\n"
+        f"GRANT USAGE ON *.* TO `alice`@`%` IDENTIFIED BY PASSWORD '{ALICE_HASH}'\n"
+        "GRANT SELECT ON `a\nGRANT SUPER ON *.* TO evil`.* TO `alice`@`%`\n"
+    )
+    return server
+
+
+def newline_create_server() -> FakeServer:
+    # A line break inside a string of SHOW CREATE USER (e.g. a COMMENT).
+    server = mysql_server()
+    server.show[f"{_HEX}SHOW CREATE USER `alice`@`%`; SHOW GRANTS FOR `alice`@`%`"] = (
+        f"CREATE USER `alice`@`%` IDENTIFIED WITH 'caching_sha2_password' AS {ALICE_SHA2} REQUIRE NONE "
+        "COMMENT 'first\nGRANT ALL ON *.* TO `alice`@`%`'\n"
+        "GRANT USAGE ON *.* TO `alice`@`%`\n"
+    )
+    return server
+
+
+def second_create_server() -> FakeServer:
+    server = mariadb_server()
+    server.show[ALICE_SHOW] = (
+        f"CREATE USER `alice`@`%` IDENTIFIED BY PASSWORD '{ALICE_HASH}'\n"
+        f"CREATE USER `mallory`@`%` IDENTIFIED BY PASSWORD '{ALICE_HASH}'\n"
+        "GRANT USAGE ON *.* TO `alice`@`%`\n"
+    )
+    return server
+
+
+LINE_BREAK_CASES = [
+    pytest.param(newline_user_server, "name contains a line break", id="user"),
+    pytest.param(newline_host_server, "name contains a line break", id="host"),
+    pytest.param(excluded_newline_server, "name contains a line break", id="excluded-account"),
+    pytest.param(newline_database_server, "contains a line break; not supported", id="database-in-grant"),
+    pytest.param(newline_create_server, "contains a line break; not supported", id="string-in-create-user"),
+    pytest.param(second_create_server, "unexpected SHOW GRANTS output", id="second-create-user"),
+]
+
+
+class TestLineBreaks:
+    @pytest.mark.parametrize("make_server,message", LINE_BREAK_CASES)
+    def test_fails_closed(self, make_server, message):
+        with pytest.raises(AccountsDumpError, match=message):
+            dump_accounts(make_server())
+
+    def test_error_names_the_account_clipped(self):
+        with pytest.raises(AccountsDumpError) as info:
+            dump_accounts(newline_user_server())
+        assert "'evil\\nGRANT ALL ON *.* TO x'@'%'" in str(info.value)
+
+    @pytest.mark.parametrize(
+        "line,closes",
+        [
+            ("GRANT SELECT ON `appdb`.* TO `alice`@`%`", True),
+            ("GRANT SELECT ON `we``ird`.* TO `a``b`@`%`", True),
+            ("CREATE USER `a`@`%` IDENTIFIED BY PASSWORD '*AB' COMMENT 'it''s'", True),
+            ("CREATE USER `a`@`%` COMMENT 'back\\\\slash \\' quote `tick'", True),
+            ('CREATE USER `a`@`%` ATTRIBUTE \'{"k": "`"}\'', True),
+            ("GRANT SELECT ON `a", False),
+            ("GRANT SUPER ON *.* TO evil`.* TO `alice`@`%`", False),
+            ("CREATE USER `a`@`%` COMMENT 'open", False),
+            ("GRANT SELECT ON `x```", True),
+            ("GRANT SELECT ON `x``", False),
+        ],
+    )
+    def test_quotes_close(self, line, closes):
+        assert quotes_close(line) is closes
+
+    def test_escaped_backticks_and_quotes_still_dump(self):
+        server = mariadb_server()
+        server.show[ALICE_SHOW] = (
+            f"CREATE USER `alice`@`%` IDENTIFIED BY PASSWORD '{ALICE_HASH}'\n"
+            "GRANT SELECT ON `odd``db`.`t``1` TO `alice`@`%`\n"
+        )
+        dump = dump_accounts(server)
+        assert "GRANT SELECT ON `odd``db`.`t``1` TO `alice`@`%`;" in dump.sql
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("make_server,message", LINE_BREAK_CASES)
+    async def test_nothing_written_and_previous_dump_kept(self, mock_config, make_server, message):
+        good = _server_container("mdb", ["MARIADB_ROOT_PASSWORD=pw"], mariadb_server())
+        first = _accounts(await DBDumper(_docker(good), mock_config).dump_all([_maria_db()]))[0]
+        assert first.status == "success"
+        time.sleep(1.1)  # a new dump would get a newer timestamp
+
+        bad = _server_container("mdb", ["MARIADB_ROOT_PASSWORD=pw"], make_server())
+        second = _accounts(await DBDumper(_docker(bad), mock_config).dump_all([_maria_db()]))[0]
+        assert second.status == "failed" and message in second.error
+        names = os.listdir(mock_config.dump_dir)
+        assert [n for n in names if "_accounts-" in n] == [os.path.basename(first.dump_path)]
+        assert not [n for n in names if n.endswith(".partial")]
+        assert Path(first.dump_path).read_text() == dump_accounts(mariadb_server()).sql
+
+
+# ---------------------------------------------------------------------------
 # DBDumper integration
 # ---------------------------------------------------------------------------
 
@@ -614,9 +741,65 @@ class TestRestorePaths:
         ]
         full = ordered[3]["full_restore_cmd"]
         glob = f"{dump_prefix('mdb', 'mariadb', ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND)}_[0-9]*.sql"
-        assert f"cat {glob} | docker exec -i mdb sh -c" in full
-        assert f"gunzip -c {glob}.gz |" in full
+        assert f"for f in {glob} {glob}.gz; do" in full
+        assert "| docker exec -i mdb sh -c" in full
         assert '${p:+"-p$p"}' in full  # never a bare -p
+
+    @staticmethod
+    def _run_accounts_step(tmp_path, mock_config, files: dict[str, bytes], docker_exit: int = 0):
+        """Run the plan's accounts command in POSIX sh from a dump directory,
+        with a fake ``docker`` that records what it was fed."""
+        dumps = tmp_path / "restore" / "dumps"
+        dumps.mkdir(parents=True)
+        for name, data in files.items():
+            (dumps / name).write_bytes(data)
+        bin_dir = tmp_path / "fakebin"
+        bin_dir.mkdir()
+        fed = tmp_path / "restore" / "fed.sql"
+        fake = bin_dir / "docker"
+        fake.write_text(f"#!/bin/sh\ncat >> {fed}\nexit {docker_exit}\n")
+        fake.chmod(0o755)
+        _short, full = RestorePlanGenerator(mock_config)._get_accounts_restore_commands("mdb")
+        result = subprocess.run(  # noqa: S603 - fixed argv
+            ["/bin/sh", "-c", full],
+            cwd=dumps,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result, (fed.read_bytes() if fed.exists() else None)
+
+    def _accounts_file(self, ext=".sql"):
+        return f"{dump_prefix('mdb', 'mariadb', ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND)}_20261022_220000{ext}"
+
+    def test_plan_step_loads_a_plain_dump(self, tmp_path, mock_config):
+        data = dump_accounts(mariadb_server()).sql.encode()
+        result, fed = self._run_accounts_step(tmp_path, mock_config, {self._accounts_file(): data})
+        assert result.returncode == 0, result.stderr
+        assert fed == data and "No users-and-grants dump" not in result.stdout
+
+    def test_plan_step_loads_a_gzip_dump(self, tmp_path, mock_config):
+        data = dump_accounts(mariadb_server()).sql.encode()
+        result, fed = self._run_accounts_step(
+            tmp_path, mock_config, {self._accounts_file(".sql.gz"): gzip.compress(data)}
+        )
+        assert result.returncode == 0, result.stderr
+        assert fed == data
+
+    def test_plan_step_without_a_dump_says_why_and_succeeds(self, tmp_path, mock_config):
+        # No root credentials: the backup recorded the accounts dump as skipped.
+        result, fed = self._run_accounts_step(tmp_path, mock_config, {})
+        assert result.returncode == 0
+        assert fed is None  # the client never ran
+        assert "No users-and-grants dump of mdb in this restore: Arkive had no root password" in result.stdout
+        assert "No such file" not in result.stderr
+
+    def test_plan_step_reports_a_failed_load(self, tmp_path, mock_config):
+        data = dump_accounts(mariadb_server()).sql.encode()
+        result, _fed = self._run_accounts_step(tmp_path, mock_config, {self._accounts_file(): data}, docker_exit=1)
+        assert result.returncode != 0
+        assert "No users-and-grants dump" not in result.stdout
 
     def test_drill_skips_accounts_dump_with_reason(self):
         manifest = {
