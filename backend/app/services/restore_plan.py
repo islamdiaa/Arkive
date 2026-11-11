@@ -16,9 +16,13 @@ from jinja2 import Environment, select_autoescape
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 from app.services.db_dumper import GLOBALS_DB_NAME, dump_prefix, safe_name
+from app.services.mysql_accounts import ACCOUNTS_DB_NAME, ACCOUNTS_KIND
 from app.services.repo_paths import build_repo_path
 
 logger = logging.getLogger("arkive.restore_plan")
+
+# Database column of a MariaDB/MySQL server's users-and-grants step.
+ACCOUNTS_STEP_LABEL = "users and grants (accounts dump)"
 
 RESTORE_PLAN_TEMPLATE = """
 <!DOCTYPE html>
@@ -106,7 +110,9 @@ pre { background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 6px; ov
 <p>Recreate each database container first (same image and environment as before), then run these
 commands on the host from the restored dump directory: the Arkive config folder's
 <code>restore/config/dumps</code> (e.g. <code>cd /mnt/user/appdata/arkive/restore/config/dumps</code>).
-For Postgres, restore the roles before that server's databases.</p>
+For Postgres, restore the roles before that server's databases. For MariaDB/MySQL, restore the
+users and grants after all of that server's databases (table grants need the tables); the server's
+own <code>root</code> account is not in that dump and keeps the new container's password.</p>
 {% for db in databases %}
 <p><strong>{{ db.container_name }} ({{ db.db_type }}):</strong></p>
 <pre>{{ db.full_restore_cmd }}</pre>
@@ -232,6 +238,8 @@ class RestorePlanGenerator:
                         }
                     )
 
+        databases = self._with_accounts_steps(databases)
+
         env = Environment(autoescape=select_autoescape(["html"]))
         template = env.from_string(RESTORE_PLAN_TEMPLATE)
         html = template.render(
@@ -354,6 +362,59 @@ class RestorePlanGenerator:
         short = 'psql -U "$POSTGRES_USER" -d postgres < globals.sql  (restore before the databases)'
         glob = self._dump_glob(container, "postgres", GLOBALS_DB_NAME, ".sql", kind="globals")
         return short, self._plain_or_gzip(glob, ".sql", self._psql_restore(container))
+
+    def _with_accounts_steps(self, databases: list[dict]) -> list[dict]:
+        """Insert each MariaDB/MySQL server's accounts step after its last database.
+
+        Table and column grants need their tables, so the users and grants
+        are restored once every database of that server is back.
+        """
+        last: dict[str, int] = {}
+        for index, entry in enumerate(databases):
+            if entry["db_type"] in ("mariadb", "mysql"):
+                last[entry["container_name"]] = index
+        insert_after = {index: container for container, index in last.items()}
+        ordered: list[dict] = []
+        for index, entry in enumerate(databases):
+            ordered.append(entry)
+            container = insert_after.get(index)
+            if container is not None:
+                short, full = self._get_accounts_restore_commands(container)
+                ordered.append(
+                    {
+                        "container_name": container,
+                        "db_type": entry["db_type"],
+                        "db_name": ACCOUNTS_STEP_LABEL,
+                        "restore_cmd": short,
+                        "full_restore_cmd": full,
+                    }
+                )
+        return ordered
+
+    def _get_accounts_restore_commands(self, container: str) -> tuple[str, str]:
+        """Restore commands for a MariaDB/MySQL server's users and grants (after its databases)."""
+        short = "mariadb -u root -p < accounts.sql  (MySQL: mysql; after this server's databases)"
+        glob = self._dump_glob(container, "mariadb", ACCOUNTS_DB_NAME, ".sql", kind=ACCOUNTS_KIND)
+        # The dump is missing when Arkive had no root password for the server
+        # (recorded as skipped in the backup run): say so instead of a cat
+        # error, and still report a failed load through the exit status.
+        missing = (
+            f"No users-and-grants dump of {container} in this restore: Arkive had no root password "
+            "for this server, see the backup run. Recreate its users by hand."
+        )
+        full = (
+            "# loads the plain (.sql) or gzip (.sql.gz) dump, whichever is there\n"
+            'found=""; failed=""\n'
+            f"for f in {glob} {glob}.gz; do\n"
+            '  [ -e "$f" ] || continue\n'
+            "  found=1\n"
+            '  case "$f" in *.gz) gunzip -c "$f" ;; *) cat "$f" ;; esac | '
+            f"{self._mysql_restore(container)} || failed=1\n"
+            "done\n"
+            f'[ -n "$found" ] || echo {shlex.quote(missing)}\n'
+            '[ -z "$failed" ]'
+        )
+        return short, full
 
     def _get_restore_commands(
         self, db_type: str, db_name: str, container: str, host_path: str | None = None

@@ -190,6 +190,13 @@ class TestPipelineIntegration:
             assert run["databases_discovered"] > 0
             assert run["databases_dumped"] > 0
             assert run["flash_backed_up"] == 1
+            accounts = await (
+                await db.execute(
+                    "SELECT container_name, status FROM job_run_databases WHERE run_id = ? AND db_name = 'accounts'",
+                    (result["run_id"],),
+                )
+            ).fetchall()
+            assert [tuple(r) for r in accounts] == [("fake-mariadb", "success")]
 
     async def test_pipeline_skip_databases(self, pipeline_config, tmp_path, fake_boot_config):
         """skip_databases=True → no dump results."""

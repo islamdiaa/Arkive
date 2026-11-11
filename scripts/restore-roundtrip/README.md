@@ -13,8 +13,20 @@ back, using real database servers and a real Arkive instance:
 5. follows the database steps of the restore plan Arkive generates
    (`restore-plan.html`) into fresh servers, then compares data, owners,
    grants, roles, extensions, large objects, encodings, routines, events and
-   the second database of each server with the source
+   the second database of each server with the source. For MariaDB and MySQL
+   the fresh server is created with the same `MYSQL_USER` environment as the
+   source but a different root password; after the plan's accounts step,
+   every application account must have the same `SHOW CREATE USER` (password
+   hash included) and `SHOW GRANTS` as on the source, log in with its
+   original password and be refused what it was not granted, while root,
+   the system accounts and the MariaDB healthcheck stay as the new server
+   created them. The accounts step is also run from a folder without an
+   accounts dump (what a restore holds when Arkive had no root password),
+   where it must say so and succeed
 6. runs a restore drill and expects every database to pass
+7. gives a MariaDB user, and a database name in a MySQL grant, a line break
+   and runs the backup again: the accounts dumps of those servers must fail
+   (run `partial`) and keep their previous files
 
 Each check prints `PASS`/`FAIL`; the exit status is 0 only when all passed.
 
