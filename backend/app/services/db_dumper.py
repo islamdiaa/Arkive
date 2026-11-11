@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess  # nosec B404 — fixed argv, no shell
 import tarfile
 import tempfile
@@ -41,6 +42,7 @@ from pathlib import Path
 
 import aiosqlite
 import docker
+from docker.utils.socket import STDERR, frames_iter
 
 from app import __version__
 from app.core.config import ArkiveConfig
@@ -812,6 +814,7 @@ class DBDumper:
         cmd: list[str],
         dump_path: str,
         environment: dict | None = None,
+        stdin_data: bytes | None = None,
     ) -> StreamResult:
         """Run ``cmd`` in ``container`` and stream stdout into ``dump_path``
         (callers pass the ``.partial`` path and rename it once validated).
@@ -824,10 +827,40 @@ class DBDumper:
         which hid failed dumps. With a real Docker API client we use the
         low-level exec API so the exit code can be inspected after the stream
         ends; other clients fall back to ``exec_run``.
+
+        ``stdin_data`` (real Docker API client only; see ``_can_send_stdin``)
+        is written to the command's stdin, which is then closed, before its
+        output is read: a secret goes in there instead of argv.
         """
         api = getattr(getattr(container, "client", None), "api", None)
         exec_id = None
-        if isinstance(api, docker.APIClient):
+        sock = None
+        if stdin_data is not None:
+            if not isinstance(api, docker.APIClient):
+                raise RuntimeError("stdin needs the Docker API client")
+            exec_id = api.exec_create(
+                container.id,
+                cmd,
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                environment=environment or None,
+            )["Id"]
+            sock = api.exec_start(exec_id, socket=True)
+            raw = getattr(sock, "_sock", sock)
+            try:
+                raw.sendall(stdin_data)
+            finally:
+                try:
+                    raw.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+            output = (
+                (None, data) if stream_id == STDERR else (data, None)
+                for stream_id, data in frames_iter(sock, tty=False)
+            )
+            exit_code = None
+        elif isinstance(api, docker.APIClient):
             exec_id = api.exec_create(
                 container.id,
                 cmd,
@@ -870,6 +903,14 @@ class DBDumper:
         except BaseException:
             writer.abort()
             raise
+        finally:
+            if sock is not None:
+                for closable in (sock, getattr(sock, "_sock", None)):
+                    try:
+                        if closable is not None:
+                            closable.close()
+                    except Exception:  # nosec B110 - best-effort socket cleanup
+                        pass
 
         if exec_id is not None:
             try:
@@ -1543,21 +1584,27 @@ class DBDumper:
 
             # Build mongodump command with authentication if credentials are available
             exec_cmd = ["mongodump", "--archive"]
+            stdin_data = None
             mongo_user = env.get("MONGO_INITDB_ROOT_USERNAME")
             mongo_pass = env.get("MONGO_INITDB_ROOT_PASSWORD")
             if mongo_user and mongo_pass:
-                exec_cmd.extend(
-                    [
-                        "--username",
-                        self._sanitize_identifier(mongo_user),
-                        "--password",
-                        mongo_pass,
-                        "--authenticationDatabase",
-                        "admin",
-                    ]
-                )
+                exec_cmd.extend(["--username", self._sanitize_identifier(mongo_user)])
+                if self._mongodump_reads_config(container):
+                    # The password is read from stdin (a YAML --config file), so it
+                    # never shows in a process listing. A JSON string is a valid
+                    # YAML double-quoted scalar.
+                    exec_cmd.append("--config=/dev/stdin")
+                    stdin_data = f"password: {json.dumps(mongo_pass)}\n".encode()
+                else:
+                    logger.warning(
+                        "mongodump in %s has no --config option (MongoDB Database Tools before 100.3.0); "
+                        "its password is passed on the command line",
+                        db.container_name,
+                    )
+                    exec_cmd.extend(["--password", mongo_pass])
+                exec_cmd.extend(["--authenticationDatabase", "admin"])
 
-            stream = self._exec_stream_to_file(container, exec_cmd, partial)
+            stream = self._exec_stream_to_file(container, exec_cmd, partial, stdin_data=stdin_data)
             return self._streamed_dump_result(db, "mongodb", "mongodump", dump_path, stream, None, partial)
         except Exception as e:
             return DumpResult(
@@ -1572,6 +1619,30 @@ class DBDumper:
             )
         finally:
             self._discard(partial)
+
+    @staticmethod
+    def _mongodump_reads_config(container) -> bool:
+        """Whether the password can go to mongodump on stdin (``--config=/dev/stdin``).
+
+        ``--config`` is in MongoDB Database Tools 100.3.0 and later; images
+        with the legacy tools (mongo:4.2 and older) don't have it, and its
+        stdin needs the real Docker API client. Either way the caller falls
+        back to the password in argv rather than failing the dump.
+        """
+        api = getattr(getattr(container, "client", None), "api", None)
+        if not isinstance(api, docker.APIClient):
+            return False
+        try:
+            result = container.exec_run(["mongodump", "--help"], demux=True)
+        except Exception:
+            return False
+        code = getattr(result, "exit_code", None)
+        output = getattr(result, "output", None)
+        if code is None and isinstance(result, tuple):
+            code, output = result
+        stdout, stderr = output if isinstance(output, tuple) else (output, b"")
+        text = b"".join(part for part in (stdout, stderr) if isinstance(part, bytes)).decode(errors="replace")
+        return code == 0 and "--config=" in text
 
     def _redis_auth_env(self, container) -> dict[str, str]:
         """REDISCLI_AUTH for password-protected Redis (never passed in argv)."""

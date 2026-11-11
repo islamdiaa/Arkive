@@ -18,9 +18,12 @@ from __future__ import annotations
 import json
 import re
 import struct
+from types import SimpleNamespace
+
+import docker
 
 from app.services.dump_checks import MONGO_ARCHIVE_MAGIC, crc64_ecma, crc64_jones
-from tests.fakes.fake_db_server import FakeDbContainer
+from tests.fakes.fake_db_server import FakeDbContainer, FakeExecAPI
 
 # ---------------------------------------------------------------------------
 # BSON / archive encoding
@@ -201,6 +204,7 @@ class FakeMongo(FakeDbContainer):
         self.dump_truncated = False
         self.fail_drop = False
         self.fail_mktemp = False
+        self.legacy_tools = False  # mongo:4.2 and older: no --config option
 
     # ---- helpers ----
 
@@ -210,10 +214,15 @@ class FakeMongo(FakeDbContainer):
         return user == self.user and password == self.password
 
     def _flag(self, cmd: list[str], name: str) -> list[str]:
+        """Values of ``--name=value`` and ``--name value`` (the dumper uses the second form)."""
         prefix = f"--{name}="
-        return [arg[len(prefix) :] for arg in cmd if arg.startswith(prefix)]
+        values = [arg[len(prefix) :] for arg in cmd if arg.startswith(prefix)]
+        values += [cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == f"--{name}"]
+        return values
 
     def _cli_password(self, cmd: list[str], stdin: bytes) -> str | None:
+        if "--password" in cmd:
+            return cmd[cmd.index("--password") + 1]
         config = self._flag(cmd, "config")
         if config:
             text = stdin.decode() if config[0] == "/dev/stdin" else self.files.get(config[0], b"").decode()
@@ -243,7 +252,14 @@ class FakeMongo(FakeDbContainer):
         ):
             return 127, b"", f'exec: "{program}": executable file not found in $PATH\n'.encode()
         if "--version" in cmd:
-            return 0, f"{program} version: 100.10.0\n".encode(), b""
+            version = "r4.2.24" if self.legacy_tools else "100.10.0"
+            return 0, f"{program} version: {version}\n".encode(), b""
+        if "--help" in cmd:
+            # Database Tools 100.3+ list --config; the legacy 4.2 tools don't.
+            text = "Usage:\n  mongodump <options> <connection-string>\n\nGeneral options:\n      --help\n"
+            if not self.legacy_tools:
+                text += "      --config=<filename>   path to a configuration file\n"
+            return 0, text.encode(), b""
         if program == "mktemp":
             if self.fail_mktemp:
                 return 1, b"", b"mktemp: failed to create directory: Read-only file system\n"
@@ -309,6 +325,8 @@ class FakeMongo(FakeDbContainer):
         return 0, f"ARKIVE_JSON {json.dumps(result)}\n".encode(), b""
 
     def _mongodump(self, cmd):
+        if self.legacy_tools and self._flag(cmd, "config"):
+            return 2, b"", b'error parsing command line options: unknown option "config"\n'
         only = self._flag(cmd, "db")
         names = only if only else sorted(self.databases)
         data = mongo_archive({n: self.databases[n] for n in names if n in self.databases})
@@ -431,3 +449,42 @@ class FakeRedis(FakeDbContainer):
                 return 0, b"\n", b""
             return 0, f"{key}\n{self.config[key]}\n".encode(), b""
         return 0, b"ERR unknown command\n", b""
+
+
+class FakeDockerAPI(docker.APIClient):
+    """The fake exec API behind an ``isinstance(api, docker.APIClient)`` check.
+
+    Supports both ways DBDumper streams a dump: ``exec_start(stream=True,
+    demux=True)`` (no stdin) and ``exec_start(socket=True)`` with stdin.
+    """
+
+    def __init__(self, container):  # noqa: D107 - no real Docker connection
+        self._fake = FakeExecAPI(container)
+        self.container = container
+
+    def exec_create(self, container_id, cmd, **kwargs):
+        return self._fake.exec_create(container_id, cmd, **kwargs)
+
+    def exec_start(self, exec_id, socket=False, stream=False, demux=False, **kwargs):  # noqa: A002
+        if socket:
+            return self._fake.exec_start(exec_id, socket=True)
+        record = self._fake.execs[exec_id]
+        code, out, err = self.container.run(record["cmd"], record["env"], b"")
+        record["exit_code"] = code
+        chunks = [(out[i : i + 4096], None) for i in range(0, len(out), 4096)]
+        if err:
+            chunks.append((None, err))
+        return iter(chunks)
+
+    def exec_inspect(self, exec_id):
+        return self._fake.exec_inspect(exec_id)
+
+    @property
+    def execs(self):
+        return self._fake.execs
+
+
+def with_docker_api(container):
+    """Give a fake container an API client that passes DBDumper's real-client check."""
+    container.client = SimpleNamespace(api=FakeDockerAPI(container))
+    return container

@@ -165,7 +165,7 @@ The dump is a complete copy of the database made with SQLite's online backup, ch
 
 ### Redis (`.rdb`)
 
-The dump is Redis's own RDB file, written by `BGSAVE`. Stop the Redis container, copy the file over the data file in its data folder (`dump.rdb` unless `dbfilename` says otherwise), and start it. If the server uses the append-only file, moving it aside is not enough: Redis then starts empty. Make a new append-only file from the dump as described in [the guided restore for Redis](#redis), which also gives you the exact commands.
+The dump is Redis's own RDB file, written by `BGSAVE`. Stop the Redis container, copy the file over the data file in its data folder (`dump.rdb` unless `dbfilename` says otherwise), and start it. If the server uses the append-only file, moving it aside is not enough: Redis then starts empty. Make a new append-only file from the dump as described in [the guided restore for Redis](#redis), which also gives you the exact commands. The restore plan's Redis steps do the same without asking you for paths: they read the data folder, file name and append-only settings from Redis while it still runs (or use the redis image's defaults, `/data` and `dump.rdb`, and look at the container's command line and the files in the folder), and need the data folder to be a volume or bind mount.
 
 ## Restore the Unraid flash configuration
 

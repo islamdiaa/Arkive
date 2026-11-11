@@ -11,6 +11,9 @@ against real database servers and a real Arkive instance:
   trigger, a procedure, a function, an event, a second application database),
   plus a MariaDB without MARIADB_DATABASE
 - SQLite in WAL mode held open by a running "app" (rows live only in the WAL)
+- Redis 7.4 and 6.2 with the append-only file (7.4 with a password the plan's
+  steps can't use) and Redis 8.0 without it: the plan's steps go into fresh
+  servers that hold other data, and the data must still be there after a restart
 
 Restored dumps are loaded by running the database steps of the restore plan
 Arkive generates, so the documented commands are tested too.
@@ -29,8 +32,10 @@ changes are tested without rebuilding the image. Exit status is 0 only when
 every check passed. ``--keep`` leaves the environment running for inspection
 (remove it later with ``--down``).
 
-Every container, file and port it uses is derived from ``--prefix``
-(default ``arkive-rt``) and ``--port`` (default 8320); state lives in
+Every container and file it uses is derived from ``--prefix`` (default
+``arkive-rt``); the API listens on ``--port`` (default 8320) inside the Arkive
+container only and is called from there, so nothing is published on the host;
+state lives in
 ``--workdir`` (default ``/tmp/<prefix>``), which must be new or empty: the
 harness marks it as its own, and teardown removes only a marked directory.
 """
@@ -38,6 +43,7 @@ harness marks it as its own, and teardown removes only a marked directory.
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import re
@@ -46,8 +52,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -154,6 +158,37 @@ print(json.dumps(out))
 """
 
 
+# Runs inside the Arkive container: the API is only reachable there.
+API_CLIENT = r"""
+import base64, json, sys, urllib.error, urllib.request
+req = json.load(sys.stdin)
+request = urllib.request.Request(req["url"], method=req["method"],
+    data=json.dumps(req["body"]).encode() if req["body"] is not None else None,
+    headers={"Content-Type": "application/json"})
+if req["key"]:
+    request.add_header("X-API-Key", req["key"])
+try:
+    with urllib.request.urlopen(request, timeout=120) as response:
+        status, body = response.status, response.read()
+except urllib.error.HTTPError as exc:
+    status, body = exc.code, exc.read()
+except Exception as exc:
+    status, body = None, str(exc).encode()
+print(json.dumps({"status": status, "body": base64.b64encode(body).decode()}))
+"""
+
+# Redis servers restored by following the plan: the append-only file in a
+# folder (7.4, with a password the plan can't use, so it falls back to the
+# container's command line), no append-only file (8.0), and the single
+# append-only file of Redis before 7 (6.2).
+REDIS_PASSWORD = "rt-redis-pass"
+REDIS_SERVERS = {
+    "redis74aof": ("redis:7.4", ["redis-server", "--appendonly", "yes", "--requirepass", REDIS_PASSWORD]),
+    "redis80": ("redis:8.0", []),
+    "redis62aof": ("redis:6.2", ["redis-server", "--appendonly", "yes"]),
+}
+
+
 @dataclass
 class Report:
     passed: list[str] = field(default_factory=list)
@@ -256,12 +291,12 @@ class Harness:
             "-v", f"{self.workdir}/mnt-user:/mnt/user",
             "-v", f"{self.workdir}/backups:{BACKUPS}",
             "-v", f"{REPO}:/src:ro",
-            "-p", f"127.0.0.1:{self.port}:{self.port}",
             DIND_IMAGE, "dockerd", "--host=unix:///var/run/docker.sock",
         )  # fmt: skip
         self.wait_for("the DinD daemon", lambda: self.dind("info", check=False).returncode == 0, 60)
 
         images = [*PG_IMAGES.values(), *MYSQL_IMAGES.values(), SQLITE_APP_IMAGE]
+        images += [image for image, _args in REDIS_SERVERS.values()]
         for image in images:
             local = self.args.load_local_images and self.host("image", "inspect", image, check=False).returncode == 0
             if local:  # reuse the host's copy instead of pulling again
@@ -333,6 +368,68 @@ class Harness:
             lambda: (self.workdir / "mnt-user" / SQLITE_APP_DATA.removeprefix("/mnt/user/") / "ready").exists(),
             60,
         )
+        self.start_redis()
+
+    # ---- Redis ----
+
+    def start_redis(self, suffix: str = "") -> None:
+        for key, (image, args) in REDIS_SERVERS.items():
+            name = self.name(key + suffix)
+            self.dind("rm", "-f", name, check=False)
+            self.dind("run", "-d", "--name", name, "-v", f"{APPDATA}/{key}{suffix}:/data", image, *args)
+        for key in REDIS_SERVERS:
+            self.wait_for(key + suffix, lambda k=key + suffix: self.redis(k, "PING", check=False) == "PONG", 60)
+
+    def redis(self, key: str, *args: str, check: bool = True) -> str | None:
+        env = ["-e", f"REDISCLI_AUTH={REDIS_PASSWORD}"] if key.startswith("redis74aof") else []
+        result = self.dind("exec", *env, self.name(key), "redis-cli", *args, check=False)
+        if result.returncode != 0:
+            if check:
+                raise RuntimeError(f"redis-cli {args} in {key} failed: {result.stderr}")
+            return None
+        return result.stdout.strip()
+
+    def write_redis(self, key: str) -> None:
+        for i in range(300):
+            self.redis(key, "SET", f"key:{i}", f"value-{i}")
+        self.redis(key, "HSET", "profile", "name", "alice", "role", "admin")
+        self.redis(key, "RPUSH", "queue", "a", "b", "c")
+        self.redis(key, "-n", "1", "SET", "other", "db1-value")
+
+    def redis_fingerprint(self, key: str) -> dict:
+        return {
+            "db0 size": self.redis(key, "DBSIZE", check=False),
+            "db1 size": self.redis(key, "-n", "1", "DBSIZE", check=False),
+            "key:7": self.redis(key, "GET", "key:7", check=False),
+            "hash": self.redis(key, "HGETALL", "profile", check=False),
+            "list": self.redis(key, "LRANGE", "queue", "0", "-1", check=False),
+            "db1": self.redis(key, "-n", "1", "GET", "other", check=False),
+            "scratch": self.redis(key, "GET", "scratch", check=False),
+        }
+
+    def verify_redis(self, dumps_dir: Path, plan: list[dict], sources: dict) -> None:
+        """Follow the plan's Redis steps into fresh servers that already hold other data
+        (and, with the append-only file on, an append-only file of their own)."""
+        r = self.report
+        self.start_redis("-restored")
+        for key in REDIS_SERVERS:
+            scratch_key = f"{key}-restored"
+            self.redis(scratch_key, "SET", "scratch", "must be replaced")
+            steps = [s for s in plan if s["container"] == self.name(key) and s["db_type"] == "redis"]
+            if not r.check(len(steps) == 1, f"{key}: restore plan has a Redis step", str(len(steps))):
+                continue
+            loaded = self.run_plan_step(steps[0], {self.name(key): self.name(scratch_key)}, dumps_dir)
+            r.check(loaded.returncode == 0, f"{key}: restore plan Redis steps run", loaded.stderr.strip()[-500:])
+            self.wait_for(scratch_key, lambda k=scratch_key: self.redis(k, "PING", check=False) == "PONG", 60)
+            restored = self.redis_fingerprint(scratch_key)
+            r.check(restored == sources[key], f"{key}: data is back", f"source={sources[key]} restored={restored}")
+            self.dind("restart", self.name(scratch_key))
+            self.wait_for(scratch_key, lambda k=scratch_key: self.redis(k, "PING", check=False) == "PONG", 60)
+            again = self.redis_fingerprint(scratch_key)
+            r.check(again == sources[key], f"{key}: data is still there after a restart", str(again))
+            if "--appendonly" in REDIS_SERVERS[key][1]:
+                aof = self.redis(scratch_key, "CONFIG", "GET", "appendonly", check=False) or ""
+                r.check(aof.endswith("yes"), f"{key}: append-only file still on", aof)
 
     def pg_ready(self, key: str) -> bool:
         return self.sh(key, "pg_isready -q -h 127.0.0.1", check=False).returncode == 0
@@ -355,12 +452,11 @@ class Harness:
             "-v", "/mnt/user:/mnt/user:ro",
             "-v", f"{ARKIVE_CONFIG}:/config",
             "-v", f"{BACKUPS}:{BACKUPS}",
-            "-p", f"{self.port}:{self.port}",
         ]  # fmt: skip
         if self.args.live_code:
             args += ["-v", "/src/backend:/app/backend:ro"]
         args += [
-            self.args.image, "python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0",
+            self.args.image, "python", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
             "--port", str(self.port), "--workers", "1", "--log-config", "/app/backend/logging.json",
         ]  # fmt: skip
         self.dind(*args)
@@ -384,21 +480,24 @@ class Harness:
     def api(
         self, method: str, path: str, body: dict | None = None, auth: bool = True, check: bool = True, raw: bool = False
     ):
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}",
-            method=method,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Content-Type": "application/json"},
+        """Call the API from inside the Arkive container (no port is published on the host)."""
+        request = {
+            "method": method,
+            "url": f"http://127.0.0.1:{self.port}{path}",
+            "body": body,
+            "key": self.api_key if auth else None,
+        }
+        result = self.dind(
+            "exec", "-i", self.name("arkive"), "python", "-c", API_CLIENT, input=json.dumps(request), check=False
         )
-        if auth and self.api_key:
-            request.add_header("X-API-Key", self.api_key)
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                payload = response.read()
-        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            reply = json.loads(result.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            reply = {"status": None, "body": base64.b64encode(result.stderr.encode()).decode()}
+        payload = base64.b64decode(reply["body"])
+        if reply["status"] is None or reply["status"] >= 400:
             if check:
-                detail = exc.read().decode(errors="replace") if isinstance(exc, urllib.error.HTTPError) else exc
-                raise RuntimeError(f"{method} {path} failed: {detail}") from exc
+                raise RuntimeError(f"{method} {path} failed: {reply['status']} {payload[:500].decode(errors='replace')}")
             return None
         if raw:
             return payload
@@ -699,7 +798,8 @@ class Harness:
     def remove_scratch(self) -> None:
         """Drop the servers the restore was loaded into (a later --reuse run
         would otherwise discover and back them up)."""
-        names = [self.name(f"{key}-restored") for key in [*PG_IMAGES, *MYSQL_IMAGES]] + [self.name("sqlite-restored")]
+        names = [self.name(f"{key}-restored") for key in [*PG_IMAGES, *MYSQL_IMAGES, *REDIS_SERVERS]]
+        names += [self.name("sqlite-restored")]
         self.dind("rm", "-f", "-v", *names, check=False)
 
     def roundtrip(self) -> int:
@@ -708,6 +808,9 @@ class Harness:
         print("== recording source fingerprints", flush=True)
         pg_source = {key: self.pg_fingerprint(key, user) for key, user in PG_USERS.items()}
         mysql_source = {key: self.mysql_fingerprint(key, f"{key}-root") for key in MYSQL_IMAGES}
+        for key in REDIS_SERVERS:
+            self.write_redis(key)
+        redis_source = {key: self.redis_fingerprint(key) for key in REDIS_SERVERS}
         run = self.run_backup(jobs)
         (self.workdir / "backup-run.json").write_text(json.dumps(run, indent=2))
         self.check_backup(run)
@@ -721,6 +824,7 @@ class Harness:
         for key in MYSQL_IMAGES:
             self.verify_mysql(key, dumps_dir, entries, plan, mysql_source[key])
         self.verify_sqlite(dumps_dir, entries, plan)
+        self.verify_redis(dumps_dir, plan, redis_source)
         self.remove_scratch()
         self.run_drill()
         r = self.report
@@ -734,7 +838,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", default="arkive-rt:dev", help="Arkive image to test (must exist on the host)")
     parser.add_argument("--prefix", default="arkive-rt", help="name prefix of everything created")
-    parser.add_argument("--port", type=int, default=8320, help="127.0.0.1 port for the Arkive API")
+    parser.add_argument("--port", type=int, default=8320, help="API port inside the Arkive container (not published)")
     parser.add_argument("--workdir", help="state directory, new or empty; removed on teardown (default /tmp/<prefix>)")
     parser.add_argument("--memory", default="12g", help="memory limit of the DinD container")
     parser.add_argument("--live-code", action="store_true", help="mount this checkout's backend/ into the image")
