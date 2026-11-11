@@ -11,8 +11,8 @@ Images are published to Docker Hub as `islamdiaa/arkive`:
 | `latest` | The newest stable release |
 | `0` (major version) | The newest `0.x` release |
 | `main` | Every change merged to the `main` branch |
-| `0.5.0` (full version) | One release, never changes |
-| `0.5` (minor version) | The newest `0.5.x` release |
+| `0.6.0` (full version) | One release, never changes |
+| `0.6` (minor version) | The newest `0.6.x` release |
 | A commit SHA, such as `0f3f094` | One build of `main` |
 
 `latest` follows releases, not the main branch. Security fixes go into the latest release (see [SECURITY.md](https://github.com/islamdiaa/Arkive/blob/main/SECURITY.md)). Release notes are on the [GitHub releases page](https://github.com/islamdiaa/Arkive/releases).

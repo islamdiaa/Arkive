@@ -15,7 +15,7 @@ const DEMO_LAST_DRILL = {
 };
 
 const DEMO_STATUS = {
-  version: '0.5.0',
+  version: '0.6.0',
   uptime_seconds: 86400,
   setup_completed: true,
   platform: 'unraid',
@@ -788,7 +788,7 @@ function _mockRecoveryKit(): any {
     'ARKIVE RECOVERY KIT',
     `Generated: ${generatedAt}`,
     'Server: tower',
-    'Arkive version: 0.5.0 (demo)',
+    'Arkive version: 0.6.0 (demo)',
     '',
     'KEEP THIS FILE SECRET. Anyone with it can read your backups.',
     '',
@@ -805,7 +805,7 @@ function _mockRecoveryKit(): any {
   return {
     generated_at: generatedAt,
     server_name: 'tower',
-    arkive_version: '0.5.0',
+    arkive_version: '0.6.0',
     encryption_password: password,
     config_keyfile: keyfile,
     targets,

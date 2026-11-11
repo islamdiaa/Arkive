@@ -94,7 +94,7 @@ To explore the interface with sample data before you configure anything, open an
 
 ### Unraid
 
-Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; `latest` is rebuilt from every commit to `main`.
+Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; the `main` tag is rebuilt from every commit to `main` and is not a release.
 
 ### Docker Compose
 
@@ -149,7 +149,7 @@ The browser may then ask for the admin API key once, to create a session.
 
 Pull the new image and recreate the container with the same `/config` volume (`docker compose pull && docker compose up -d`). Database migrations run automatically on start.
 
-`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.5.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+`latest` is the newest release; pin a version tag (`islamdiaa/arkive:0.6.0`) to upgrade on your own schedule. The `main` tag is built from every commit to `main` and is not a release. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

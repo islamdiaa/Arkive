@@ -27,10 +27,11 @@ This repo is now the clean public repository:
 
 ## Current Repo State
 
-Branch: `main` (v0.5.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
+Branch: `main` (v0.6.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
 work" releases landed together in PR #52; sections 12 and 13 below describe
-them, and section 17 describes v0.5.0. Use `git log` for the commit history
-and `CHANGELOG.md` for what each release changed for users.
+them, and section 17 describes v0.5.0 and what v0.6.0 added to it. Use
+`git log` for the commit history and `CHANGELOG.md` for what each release
+changed for users.
 
 Public-repo cleanup already happened:
 - hosted/paid product surface was removed
@@ -543,7 +544,7 @@ can still lack, and a way back for one database.
   through a shell, never with user input in an option position. SQLite files
   are never written by Arkive; the operation ends `action_required` with the
   steps to swap the file in.
-- **Guided restore for MongoDB and Redis** (after v0.5.0). MongoDB is a
+- **Guided restore for MongoDB and Redis** (v0.6.0). MongoDB is a
   `load` type: the archive is checked end to end first (`services/dump_checks.py`:
   every collection's EOF marker and CRC-64; `mongorestore --dryRun` reads no
   documents), the databases being replaced are dropped with `mongosh` and
@@ -737,15 +738,15 @@ If picking this repo up cold:
 
 ## Last Known Intent
 
-At the time this handoff was updated (v0.5.0):
+At the time this handoff was updated (v0.6.0):
 - v0.3.0/v0.4.0 were merged (PR #52) after two rounds of adversarial review;
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
-- v0.5.0 (section 17) was built as separate PRs, each reviewed adversarially;
-  MariaDB/MySQL users and grants are dumped (the accounts dump, see section
-  15). Guided restore now covers MongoDB (in place) and Redis (prepared,
+- v0.5.0 (section 17) was built as separate PRs, each reviewed adversarially.
+  v0.6.0 closed its known gaps: MariaDB/MySQL users and grants are dumped
+  (the accounts dump, see section 15). Guided restore now covers MongoDB (in place) and Redis (prepared,
   swapped in by hand); MongoDB sharded clusters, secondaries and pre-6.0
   images (no mongosh) are refused. The restore plan's Redis steps use the
   same commands (`services/redis_swap.py`) and are run by

@@ -3,4 +3,4 @@
 import os
 
 # Release builds pass the image tag in via ARKIVE_VERSION (see Dockerfile).
-__version__ = os.environ.get("ARKIVE_VERSION") or "0.5.0"
+__version__ = os.environ.get("ARKIVE_VERSION") or "0.6.0"
