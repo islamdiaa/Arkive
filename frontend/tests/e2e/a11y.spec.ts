@@ -373,6 +373,35 @@ test.describe('axe: states behind a click', () => {
       await expectNoAxeViolations(page, `drill expanded ${theme}`);
     }
   });
+
+  test('guided restore: MongoDB review and Redis swap-in steps at 375px', async ({ page }) => {
+    await page.setViewportSize(PHONE);
+    // A whole-server MongoDB: the review says what is replaced.
+    await page.goto(demoUrl('/restore/database?container=unifi-db&db=admin&type=mongodb'), { waitUntil: 'networkidle' });
+    await settle(page);
+    await page.getByRole('button', { name: 'Check snapshot' }).click();
+    const review = page.getByTestId('guided-restore-review');
+    await expect(review.getByText('every database on the server except admin, config and local').first()).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    for (const theme of ['dark', 'light'] as const) {
+      await setTheme(page, theme);
+      await expectNoAxeViolations(page, `mongodb review ${theme}`);
+    }
+
+    // Redis: prepared, then the steps to swap the file in.
+    await page.goto(demoUrl('/restore/database?container=authelia-redis&db=redis&type=redis'), { waitUntil: 'networkidle' });
+    await settle(page);
+    await page.getByRole('button', { name: 'Check snapshot' }).click();
+    await page.getByRole('button', { name: 'Prepare restored file' }).click();
+    await expect(page.getByTestId('guided-restore-instructions')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId('guided-restore-instructions').getByText('docker stop authelia-redis')).toBeVisible();
+    await settle(page);
+    await expectNoHorizontalOverflow(page);
+    for (const theme of ['dark', 'light'] as const) {
+      await setTheme(page, theme);
+      await expectNoAxeViolations(page, `redis instructions ${theme}`);
+    }
+  });
 });
 
 test.describe('keyboard: app shell', () => {

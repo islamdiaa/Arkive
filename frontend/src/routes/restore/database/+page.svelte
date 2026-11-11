@@ -16,6 +16,7 @@
 		methodLabel,
 		optionKey,
 		previewRestore,
+		replacedLabel,
 		startRestore,
 		statusBadgeClass,
 		statusLabel,
@@ -346,8 +347,13 @@
 			{#if op.status === 'action_required' && op.instructions.length}
 				<div class="space-y-3" data-testid="guided-restore-instructions">
 					<p class="text-sm text-text">
-						Arkive never writes to your shares, so <span class="font-mono break-all">{op.host_path}</span> is swapped by hand.
-						The restored database is ready; run these steps on the server to put it in place:
+						{#if op.db_type === 'redis'}
+							Redis has to be stopped while its data file is replaced, and Arkive never writes to your shares, so the file is
+							swapped by hand. The restored file is ready; run these steps on the server, in this order, to put it in place:
+						{:else}
+							Arkive never writes to your shares, so <span class="font-mono break-all">{op.host_path}</span> is swapped by hand.
+							The restored database is ready; run these steps on the server to put it in place:
+						{/if}
 					</p>
 					<ol class="space-y-3 list-decimal pl-5 text-sm text-text-secondary">
 						{#each op.instructions as step}
@@ -387,7 +393,7 @@
 					<div class="rounded-lg border border-danger/40 p-4 space-y-3" data-testid="guided-restore-undo">
 						<p class="text-sm text-text">
 							Undo loads the safety dump taken just before this {op.kind}, replacing what is in
-							<span class="font-mono">{op.db_name}</span> now. A new safety dump is taken first.
+							<span class="font-mono">{replacedLabel(op)}</span> now. A new safety dump is taken first.
 							{#if op.stopped_containers.length || op.stop_containers.length}
 								These apps are stopped during the undo and started again afterwards:
 								<span class="font-mono">{[...new Set([...op.stop_containers, ...op.stopped_containers])].join(', ')}</span>.
@@ -438,6 +444,9 @@
 							<p class="text-xs text-text-secondary mt-1 truncate">
 								{option.container_name}{#if option.container_status && option.container_status !== 'running'} ({option.container_status}){/if} · {methodLabel(option.method)}
 							</p>
+							{#if option.scope && option.method !== 'unsupported'}
+								<p class="text-xs text-text-secondary mt-1">Replaces {option.scope}</p>
+							{/if}
 							{#if option.method === 'unsupported' && option.reason}
 								<p class="text-xs text-text-muted mt-1">{option.reason}</p>
 							{/if}
@@ -482,6 +491,9 @@
 					<div><dt class="text-text-secondary">Database</dt><dd class="text-text font-mono break-all">{preview.database.container_name}/{preview.database.db_name}</dd></div>
 					<div><dt class="text-text-secondary">Dump</dt><dd class="text-text"><span class="font-mono break-all">{preview.dump.file}</span> ({formatBytes(preview.dump.size_bytes)})</dd></div>
 					<div><dt class="text-text-secondary">Snapshot</dt><dd class="text-text">{preview.snapshot.time ? formatDate(preview.snapshot.time) : preview.snapshot.id} on {preview.snapshot.target_name}</dd></div>
+					{#if preview.database.scope}
+						<div><dt class="text-text-secondary">Replaces</dt><dd class="text-text">{preview.database.scope}</dd></div>
+					{/if}
 					{#if preview.database.container_detail}
 						<div><dt class="text-text-secondary">Container</dt><dd class="text-text">{preview.database.container_detail}</dd></div>
 					{/if}
@@ -507,8 +519,12 @@
 
 				{#if preview.method === 'load'}
 					<p class="text-sm text-text-secondary">
-						Everything in <span class="font-mono text-text">{preview.database.db_name}</span> is replaced with the snapshot's
-						copy. The safety dump is kept for {preview.safety_dump_retention_days} days in Arkive's restores folder, and
+						{#if preview.database.scope}
+							Everything in {preview.database.scope} is replaced with the snapshot's copy.
+						{:else}
+							Everything in <span class="font-mono text-text">{preview.database.db_name}</span> is replaced with the snapshot's
+							copy.
+						{/if} The safety dump is kept for {preview.safety_dump_retention_days} days in Arkive's restores folder, and
 						<span class="text-text">Undo</span> loads it back.
 					</p>
 
@@ -539,6 +555,13 @@
 						</label>
 						<input id="restore-confirm" class="input font-mono max-w-sm" autocomplete="off" spellcheck="false" bind:value={typed} placeholder={preview.confirm_phrase || ''} />
 					</div>
+				{:else if preview.database.db_type === 'redis'}
+					<p class="text-sm text-text-secondary">
+						Arkive restores the Redis data file, checks its header and checksum, and saves a copy of the current data. Redis
+						can only take a new data file while it is stopped (it rewrites the file as it shuts down), and Arkive's access to
+						your shares is read-only, so you swap the file in yourself; the exact commands, including the append-only file
+						when it is on, are shown next.
+					</p>
 				{:else}
 					<p class="text-sm text-text-secondary">
 						Arkive restores and checks the file and saves a copy of the current one. Because Arkive's access to your shares

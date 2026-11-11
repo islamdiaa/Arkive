@@ -27,6 +27,8 @@ export interface RestoreOption {
   container_status: string | null;
   method: RestoreMethod;
   reason: string | null;
+  /** What a restore replaces when that is more than the named database (MongoDB whole server, Redis). */
+  scope: string | null;
   dependents: RestoreDependent[];
 }
 
@@ -47,6 +49,7 @@ export interface RestorePreview {
     db_name: string;
     host_path: string | null;
     container_detail: string | null;
+    scope: string | null;
   };
   snapshot: { id: string; full_id: string; time: string | null; target_id: string; target_name: string };
   dump: { file: string; size_bytes: number; created_at: string | null; source: 'manifest' | 'file_name' };
@@ -81,6 +84,7 @@ export interface GuidedRestore {
   db_type: string;
   db_name: string;
   host_path: string | null;
+  scope: string | null;
   target_id: string | null;
   target_name: string | null;
   snapshot_id: string | null;
@@ -192,6 +196,11 @@ export function methodLabel(method: RestoreMethod): string {
   if (method === 'load') return 'Restores in place';
   if (method === 'manual') return 'Prepared, swapped in by hand';
   return 'Not supported';
+}
+
+/** What a restore of this database replaces, for the confirmation texts. */
+export function replacedLabel(o: { db_name: string; scope?: string | null }): string {
+  return o.scope || o.db_name;
 }
 
 /** Percent of the dump streamed into the database, or null outside the load step. */
