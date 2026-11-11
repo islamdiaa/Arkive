@@ -5,7 +5,9 @@ A run that fails sends a notification. That doesn't help when runs stop happenin
 - The **freshness watchdog** checks every 15 minutes that each job has produced a good backup recently enough.
 - The **heartbeat** pings an outside monitor while everything is healthy, so that monitor alerts you when the pings stop, including when Arkive itself is down.
 
-Both are configured under **Settings → Monitoring**.
+Both are configured under **Settings → Monitoring**, together with the [shrinking-dump check](#database-health-and-shrinking-dumps).
+
+![Settings → Monitoring: the heartbeat URL with Send test ping, the Overdue after (hours) setting, and the two thresholds for shrinking database dumps](images/monitoring-settings.png)
 
 ## When a job counts as overdue
 
@@ -77,11 +79,13 @@ A backup kept only on the server it protects is lost with that server: a dead di
 
 An offsite target that no enabled job uploads to does not count; the warning tells you when you have one. Add it to a job, or leave the job's target list empty so it uploads to every enabled target.
 
-This is a warning, not an error. It does not change the system status, the overdue-backup check or the heartbeat. Channels subscribed to **No offsite copy** (`backup.no_offsite`) are notified. When Arkive can't tell where a target is, for example because DNS is down, it keeps its last answer.
+This is a warning, not an error. It does not change the system status, the overdue-backup check or the heartbeat. The [setup checklist](setup-checklist.md#3-keep-a-copy-off-this-server) has a simpler offsite step of its own, which only asks whether an enabled non-local target exists, so the two can disagree. Channels subscribed to **No offsite copy** (`backup.no_offsite`) are notified. When Arkive can't tell where a target is, for example because DNS is down, it keeps its last answer.
 
 ## Database health and shrinking dumps
 
-The **Databases** page shows the state of each database on its own: when it was last dumped successfully, how large that dump was, and what is wrong if something is.
+The **Databases** page shows the state of each database on its own: when it was last dumped successfully, how large that dump was and how the size has moved, the point in time it can be restored to, the result of its last restore drill, and what is wrong if something is.
+
+![Databases page: six demo databases with a health badge each. Four are Healthy; paperless needs attention because its last restore drill failed, and a SQLite database needs attention because its latest dump is 68% smaller than usual, with an Accept new size link](images/databases-dark.png)
 
 Arkive also compares each new dump with that database's recent ones. A dump at least 50% smaller than the median of the previous five successful dumps is flagged, the run becomes `partial`, and the usual `backup.partial` notification says which database shrank. That is what an app re-creating an empty database, a container pointed at the wrong database after an update, or a botched migration looks like. The small dump is still uploaded, and earlier snapshots keep the earlier one.
 

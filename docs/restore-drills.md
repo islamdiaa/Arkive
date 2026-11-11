@@ -30,6 +30,8 @@ To run a drill now, click **Run drill now** in the Restore Drills panel on the d
 
 Each database gets one of three results, shown in the Restore Drills panel with the reason:
 
+![The Restore Drills panel with a failed drill opened: immich and vaultwarden passed with their table counts, paperless failed with a psql error](images/restore-drill-failed.png)
+
 - **passed**: the dump restored and the check succeeded, for example "12 tables restored".
 - **failed**: the dump did not restore. Examples: the dump is truncated, the load returned an error, fewer tables came back than the dump declares, or a dump listed in the manifest is missing from the snapshot.
 - **skipped**: the dump wasn't tested. This happens for types drills don't cover (MongoDB, Redis, and the PostgreSQL roles dump), for dumps over the size limit, and when the test database couldn't be started (for example an image that needs extra settings to start). A skip is not a failure.
@@ -39,6 +41,8 @@ The drill as a whole is `failed` if any database failed, `passed` if at least on
 - A failed drill sends a **Restore drill failed** (`drill.failed`) notification listing the databases, and marks the dashboard as degraded.
 - Three drills in a row that test nothing also send `drill.failed`, titled "Restore Drills Not Testing Anything", because restores are then unproven.
 - The next drill re-tests a database that failed before anything else.
+- Each database's last drill result also appears on the **Databases** page (see [Database health](monitoring.md#database-health-and-shrinking-dumps)).
+- A passed drill completes the *Prove a restore works* step of the [setup checklist](setup-checklist.md#2-prove-a-restore-works).
 
 ## Disk space and resources
 

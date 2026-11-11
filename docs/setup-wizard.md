@@ -20,6 +20,8 @@ If Docker can't be reached, the step says so and you can continue.
 
 ## Step 3: Backup destination
 
+![Setup wizard step 3, Backup Destination: a grid of storage providers with Backblaze B2 selected and its Key ID, Application Key and Bucket Name fields below](images/setup-wizard-destination.png)
+
 Pick a storage provider and fill in its fields. **Next** stays disabled until the required fields are filled in. [Storage providers](storage-providers.md) describes the fields for each one.
 
 | Provider | Fields in the wizard |
@@ -77,4 +79,4 @@ The last step shows your **API key**, which is not shown again. Copy it into you
 
 You can rotate the key under Settings → Security. Rotating invalidates the old key, signs out every other browser, and updates `/config/.api_key`.
 
-**Go to Dashboard** finishes the wizard. Next, work through the checklist in [Quick start](quick-start.md#3-after-setup).
+**Go to Dashboard** finishes the wizard. The dashboard then shows the **Finish protecting this server** checklist: run the first backup, prove a restore works, add an offsite target and a notification channel, and save the recovery kit. [Finish protecting this server](setup-checklist.md) explains each step, and [Quick start](quick-start.md#3-after-setup) has the short version.

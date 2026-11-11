@@ -2,7 +2,7 @@
 
 Arkive backs up the Docker apps on an Unraid server. It finds the databases behind your containers, dumps each one with its own tool, and stores the dumps, your Unraid flash configuration and the folders you choose as encrypted [restic](https://restic.net/) snapshots on storage you control. After that it keeps checking that backups are still happening and that the dumps actually restore.
 
-![Arkive dashboard with system health, last backup, storage used, trust score and the last restore drill](images/dashboard-dark.png)
+![Arkive dashboard: the "Finish protecting this server" checklist with four of five steps done, then system health, last backup, storage used and the backup trust score](images/dashboard-dark.png)
 
 ## Where to start
 
@@ -10,11 +10,13 @@ Arkive backs up the Docker apps on an Unraid server. It finds the databases behi
 |----------------|------|
 | Install Arkive on Unraid | [Quick start on Unraid](quick-start.md) |
 | Understand each step of first-time setup | [Setup wizard](setup-wizard.md) |
+| Know what is left before the server counts as protected | [Finish protecting this server](setup-checklist.md) |
 | Choose and configure where backups go | [Storage providers](storage-providers.md) |
 | Get alerts when something goes wrong | [Notifications](notifications.md) and [Overdue backups and heartbeat](monitoring.md) |
 | Make sure you can recover if the server dies | [Recovery kit](recovery-kit.md) |
-| Get files or a database back | [Restoring backups](restore.md) |
+| Get files or a database back | [Restoring backups](restore.md), including the [guided database restore](restore.md#restore-one-database-guided) |
 | Prove the database dumps restore | [Restore drills](restore-drills.md) |
+| See each database's last dump, size trend and last drill | [Database health](monitoring.md#database-health-and-shrinking-dumps) |
 | Find out why a run is `partial` or a job is overdue | [Troubleshooting](troubleshooting.md) |
 | Move to a newer version | [Upgrading](upgrading.md) |
 | Decide how to expose Arkive on your network | [Security and deployment model](security.md) |
@@ -24,7 +26,7 @@ Arkive backs up the Docker apps on an Unraid server. It finds the databases behi
 Each backup job runs the same pipeline:
 
 1. **Discover.** For jobs that dump databases, Arkive lists your containers through the Docker socket and finds their databases: PostgreSQL, MariaDB/MySQL, MongoDB, SQLite and Redis.
-2. **Dump.** Each database is dumped with its native tool into `/config/dumps` (Full Backup and Database Dumps jobs).
+2. **Dump.** Each database is dumped with its native tool into `/config/dumps` (Full Backup and Database Dumps jobs). A dump much smaller than that database's recent dumps makes the run `partial` (see [Database health](monitoring.md#database-health-and-shrinking-dumps)).
 3. **Archive the flash drive.** On Unraid, `/boot/config` is archived into the same folder as `flash_<timestamp>.tar` (Full Backup and Flash Drive jobs).
 4. **Snapshot.** restic backs up the dump folder and every enabled watched directory to each storage target of the job. A copy of Arkive's own database (`arkive_self.db`) goes into the dump folder first, so it is in every snapshot too.
 5. **Apply retention.** `restic forget` applies your keep-daily, keep-weekly and keep-monthly settings on each target. The space is reclaimed by a prune that runs every Sunday at 04:00.
@@ -41,6 +43,6 @@ Because every job uploads the same set of paths, every snapshot is a complete re
 
 ## Try the interface with demo data
 
-Add `?demo=true` to any Arkive page, for example `http://your-server:8200/?demo=true`. The web interface then uses sample data built into the frontend (containers, databases, snapshots, restore drills) instead of your server's API, so you can look around without signing in. Nothing you do in demo mode changes your configuration. Reload the page without the parameter to leave demo mode.
+Add `?demo=true` to any Arkive page, for example `http://your-server:8200/?demo=true`. The web interface then uses sample data built into the frontend (containers, databases, snapshots, restore drills, the setup checklist) instead of your server's API, so you can look around without signing in. Nothing you do in demo mode changes your configuration. Reload the page without the parameter to leave demo mode.
 
-The screenshots in this guide and in the README were taken in demo mode.
+The screenshots in this guide and in the README were taken in demo mode. `frontend/scripts/docs-screenshots.sh` takes them again after an interface change.

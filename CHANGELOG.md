@@ -9,8 +9,14 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- **Guided restore for MongoDB and Redis.** MongoDB is restored in place like PostgreSQL and MariaDB: Arkive checks every collection's checksum in the archive first, takes a safety dump, drops the database (or, for a server dumped whole, every database except `admin`, `config` and `local`) and loads the archive with `mongorestore`; Undo puts the safety dump back the same way. The MongoDB password never appears on a command line. Redis is prepared like SQLite: Arkive restores the `.rdb` file, checks its checksum and that the running Redis can read it, saves the current data and gives you the exact steps to swap it in, including a new append-only file when `appendonly` is on (moving the old one aside alone makes Redis start empty).
+
 ### Changed
 - Backend dependencies updated: sse-starlette 3.6 (live event and log streams), FastAPI 0.162, uvicorn 0.54, pydantic 2.14, docker 7.2, python-multipart 0.0.33 and click 8.5.1; test and lint tooling moves to pytest 9.2, ruff 0.17.4 and bandit 1.9.4.
+
+### Fixed
+- The manual MongoDB and Redis restore steps in the restore guide: a `.archive.gz` dump is decompressed with `gunzip -c` (not `mongorestore --gzip`), and Redis with the append-only file needs a new one made from the dump.
 
 ## [0.5.0] - 2026-11-10
 

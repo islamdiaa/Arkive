@@ -484,19 +484,52 @@ const GUIDED_MANUAL_STEPS: Array<[string, string]> = [
   ['safety_dump', 'Take a safety dump of the current database'],
   ['instructions', 'Swap the file in by hand'],
 ];
+const GUIDED_REDIS_STEPS: Array<[string, string]> = [['check_container', 'Check the database container'], ...GUIDED_MANUAL_STEPS];
 const GUIDED_DURATION_MS = 6000;
+// Demo-only extra: a MongoDB server without MONGO_INITDB_DATABASE (discovered as "admin": the whole server).
+const DEMO_GUIDED_EXTRA = [{ container_name: 'unifi-db', db_type: 'mongodb', db_name: 'admin', host_path: null }];
 
 const DEMO_GUIDED_DEPENDENTS: Record<string, string[]> = {
   'immich-postgres': ['immich-server'],
   'vaultwarden-db': ['vaultwarden'],
   'paperless-db': ['paperless-ngx'],
   'nextcloud-mariadb': ['nextcloud'],
+  'unifi-db': ['unifi-network-application'],
+  'authelia-redis': ['authelia'],
 };
 
 function _guidedMethod(dbType: string): 'load' | 'manual' | 'unsupported' {
-  if (dbType === 'postgres' || dbType === 'mariadb' || dbType === 'mysql') return 'load';
-  if (dbType === 'sqlite') return 'manual';
+  if (dbType === 'postgres' || dbType === 'mariadb' || dbType === 'mysql' || dbType === 'mongodb') return 'load';
+  if (dbType === 'sqlite' || dbType === 'redis') return 'manual';
   return 'unsupported';
+}
+
+/** Same as restore_scope() in services/guided_restore.py. */
+function _guidedScope(dbType: string, dbName: string): string | null {
+  if (dbType === 'mongodb' && dbName === 'admin') return 'every database on the server except admin, config and local';
+  if (dbType === 'redis') return 'the whole Redis data set (every logical database)';
+  return null;
+}
+
+function _guidedSteps(method: string, dbType: string): Array<[string, string]> {
+  if (method !== 'manual') return GUIDED_LOAD_STEPS;
+  return dbType === 'redis' ? GUIDED_REDIS_STEPS : GUIDED_MANUAL_STEPS;
+}
+
+function _guidedExt(dbType: string): string {
+  if (dbType === 'sqlite') return 'sqlite3';
+  if (dbType === 'mongodb') return 'archive';
+  if (dbType === 'redis') return 'rdb';
+  return 'sql';
+}
+
+function _guidedDetail(dbType: string): string | null {
+  if (dbType === 'mongodb') {
+    return 'MongoDB 8.0.4, logged in as root; every database except admin, config and local is replaced (now on the server: ace, ace_stat); users and roles are kept as they are';
+  }
+  if (dbType === 'redis') return 'Redis 7.4.1; data file /mnt/user/appdata/authelia-redis/dump.rdb; append-only file on (appendonlydir), rebuilt from the restored data';
+  if (dbType === 'sqlite') return null;
+  return 'psql connects as postgres; 3 open session(s) will be disconnected';
 }
 
 function _guidedDependents(container: string) {
@@ -505,7 +538,7 @@ function _guidedDependents(container: string) {
 
 function _guidedOptions(): any {
   return {
-    databases: DEMO_DATABASES.databases.map((d) => {
+    databases: [...DEMO_DATABASES.databases, ...DEMO_GUIDED_EXTRA].map((d) => {
       const method = _guidedMethod(d.db_type);
       return {
         container_name: d.container_name,
@@ -514,7 +547,8 @@ function _guidedOptions(): any {
         host_path: d.host_path,
         container_status: 'running',
         method,
-        reason: method === 'unsupported' ? `Guided restore does not support ${d.db_type} yet.` : null,
+        reason: method === 'unsupported' ? `Guided restore does not support ${d.db_type}.` : null,
+        scope: _guidedScope(d.db_type, d.db_name),
         dependents: _guidedDependents(d.container_name),
       };
     }),
@@ -522,12 +556,12 @@ function _guidedOptions(): any {
 }
 
 function _guidedDumpFile(container: string, db: string, dbType: string): string {
-  return `${container}_${db}-1a2b3c4d_20261109_030000.${dbType === 'sqlite' ? 'sqlite3' : 'sql'}`;
+  return `${container}_${db}-1a2b3c4d_20261109_030000.${_guidedExt(dbType)}`;
 }
 
 function _mockGuidedPreview(data: any): any {
   const method = _guidedMethod(data?.db_type);
-  const steps = method === 'manual' ? GUIDED_MANUAL_STEPS : GUIDED_LOAD_STEPS;
+  const steps = _guidedSteps(method, data?.db_type);
   const snap = DEMO_SNAPSHOTS.snapshots.find((s) => s.id === data?.snapshot_id) || DEMO_SNAPSHOTS.snapshots[0];
   const target = DEMO_TARGETS.targets.find((t) => t.id === snap.target_id);
   const dependents = _guidedDependents(data?.container_name);
@@ -538,7 +572,8 @@ function _mockGuidedPreview(data: any): any {
       db_type: data?.db_type,
       db_name: data?.db_name,
       host_path: data?.host_path ?? null,
-      container_detail: method === 'load' ? 'psql connects as postgres; 3 open session(s) will be disconnected' : null,
+      container_detail: _guidedDetail(data?.db_type),
+      scope: _guidedScope(data?.db_type, data?.db_name),
     },
     snapshot: { id: snap.id, full_id: snap.full_id, time: snap.time, target_id: snap.target_id, target_name: target?.name || snap.target_id },
     dump: { file: _guidedDumpFile(data?.container_name, data?.db_name, data?.db_type), size_bytes: 214748364, created_at: snap.time, source: 'manifest' },
@@ -559,7 +594,7 @@ const DEMO_GUIDED_ORDER: string[] = [];
 function _guidedRecord(kind: 'restore' | 'undo', data: any, parent?: any): any {
   const id = `demo${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
   const method = _guidedMethod(data.db_type);
-  const steps = method === 'manual' ? GUIDED_MANUAL_STEPS : GUIDED_LOAD_STEPS;
+  const steps = _guidedSteps(method, data.db_type);
   const record = {
     id,
     kind,
@@ -571,6 +606,7 @@ function _guidedRecord(kind: 'restore' | 'undo', data: any, parent?: any): any {
     db_type: data.db_type,
     db_name: data.db_name,
     host_path: data.host_path ?? null,
+    scope: _guidedScope(data.db_type, data.db_name),
     target_id: kind === 'undo' ? null : data.target_id,
     target_name: kind === 'undo' ? null : DEMO_TARGETS.targets.find((t) => t.id === data.target_id)?.name ?? null,
     snapshot_id: kind === 'undo' ? null : data.snapshot_id,
@@ -620,9 +656,25 @@ function _guidedAdvance(record: any): any {
     record.completed_at = new Date().toISOString();
     record.duration_seconds = Math.round(GUIDED_DURATION_MS / 1000);
     record.stopped_containers = [...record.stop_containers];
-    const safetyPath = `/config/restores/guided-${record.id}/safety/${record.container_name}_${record.db_name}-9f8e7d6c_20261109_120000.${record.method === 'manual' ? 'sqlite3' : 'sql'}`;
+    const safetyPath = `/config/restores/guided-${record.id}/safety/${record.container_name}_${record.db_name}-9f8e7d6c_20261109_120000.${_guidedExt(record.db_type)}`;
     record.safety_dump = { file: safetyPath.split('/').pop(), path: safetyPath, size_bytes: 209715200, available: true };
-    if (record.method === 'manual') {
+    if (record.method === 'manual' && record.db_type === 'redis') {
+      record.status = 'action_required';
+      const dir = `/mnt/user/appdata/${record.container_name}`;
+      const restored = `/mnt/user/appdata/arkive/restores/guided-${record.id}/restored/${record.dump_file}`;
+      const safety = `/mnt/user/appdata/arkive/restores/guided-${record.id}/safety/${safetyPath.split('/').pop()}`;
+      record.instructions = [
+        { text: `Stop the ${record.container_name} container. Redis writes its data file as it shuts down, so the file can only be replaced once it has stopped:`, command: `docker stop ${record.container_name}` },
+        { text: 'Keep a copy of the current data file next to it:', command: `if [ -e ${dir}/dump.rdb ]; then cp -a ${dir}/dump.rdb ${dir}/dump.rdb".before-restore-$(date +%Y%m%d-%H%M%S)"; fi` },
+        { text: 'Redis has the append-only file turned on and loads it instead of the data file, so move the current append-only folder aside:', command: `if [ -e ${dir}/appendonlydir ]; then mv ${dir}/appendonlydir ${dir}/appendonlydir".before-restore-$(date +%Y%m%d-%H%M%S)"; fi` },
+        { text: 'Copy the restored data file over the current one:', command: `cp ${restored} ${dir}/dump.rdb` },
+        { text: 'Create a new append-only folder that starts from the restored data:', command: `mkdir ${dir}/appendonlydir && cp ${restored} ${dir}/appendonlydir/appendonly.aof.1.base.rdb && printf 'file %s seq 1 type b\\n' appendonly.aof.1.base.rdb > ${dir}/appendonlydir/appendonly.aof.manifest` },
+        { text: 'Give the files back to the user Redis runs as:', command: `chown -R 999:1000 ${dir}/dump.rdb ${dir}/appendonlydir` },
+        { text: `Start the ${record.container_name} container again:`, command: `docker start ${record.container_name}` },
+        { text: `Check that the keys are back. If Redis does not start, docker logs ${record.container_name} says why, and the copies ending in .before-restore-<date>-<time> hold what was there before:`, command: `docker exec ${record.container_name} redis-cli INFO keyspace` },
+        { text: `Arkive also saved the data as it was just before this restore. To go back, run the same steps again with this file in place of ${restored}:`, command: safety },
+      ];
+    } else if (record.method === 'manual') {
       record.status = 'action_required';
       const live = record.host_path || '/mnt/user/appdata/app/app.db';
       const restored = `/mnt/user/appdata/arkive/restores/guided-${record.id}/restored/${record.dump_file}`;

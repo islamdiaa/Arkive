@@ -13,6 +13,8 @@ A storage target is where Arkive keeps a restic repository. Arkive supports seve
 
 ### Adding, testing and removing targets
 
+![Settings → Storage Targets with two demo targets, Backblaze B2 and SFTP, each with its snapshot count, size, Test, edit and delete buttons](images/storage-targets.png)
+
 Add a target in the [setup wizard](setup-wizard.md) or under **Settings → Storage Targets → Add Target**. Before saving, Arkive trims surrounding whitespace from every value and rejects control characters. Bucket names, regions, key IDs, access keys, usernames, endpoints and client IDs must not contain spaces.
 
 Each target card has:
@@ -64,7 +66,7 @@ Backs up to a folder on the Unraid server, or to a network share mounted on it.
 - Relative paths, `..`, and system folders (`/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/boot`, `/proc`, `/sys`, `/dev`, `/var/run`, `/root`) are rejected.
 - A network share (SMB or NFS) works if it is mounted on the host and that host path is mapped into the container.
 - If a watched directory contains the repository folder, Arkive leaves the repository out of its own snapshots.
-- A local target on the same array protects against deleted files and corrupted apps, not against losing the server. Add an off-site target as well.
+- A local target on the same array protects against deleted files and corrupted apps, not against losing the server. Add an off-site target as well. The dashboard warns when every target your jobs upload to is on this server (see [No offsite copy](monitoring.md#no-offsite-copy)), and the [setup checklist](setup-checklist.md#3-keep-a-copy-off-this-server) never counts a local target as offsite.
 
 ## SFTP
 

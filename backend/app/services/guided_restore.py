@@ -23,15 +23,32 @@ The operation holds the backup lock from start to finish (no backup, dump,
 drill or other restore runs meanwhile) and is recorded in ``guided_restores``
 with a per-step log.
 
+MongoDB is loaded the same way, with ``mongorestore --archive --drop`` reading
+the archive from stdin. The archive is checked from end to end first (every
+collection's CRC and end marker; see dump_checks.py), the databases being
+restored are dropped before the load (``--drop`` alone would keep collections
+that are not in the dump), and admin, config and local are never dropped or
+restored. Discovery names a MongoDB server without MONGO_INITDB_DATABASE
+"admin", and the dumper dumps the whole server, so restoring "admin" means
+every database except admin, config and local. The safety dump is a
+``mongodump --archive`` of exactly what is dropped, so undo is the same
+operation. The password never appears in a process listing: mongodump and
+mongosh read it from stdin, mongorestore (whose stdin is the archive) from a
+file in a private temporary folder in the container's /tmp.
+
 SQLite databases are files under /mnt/user, which Arkive can (and should) have
 mounted read-only, so Arkive never writes them: it restores and integrity-checks
 the file, keeps a safety copy of the current one and returns the exact steps to
-swap it in (status ``action_required``).
+swap it in (status ``action_required``). Redis is handled the same way: its RDB
+file can only be replaced while Redis is stopped (it rewrites the file as it
+shuts down), and with the append-only file on, Redis loads that instead of the
+RDB, so the steps rebuild it from the restored RDB.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gzip
 import itertools
 import json
 import logging
@@ -44,6 +61,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zlib
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -58,7 +76,21 @@ from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 from app.models.discovery import DiscoveredDatabase
 from app.services.backup_engine import ResticError
-from app.services.db_dumper import DBDumper, dump_prefix, legacy_dump_prefix, postgres_user_from_env
+from app.services.db_dumper import (
+    DBDumper,
+    dump_prefix,
+    legacy_dump_prefix,
+    postgres_user_from_env,
+    redis_auth_env,
+)
+from app.services.dump_checks import (
+    MONGO_SYSTEM_DATABASES,
+    DumpCheckError,
+    MongoArchive,
+    read_mongo_archive,
+    read_rdb,
+    redis_reads_rdb,
+)
 from app.services.lock_manager import BackupLockManager
 from app.services.restore_drill import (
     DUMP_MANIFEST_NAME,
@@ -96,9 +128,20 @@ METHOD_LOAD = "load"
 METHOD_MANUAL = "manual"
 METHOD_UNSUPPORTED = "unsupported"
 
-LOAD_TYPES = frozenset({"postgres", "mariadb"})
-MANUAL_TYPES = frozenset({"sqlite"})
+LOAD_TYPES = frozenset({"postgres", "mariadb", "mongodb"})
+MANUAL_TYPES = frozenset({"sqlite", "redis"})
 MYSQL_SYSTEM_SCHEMAS = frozenset({"mysql", "information_schema", "performance_schema", "sys"})
+# Discovery's name for a MongoDB server without MONGO_INITDB_DATABASE; its dump
+# holds the whole server.
+MONGO_WHOLE_SERVER = "admin"
+# Not allowed in MongoDB database names (the Windows set is a superset of the
+# Unix one); none of them can then need escaping in an --nsInclude pattern.
+_MONGO_BAD_NAME_CHARS = frozenset('/\\. "$*<>:|?')
+# The database container's own /tmp (never Arkive's): mongorestore's password
+# file goes into a private mktemp -d folder there.
+_CONTAINER_TMP = "/tmp"  # nosec B108 - a path inside the database container
+_MONGO_TMP_RE = re.compile(r"^/tmp/arkive-restore\.[A-Za-z0-9]+$")
+_OWNER_RE = re.compile(r"^\d+:\d+$")
 
 # What the dumper can dump (DBDumper._sanitize_identifier), minus a leading "-".
 _MYSQL_NAME_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]*$")
@@ -107,7 +150,13 @@ _CONTAINER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
 _SAFE_FILE_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _DUMP_FILE_RE = re.compile(r"^(?P<prefix>.+)_(?P<ts>\d{8}_\d{6})\.(?P<ext>[A-Za-z0-9.]+)$")
 _MYSQL_USE_RE = re.compile(rb"^USE `((?:[^`]|``)+)`;")
-_DUMP_EXTENSIONS = {"postgres": ("sql", "sql.gz"), "mariadb": ("sql", "sql.gz"), "sqlite": ("sqlite3",)}
+_DUMP_EXTENSIONS = {
+    "postgres": ("sql", "sql.gz"),
+    "mariadb": ("sql", "sql.gz"),
+    "sqlite": ("sqlite3",),
+    "mongodb": ("archive", "archive.gz"),
+    "redis": ("rdb",),
+}
 
 _STEP_LABELS = {
     "check_container": "Check the database container",
@@ -134,6 +183,9 @@ _LOAD_STEPS = (
 )
 _UNDO_STEPS = ("check_container", "verify_dump", "safety_dump", "stop_apps", "load", "verify", "start_apps")
 _MANUAL_STEPS = ("locate_dump", "restore_dump", "verify_dump", "safety_dump", "instructions")
+# Redis: the container is checked first (where its data lives, the append-only
+# file, the Redis version that has to read the restored file).
+_REDIS_STEPS = ("check_container", *_MANUAL_STEPS)
 # From these steps on, stopping an operation can leave apps stopped or the
 # database half-loaded; before them nothing outside the work dir has changed.
 _CHANGING_STEPS = frozenset({"stop_apps", "load", "verify", "start_apps"})
@@ -156,6 +208,10 @@ _PG_COUNT_SQL = (
 
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
 
 def _mb(size_bytes: int) -> int:
@@ -255,12 +311,48 @@ def restore_method(db_type: str) -> tuple[str, str | None]:
         return METHOD_LOAD, None
     if db_type in MANUAL_TYPES:
         return METHOD_MANUAL, None
-    tool = {"mongodb": "mongorestore", "redis": "the Redis RDB file"}.get(db_type)
-    hint = f" with {tool}" if tool else ""
     return METHOD_UNSUPPORTED, (
-        f"Guided restore does not support {db_type or 'this database type'} yet. Restore the dump "
-        f"from the snapshot browser (it lands in /config/restores) and load it{hint} by hand."
+        f"Guided restore does not support {db_type or 'this database type'} (it covers PostgreSQL, "
+        "MariaDB/MySQL, MongoDB, SQLite and Redis). Restore the dump from the snapshot browser (it lands in "
+        "/config/restores) and load it by hand; the restore plan lists the commands."
     )
+
+
+def steps_for(method: str, db_type: str) -> tuple[str, ...]:
+    if method == METHOD_LOAD:
+        return _LOAD_STEPS
+    return _REDIS_STEPS if db_type == "redis" else _MANUAL_STEPS
+
+
+def restore_scope(db_type: str, db_name: str) -> str | None:
+    """What a restore of this database replaces, when that is more than the one database it names."""
+    if normalize_db_type(db_type) == "mongodb" and db_name == MONGO_WHOLE_SERVER:
+        return "every database on the server except admin, config and local"
+    if normalize_db_type(db_type) == "redis":
+        return "the whole Redis data set (every logical database)"
+    return None
+
+
+def valid_mongo_dbname(name: str) -> bool:
+    if not name or name.startswith("-") or len(name.encode()) >= 64:
+        return False
+    return not any(ch in _MONGO_BAD_NAME_CHARS or ord(ch) < 32 or ord(ch) == 127 for ch in name)
+
+
+def mongo_credentials(env: dict[str, str]) -> tuple[str | None, str | None]:
+    """User/password the way DBDumper logs in for mongodump (both or neither)."""
+    user = env.get("MONGO_INITDB_ROOT_USERNAME")
+    password = env.get("MONGO_INITDB_ROOT_PASSWORD")
+    if user and password:
+        return user, password
+    return None, None
+
+
+def mongo_namespace_args(db_name: str) -> list[str]:
+    """mongorestore filters: one database, or everything but admin/config/local (whole server)."""
+    if db_name == MONGO_WHOLE_SERVER:
+        return [f"--nsExclude={name}.*" for name in sorted(MONGO_SYSTEM_DATABASES)]
+    return [f"--nsInclude={db_name}.*"]
 
 
 def pg_ident(name: str) -> str:
@@ -315,6 +407,11 @@ def validate_ref(ref: DatabaseRef) -> None:
         path = ref.host_path or ""
         if not path.startswith("/") or ".." in Path(path).parts or os.path.normpath(path) != path.rstrip("/"):
             raise GuidedRestoreError("The SQLite database has no valid absolute path")
+    elif ref.db_type == "mongodb":
+        if ref.db_name in MONGO_SYSTEM_DATABASES and ref.db_name != MONGO_WHOLE_SERVER:
+            raise GuidedRestoreError(f"{ref.db_name} is a MongoDB system database; restoring it is not supported")
+        if not valid_mongo_dbname(ref.db_name):
+            raise GuidedRestoreError(f"Database name {ref.db_name!r} cannot be restored safely")
 
 
 def postgres_prelude(db_name: str, exists: bool) -> bytes:
@@ -545,6 +642,7 @@ class StdinExecResult:
     stdout: str
     stderr: str
     write_error: str | None = None
+    reader_error: str | None = None
 
 
 def exec_with_stdin(
@@ -555,13 +653,17 @@ def exec_with_stdin(
     progress: Callable[[int], None] | None = None,
     finish_timeout: float = 60.0,
     poll_seconds: float = 0.5,
+    stdout_sink: Callable[[bytes], None] | None = None,
+    stdout_limit: int = 64 * 1024,
 ) -> StdinExecResult:
     """Run ``cmd`` in ``container`` with ``chunks`` streamed to its stdin.
 
     The equivalent of ``docker exec -i container cmd < file`` through the
     low-level exec API: stdout/stderr are drained by a reader thread (only a
-    tail is kept) while the input is written, the write side is shut down for
-    EOF, and the real exit code comes from ``exec_inspect``. No shell.
+    tail is kept, or stdout goes to ``stdout_sink``) while the input is
+    written, the write side is shut down for EOF, and the real exit code comes
+    from ``exec_inspect``. No shell. When the sink raises, reading stops and
+    the error is in ``reader_error``; the command then fails writing its output.
     """
     api = container.client.api
     exec_id = api.exec_create(container.id, cmd, stdin=True, stdout=True, stderr=True, environment=env or None)["Id"]
@@ -573,15 +675,27 @@ def exec_with_stdin(
         raw.settimeout(None)
     except OSError:
         pass
-    out, err = _Tail(), _Tail()
+    out, err = _Tail(stdout_limit), _Tail()
     reader_errors: list[BaseException] = []
 
     def _read() -> None:
         try:
             for stream_id, data in frames_iter(sock, tty=False):
-                (err if stream_id == STDERR else out).add(data)
+                if stream_id == STDERR:
+                    err.add(data)
+                elif stdout_sink is not None:
+                    stdout_sink(data)
+                else:
+                    out.add(data)
         except BaseException as exc:  # noqa: BLE001 - reported below
             reader_errors.append(exc)
+            if stdout_sink is not None:
+                # Stop the command instead of letting it block on a full pipe.
+                for closable in (raw, sock):
+                    try:
+                        closable.shutdown(socket.SHUT_RDWR)
+                    except (OSError, AttributeError):
+                        pass
 
     reader = threading.Thread(target=_read, name="guided-restore-exec-reader", daemon=True)
     reader.start()
@@ -620,9 +734,12 @@ def exec_with_stdin(
             break
         time.sleep(poll_seconds)
     stderr = err.text()
-    if reader_errors and not stderr:
-        stderr = f"reading the command output failed: {reader_errors[0]}"
-    return StdinExecResult(exit_code=exit_code, stdout=out.text(), stderr=stderr, write_error=write_error)
+    reader_error = (str(reader_errors[0]) or type(reader_errors[0]).__name__) if reader_errors else None
+    if reader_error and not stderr:
+        stderr = f"reading the command output failed: {reader_error}"
+    return StdinExecResult(
+        exit_code=exit_code, stdout=out.text(), stderr=stderr, write_error=write_error, reader_error=reader_error
+    )
 
 
 def _exec(container, cmd: list[str], env: dict[str, str] | None = None) -> tuple[int | None, str, str]:
@@ -879,8 +996,579 @@ class _MySQLDriver:
         return int(numbers[-1]) if code == 0 and numbers else None
 
 
+@dataclass
+class PreparedArchive:
+    """A checked mongodump archive, ready to stream into mongorestore."""
+
+    path: Path
+    size_bytes: int
+    archive: MongoArchive
+
+
+# mongosh scripts. Each prints one "ARKIVE_JSON <json>" line; __arkive holds
+# the arguments (JSON, so names need no quoting of their own).
+_MONGO_PREFLIGHT_JS = """
+let hello = null;
+try { hello = db.adminCommand({hello: 1}); } catch (e) { hello = null; }
+if (!hello || !hello.ok) { hello = db.adminCommand({isMaster: 1}); }
+const names = db.adminCommand({listDatabases: 1, nameOnly: true}).databases.map((d) => d.name);
+__out({version: db.version(), msg: hello.msg || null, setName: hello.setName || null,
+       writable: !!(hello.isWritablePrimary || hello.ismaster), databases: names});
+"""
+
+_MONGO_DROP_JS = """
+const system = ["admin", "config", "local"];
+const names = __arkive.targets !== null ? __arkive.targets
+  : db.adminCommand({listDatabases: 1, nameOnly: true}).databases.map((d) => d.name)
+      .filter((n) => !system.includes(n));
+const dropped = [];
+for (const name of names) {
+  if (system.includes(name)) { throw new Error("refusing to drop " + name); }
+  const result = db.getSiblingDB(name).dropDatabase();
+  if (!result || !result.ok) { throw new Error("dropDatabase " + name + " failed: " + JSON.stringify(result)); }
+  dropped.push(name);
+}
+__out({dropped: dropped});
+"""
+
+_MONGO_COUNT_JS = """
+const out = {};
+for (const name of __arkive.databases) {
+  const database = db.getSiblingDB(name);
+  out[name] = {};
+  for (const info of database.getCollectionInfos({type: "collection"})) {
+    if (info.name.startsWith("system.")) { continue; }
+    out[name][info.name] = database.getCollection(info.name).estimatedDocumentCount();
+  }
+}
+__out(out);
+"""
+
+_MONGO_FAILED_DOCS_RE = re.compile(r"(\d+) document\(s\) failed to restore")
+
+
+def _missing_program(code: int | None, output: str) -> bool:
+    return code in (126, 127) or "executable file not found" in output or "no such file or directory" in output.lower()
+
+
+class _MongoDriver:
+    """mongorestore over stdin, after dropping what the restore replaces.
+
+    Single database (MONGO_INITDB_DATABASE): that database. Whole server
+    (discovered as "admin"): every database except admin, config and local,
+    including ones created since the backup, so the result is the server as it
+    was and undo (the safety dump of exactly those databases) is exact.
+    Users and roles live in admin and are left as they are.
+    """
+
+    db_type = "mongodb"
+    tool = "mongorestore"
+    original_owner = None
+    # The safety dump is always taken: for a database that does not exist yet
+    # it is empty, and undo then removes what the restore created.
+    exists = True
+    disk_check_bytes = 64 * MIB
+
+    def __init__(self, ref: DatabaseRef, owner_hint: str | None = None):
+        self.ref = ref
+        self.whole = ref.db_name == MONGO_WHOLE_SERVER
+        self.user: str | None = None
+        self.password: str | None = None
+        self.server_version: str | None = None
+        self.current_databases: list[str] = []
+        # False from the moment the databases may have been dropped.
+        self.untouched = True
+        self.dropped: list[str] = []
+        self.notes: list[str] = []
+        self.warnings: list[str] = []
+
+    @property
+    def targets(self) -> list[str] | None:
+        return None if self.whole else [self.ref.db_name]
+
+    def prelude(self) -> bytes:
+        return b""  # the databases are dropped by run_load, not by the stream
+
+    def _auth_args(self) -> list[str]:
+        if self.user is None:
+            return []
+        return [f"--username={self.user}", "--authenticationDatabase=admin"]
+
+    def _password_yaml(self) -> bytes:
+        # A JSON string is a valid YAML double-quoted scalar.
+        return f"password: {json.dumps(self.password)}\n".encode()
+
+    def _mongosh(self, container, body: str, args: dict | None = None) -> dict:
+        script = ""
+        if self.user is not None:
+            script += f"db.getSiblingDB('admin').auth({json.dumps(self.user)}, {json.dumps(self.password)});\n"
+        script += f"const __arkive = {json.dumps(args or {})};\n"
+        script += "function __out(value) { print('ARKIVE_JSON ' + JSON.stringify(value)); }\n"
+        script += body
+        result = exec_with_stdin(
+            container,
+            ["mongosh", "--quiet", "--norc", "--file=/dev/stdin"],
+            None,
+            [script.encode()],
+            stdout_limit=8 * MIB,
+        )
+        output = result.stderr or result.stdout
+        if result.exit_code != 0:
+            if _missing_program(result.exit_code, output):
+                raise _StepFailed(
+                    f"mongosh is not available in {self.ref.container_name} (MongoDB images before 6.0 only have "
+                    "the legacy mongo shell, which guided restore does not use)"
+                )
+            raise _StepFailed(
+                f"mongosh in {self.ref.container_name} failed: {_clip(output) or f'exit {result.exit_code}'}"
+            )
+        for line in reversed(result.stdout.splitlines()):
+            if line.startswith("ARKIVE_JSON "):
+                try:
+                    value = json.loads(line[len("ARKIVE_JSON ") :])
+                except ValueError:
+                    break
+                if isinstance(value, dict):
+                    return value
+                break
+        raise _StepFailed(f"unexpected mongosh output: {_clip(result.stdout or output, 200)}")
+
+    def preflight(self, container) -> str:
+        user, password = mongo_credentials(_container_env(container))
+        if user is not None and not _ROLE_RE.match(user):
+            raise _StepFailed(f"the MongoDB user {user!r} from the container environment is not supported")
+        self.user, self.password = user, password
+        for tool in ("mongorestore", "mongodump"):
+            code, out, err = _exec(container, [tool, "--version"])
+            if code != 0:
+                detail = _clip(err or out) or f"exit code {code}"
+                raise _StepFailed(f"{tool} is not available in {self.ref.container_name}: {detail}")
+        state = self._mongosh(container, _MONGO_PREFLIGHT_JS)
+        if state.get("msg") == "isdbgrid":
+            raise _StepFailed(
+                f"{self.ref.container_name} is a mongos router (sharded cluster); guided restore only "
+                "restores a standalone server or a replica set primary"
+            )
+        set_name = state.get("setName")
+        if set_name and not state.get("writable"):
+            raise _StepFailed(
+                f"{self.ref.container_name} is not the primary of replica set {set_name}; restore on the primary"
+            )
+        self.server_version = str(state.get("version") or "") or None
+        names = [str(n) for n in state.get("databases") or []]
+        self.current_databases = sorted(n for n in names if n not in MONGO_SYSTEM_DATABASES)
+        detail = f"MongoDB {self.server_version or '(unknown version)'}"
+        detail += f", logged in as {user}" if user else ", no login"
+        if set_name:
+            detail += f"; primary of replica set {set_name}"
+        if self.whole:
+            current = ", ".join(self.current_databases) or "none"
+            detail += (
+                f"; every database except admin, config and local is replaced (now on the server: {current}); "
+                "users and roles are kept as they are"
+            )
+        elif self.ref.db_name not in names:
+            detail += f"; {self.ref.db_name} does not exist yet and will be created"
+        return detail
+
+    def check_archive(self, archive: MongoArchive, kind: str) -> str:
+        if self.whole:
+            databases = sorted(archive.user_databases())
+            if not databases and kind == "restore":
+                raise _StepFailed(
+                    "the dump holds no databases besides admin, config and local; there is nothing to restore"
+                )
+        else:
+            databases = [self.ref.db_name] if self.ref.db_name in archive.databases else []
+            if not databases and kind == "restore":
+                raise _StepFailed(f"the dump has no database {self.ref.db_name}; refusing to load it")
+        if not databases and self.whole:
+            return "the server had no databases besides admin, config and local; undo removes the restored ones"
+        if not databases:
+            return "the database did not exist before the restore; undo removes it"
+        collections = archive.counted(databases)
+        documents = sum(c.documents for c in collections)
+        return f"{len(collections)} collections, {documents} documents in {', '.join(databases)}"
+
+    def safety_dump(self, container, directory: Path, stem: str, min_free_bytes: int) -> tuple[str, int, str]:
+        """mongodump --archive of what the restore replaces, checked like any dump."""
+        directory.mkdir(parents=True, exist_ok=True)
+        final = directory / f"{stem}.archive"
+        partial = directory / f".{final.name}.{uuid.uuid4().hex[:8]}.partial"
+        cmd = ["mongodump", "--archive", *self._auth_args()]
+        stdin = b""
+        if self.password is not None:
+            cmd.append("--config=/dev/stdin")
+            stdin = self._password_yaml()
+        if not self.whole:
+            cmd.append(f"--db={self.ref.db_name}")
+        written = 0
+        next_check = 0
+        try:
+            with open(partial, "wb") as fh:
+
+                def sink(data: bytes) -> None:
+                    nonlocal written, next_check
+                    fh.write(data)
+                    written += len(data)
+                    if min_free_bytes and written >= next_check:
+                        next_check = written + self.disk_check_bytes
+                        if shutil.disk_usage(directory).free < min_free_bytes:
+                            raise OSError(f"less than {_mb(min_free_bytes)} MB of free disk space left in {directory}")
+
+                result = exec_with_stdin(container, cmd, None, [stdin], stdout_sink=sink)
+            if result.reader_error:
+                raise _StepFailed(f"mongodump stopped: {result.reader_error}")
+            if result.exit_code != 0:
+                raise _StepFailed(
+                    f"mongodump exited with code {result.exit_code}: {_clip(result.stderr) or 'no output'}"
+                )
+            try:
+                archive = read_mongo_archive(partial)
+            except DumpCheckError as exc:
+                raise _StepFailed(f"the safety dump is not complete: {exc}") from exc
+            os.replace(partial, final)
+        finally:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+        databases = sorted(archive.user_databases() if self.whole else archive.databases)
+        what = ", ".join(databases) if databases else "no data yet"
+        return str(final), final.stat().st_size, what
+
+    def _password_file(self, container) -> tuple[str | None, list[str]]:
+        """Where mongorestore reads the password: a private file in the container's /tmp.
+
+        mongorestore's stdin is the archive, so its --config file must be a
+        real file. It goes into a fresh mktemp -d folder (mode 0700) under the
+        container's own /tmp, never into a mounted folder, and is removed
+        after the load. Without such a folder the password goes on the command
+        line (visible in process listings while mongorestore runs), and the
+        load step says so.
+        """
+        if self.password is None:
+            return None, []
+        mounts = (getattr(container, "attrs", None) or {}).get("Mounts") or []
+        tmp_is_mounted = any(
+            _CONTAINER_TMP == os.path.normpath(str(m.get("Destination") or ""))
+            or _CONTAINER_TMP.startswith(os.path.normpath(str(m.get("Destination") or "")).rstrip("/") + "/")
+            for m in mounts
+            if m.get("Destination")
+        )
+        if not tmp_is_mounted:
+            code, out, _err = _exec(container, ["mktemp", "-d", f"{_CONTAINER_TMP}/arkive-restore.XXXXXXXXXX"])
+            folder = out.strip()
+            if code == 0 and _MONGO_TMP_RE.match(folder):
+                result = exec_with_stdin(
+                    container, ["cp", "/dev/stdin", f"{folder}/config.yaml"], None, [self._password_yaml()]
+                )
+                if result.exit_code == 0:
+                    self.notes.append("password read from a private file in the container's /tmp")
+                    return folder, [f"--config={folder}/config.yaml"]
+                self._remove_folder(container, folder)
+        self.notes.append("password passed on the mongorestore command line (no private /tmp in the container)")
+        return None, [f"--password={self.password}"]
+
+    def _remove_folder(self, container, folder: str) -> None:
+        try:
+            code, out, err = _exec(container, ["rm", "-rf", "--", folder])
+        except Exception as exc:
+            code, out, err = None, "", str(exc)
+        if code != 0:
+            self.warnings.append(
+                f"could not remove {folder} (it holds the MongoDB password) from {self.ref.container_name}: "
+                f"{_clip(err or out, 200)}"
+            )
+
+    def run_load(self, container, chunks, progress) -> StdinExecResult:
+        folder, password_args = self._password_file(container)
+        try:
+            self.untouched = False
+            dropped = self._mongosh(container, _MONGO_DROP_JS, {"targets": self.targets})
+            self.dropped = [str(n) for n in dropped.get("dropped") or []]
+            cmd = [
+                "mongorestore",
+                "--archive",
+                "--drop",
+                *self._auth_args(),
+                *password_args,
+                *mongo_namespace_args(self.ref.db_name),
+            ]
+            return exec_with_stdin(container, cmd, None, chunks, progress)
+        finally:
+            if folder:
+                self._remove_folder(container, folder)
+
+    def check_load(self, result: StdinExecResult) -> str | None:
+        counts = _MONGO_FAILED_DOCS_RE.findall(result.stderr)
+        if counts and int(counts[-1]) > 0:
+            return f"mongorestore could not restore {counts[-1]} document(s): {_clip(result.stderr, 300)}"
+        return None
+
+    def load_detail(self) -> str:
+        dropped = ", ".join(self.dropped) or "nothing"
+        return "; ".join([f"dropped first: {dropped}", *self.notes])
+
+    def unchanged(self, container) -> bool | None:
+        return True if self.untouched else None
+
+    def after_load(self, container, loaded: bool) -> list[str]:
+        warnings, self.warnings = self.warnings, []
+        return warnings
+
+    def verify_restored(self, container, prepared: PreparedArchive) -> tuple[str, list[str]]:
+        archive = prepared.archive
+        databases = sorted(archive.user_databases()) if self.whole else [self.ref.db_name]
+        databases = [d for d in databases if d in archive.databases]
+        if not databases:
+            return "nothing to compare (the dump holds no data for this database)", []
+        found = self._mongosh(container, _MONGO_COUNT_JS, {"databases": databases})
+        expected = archive.counted(databases)
+        problems: list[str] = []
+        present = total = 0
+        for collection in expected:
+            counts = found.get(collection.db) if isinstance(found.get(collection.db), dict) else {}
+            count = counts.get(collection.name)
+            if not isinstance(count, int):
+                problems.append(f"{collection.db}.{collection.name} is missing")
+                continue
+            present += 1
+            total += count
+            if count < collection.documents:
+                problems.append(
+                    f"{collection.db}.{collection.name} has {count} of the {collection.documents} documents in the dump"
+                )
+        detail = f"{present} collections, {total} documents in {', '.join(databases)}"
+        warnings = [f"After the restore, {p}" for p in problems[:5]]
+        if len(problems) > 5:
+            warnings.append(f"... and {len(problems) - 5} more collections differ from the dump")
+        return detail, warnings
+
+
+@dataclass
+class RedisSetup:
+    """Where a Redis keeps its data, read from the running server."""
+
+    version: str | None
+    data_dir: str
+    host_dir: str
+    dbfilename: str
+    appendonly: bool
+    aof_dir: str | None  # appenddirname (Redis 7+)
+    aof_file: str
+    owner: str | None  # uid:gid of the current data file (or folder)
+    needs_auth: bool
+
+
+_REDIS_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
+
+
+class _RedisDriver:
+    """Reads the running Redis's configuration; the swap itself is done by hand."""
+
+    db_type = "redis"
+    original_owner = None
+
+    def __init__(self, ref: DatabaseRef, owner_hint: str | None = None):
+        self.ref = ref
+        self.setup: RedisSetup | None = None
+
+    def preflight(self, container) -> str:
+        name = self.ref.container_name
+        auth_env = redis_auth_env(container)
+
+        def cli(*args: str) -> str:
+            code, out, err = _exec(container, ["redis-cli", *args], auth_env)
+            if code != 0:
+                if _missing_program(code, err or out):
+                    raise _StepFailed(f"redis-cli is not available in {name}")
+                raise _StepFailed(f"redis-cli {' '.join(args)} failed in {name}: {_clip(err or out) or code}")
+            return out
+
+        def config_get(key: str) -> str:
+            out = cli("CONFIG", "GET", key)
+            lines = [ln.rstrip("\r") for ln in out.splitlines()]
+            if len(lines) >= 2 and lines[0] == key:
+                return lines[1]
+            if not out.strip():
+                return ""  # a setting this Redis version does not have
+            raise _StepFailed(
+                f"cannot read the Redis setting {key} in {name} (CONFIG may be disabled or need a password): "
+                f"{_clip(out, 200)}"
+            )
+
+        version_match = re.search(r"^redis_version:(\S+)", cli("INFO", "server"), re.MULTILINE)
+        data_dir = config_get("dir")
+        dbfilename = config_get("dbfilename")
+        appendonly = config_get("appendonly").lower() == "yes"
+        aof_dir = config_get("appenddirname") or None
+        aof_file = config_get("appendfilename") or "appendonly.aof"
+        if not data_dir.startswith("/") or ".." in Path(data_dir).parts:
+            raise _StepFailed(f"Redis in {name} reports an unusable data folder: {data_dir!r}")
+        for label, value in (("dbfilename", dbfilename), ("appendfilename", aof_file), ("appenddirname", aof_dir)):
+            if value is not None and not _REDIS_NAME_RE.match(value):
+                raise _StepFailed(f"the Redis setting {label} ({value!r}) is not a plain file name")
+
+        host_dir = None
+        best = ""
+        for mount in (getattr(container, "attrs", None) or {}).get("Mounts") or []:
+            dest = os.path.normpath(str(mount.get("Destination") or ""))
+            source = str(mount.get("Source") or "")
+            if not dest or not source or not dest.startswith("/"):
+                continue
+            if (data_dir == dest or data_dir.startswith(dest.rstrip("/") + "/")) and len(dest) > len(best):
+                best = dest
+                host_dir = os.path.normpath(os.path.join(source, os.path.relpath(data_dir, dest)))
+        if host_dir is None:
+            raise _StepFailed(
+                f"Redis in {name} keeps its data in {data_dir}, which is not on a volume or bind mount, so it "
+                "cannot be replaced from the server; restore the .rdb file from the snapshot browser and copy it "
+                "in with docker cp while the container is stopped"
+            )
+
+        owner = None
+        for path in (f"{data_dir.rstrip('/')}/{dbfilename}", data_dir):
+            code, out, _err = _exec(container, ["stat", "-c", "%u:%g", "--", path])
+            if code == 0 and _OWNER_RE.match(out.strip()):
+                owner = out.strip()
+                break
+
+        self.setup = RedisSetup(
+            version=version_match.group(1) if version_match else None,
+            data_dir=data_dir,
+            host_dir=host_dir,
+            dbfilename=dbfilename,
+            appendonly=appendonly,
+            aof_dir=aof_dir,
+            aof_file=aof_file,
+            owner=owner,
+            needs_auth=bool(auth_env),
+        )
+        detail = f"Redis {self.setup.version or '(unknown version)'}; data file {host_dir.rstrip('/')}/{dbfilename}"
+        if appendonly:
+            detail += f"; append-only file on ({aof_dir or aof_file}), rebuilt from the restored data"
+        return detail
+
+
+def redis_instructions(
+    container_name: str, setup: RedisSetup, restored_path: str, safety_path: str | None
+) -> list[dict[str, str | None]]:
+    """Hand-run steps to put a restored RDB file in place (paths shell-quoted).
+
+    Redis writes its data file as it shuts down, so the file is replaced only
+    once the container has stopped. With the append-only file on, Redis loads
+    that instead of the RDB file (it would start empty, or with the old data),
+    so the append-only file is rebuilt from the restored RDB: Redis 7+ reads
+    an RDB "base" file listed in the folder's manifest, older versions read an
+    append-only file that starts with RDB data.
+
+    The copies of what was there get the time the step runs in their name, so
+    the same steps can be run again with the safety copy to go back.
+    """
+    q = shlex.quote
+    folder = setup.host_dir.rstrip("/") or "/"
+    live = f"{folder}/{setup.dbfilename}"
+    # Double-quoted so the shell expands it; appended to a shell-quoted path.
+    suffix = '".before-restore-$(date +%Y%m%d-%H%M%S)"'
+    steps: list[dict[str, str | None]] = [
+        {
+            "text": (
+                f"Stop the {container_name} container. Redis writes its data file as it shuts down, so the "
+                "file can only be replaced once it has stopped:"
+            ),
+            "command": f"docker stop {q(container_name)}",
+        },
+        {
+            "text": "Keep a copy of the current data file next to it:",
+            "command": f"if [ -e {q(live)} ]; then cp -a {q(live)} {q(live)}{suffix}; fi",
+        },
+    ]
+    owned = [live]
+    if setup.appendonly:
+        if setup.aof_dir:
+            aof_path = f"{folder}/{setup.aof_dir}"
+            base = f"{setup.aof_file}.1.base.rdb"
+            manifest = f"{aof_path}/{setup.aof_file}.manifest"
+            steps.append(
+                {
+                    "text": (
+                        "Redis has the append-only file turned on and loads it instead of the data file, so move "
+                        "the current append-only folder aside:"
+                    ),
+                    "command": f"if [ -e {q(aof_path)} ]; then mv {q(aof_path)} {q(aof_path)}{suffix}; fi",
+                }
+            )
+            rebuild = (
+                f"mkdir {q(aof_path)} && cp {q(restored_path)} {q(aof_path + '/' + base)} && "
+                f"printf 'file %s seq 1 type b\\n' {q(base)} > {q(manifest)}"
+            )
+            rebuild_text = "Create a new append-only folder that starts from the restored data:"
+        else:
+            aof_path = f"{folder}/{setup.aof_file}"
+            steps.append(
+                {
+                    "text": (
+                        "Redis has the append-only file turned on and loads it instead of the data file, so move "
+                        "the current append-only file aside:"
+                    ),
+                    "command": f"if [ -e {q(aof_path)} ]; then mv {q(aof_path)} {q(aof_path)}{suffix}; fi",
+                }
+            )
+            rebuild = f"cp {q(restored_path)} {q(aof_path)}"
+            rebuild_text = "Use the restored data as the new append-only file (Redis reads RDB data at its start):"
+        owned.append(aof_path)
+    steps.append(
+        {"text": "Copy the restored data file over the current one:", "command": f"cp {q(restored_path)} {q(live)}"}
+    )
+    if setup.appendonly:
+        steps.append({"text": rebuild_text, "command": rebuild})
+    if setup.owner:
+        steps.append(
+            {
+                "text": "Give the files back to the user Redis runs as:",
+                "command": f"chown -R {setup.owner} " + " ".join(q(p) for p in owned),
+            }
+        )
+    steps.append(
+        {"text": f"Start the {container_name} container again:", "command": f"docker start {q(container_name)}"}
+    )
+    if setup.needs_auth:
+        check = f"docker exec -it {q(container_name)} redis-cli --askpass INFO keyspace"
+        check_text = "Check that the keys are back (enter the Redis password when asked)"
+    else:
+        check = f"docker exec {q(container_name)} redis-cli INFO keyspace"
+        check_text = "Check that the keys are back"
+    steps.append(
+        {
+            "text": (
+                f"{check_text}. If Redis does not start, docker logs {container_name} says why, and the copies "
+                "ending in .before-restore-<date>-<time> hold what was there before:"
+            ),
+            "command": check,
+        }
+    )
+    if safety_path:
+        steps.append(
+            {
+                "text": (
+                    "Arkive also saved the data as it was just before this restore. To go back, run the same "
+                    f"steps again with this file in place of {restored_path}:"
+                ),
+                "command": safety_path,
+            }
+        )
+    return steps
+
+
 def _driver_for(ref: DatabaseRef, owner_hint: str | None = None):
-    return _PostgresDriver(ref, owner_hint) if ref.db_type == "postgres" else _MySQLDriver(ref, owner_hint)
+    if ref.db_type == "postgres":
+        return _PostgresDriver(ref, owner_hint)
+    if ref.db_type == "mongodb":
+        return _MongoDriver(ref, owner_hint)
+    if ref.db_type == "redis":
+        return _RedisDriver(ref, owner_hint)
+    return _MySQLDriver(ref, owner_hint)
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1724,7 @@ class GuidedRestoreEngine:
                         "container_status": status,
                         "method": method,
                         "reason": reason,
+                        "scope": restore_scope(ref.db_type, ref.db_name),
                         "dependents": self._dependents(ref, rows),
                     }
                 )
@@ -1051,7 +1740,7 @@ class GuidedRestoreEngine:
         dependents = self._dependents(ref, rows)
         blockers: list[str] = []
         container_detail = None
-        if method == METHOD_LOAD:
+        if method == METHOD_LOAD or ref.db_type == "redis":
             self._require_docker()
             try:
                 container_detail = await asyncio.to_thread(self._check_container_blocking, ref)
@@ -1061,7 +1750,8 @@ class GuidedRestoreEngine:
                 if not _is_docker_unavailable(exc):
                     raise
                 raise GuidedRestoreError(f"Docker is not reachable: {exc}", 503) from exc
-            dependents = await asyncio.to_thread(self._live_status, dependents)
+            if method == METHOD_LOAD:
+                dependents = await asyncio.to_thread(self._live_status, dependents)
 
         scratch = Path(await asyncio.to_thread(self._preview_scratch_dir))
         try:
@@ -1099,7 +1789,7 @@ class GuidedRestoreEngine:
                 "Apps that use this database are running. Stop them during the restore (selected below) so they "
                 "don't write to the database while it is replaced or run migrations against a half-loaded one."
             )
-        steps = _LOAD_STEPS if method == METHOD_LOAD else _MANUAL_STEPS
+        steps = steps_for(method, ref.db_type)
         return {
             "method": method,
             "database": {
@@ -1108,6 +1798,7 @@ class GuidedRestoreEngine:
                 "db_name": ref.db_name,
                 "host_path": ref.host_path,
                 "container_detail": container_detail,
+                "scope": restore_scope(ref.db_type, ref.db_name),
             },
             "snapshot": {
                 "id": snapshot["id"],
@@ -1154,7 +1845,7 @@ class GuidedRestoreEngine:
             snapshot_full_id=snapshot["full_id"],
             stop_containers=stop,
         )
-        op.steps = self._new_steps(_LOAD_STEPS if method == METHOD_LOAD else _MANUAL_STEPS)
+        op.steps = self._new_steps(steps_for(method, ref.db_type))
         return await self._launch(op)
 
     async def start_undo(self, op_id: str, body) -> dict:
@@ -1498,7 +2189,8 @@ class GuidedRestoreEngine:
                 await self._run_step(op, "locate_dump", self._step_locate)
                 await self._run_step(op, "restore_dump", self._step_restore)
             holder: dict = {}
-            await self._run_step(op, "verify_dump", self._step_verify_sql_dump, driver, holder)
+            verify_dump = self._step_verify_archive if op.ref.db_type == "mongodb" else self._step_verify_sql_dump
+            await self._run_step(op, "verify_dump", verify_dump, driver, holder)
             prepared = holder["prepared"]
             try:
                 await self._run_step(op, "safety_dump", self._step_safety_dump, driver)
@@ -1586,16 +2278,22 @@ class GuidedRestoreEngine:
             pass
 
     async def _run_manual(self, op: _Operation) -> None:
+        redis = _RedisDriver(op.ref) if op.ref.db_type == "redis" else None
         try:
+            if redis is not None:
+                await self._run_step(op, "check_container", self._step_check_container, redis)
             await self._run_step(op, "locate_dump", self._step_locate)
             await self._run_step(op, "restore_dump", self._step_restore)
-            await self._run_step(op, "verify_dump", self._step_verify_sqlite)
+            if redis is not None:
+                await self._run_step(op, "verify_dump", self._step_verify_rdb, redis)
+            else:
+                await self._run_step(op, "verify_dump", self._step_verify_sqlite)
             try:
                 await self._run_step(op, "safety_dump", self._step_safety_dump, None)
             except _StepFailed as exc:
                 # Nothing is overwritten by Arkive here; the steps keep a copy too.
                 op.warnings.append(f"No safety copy of the current database was taken: {exc}")
-            await self._run_step(op, "instructions", self._step_instructions)
+            await self._run_step(op, "instructions", self._step_instructions, redis)
             op.status = STATUS_ACTION_REQUIRED
         except _StepFailed as exc:
             op.status = STATUS_FAILED
@@ -1691,7 +2389,50 @@ class GuidedRestoreEngine:
         op.bytes_total = prepared.size_bytes
         return f"complete; {detail}"
 
-    async def _step_verify_sqlite(self, op: _Operation) -> str:
+    async def _step_verify_archive(self, op: _Operation, driver, holder: dict) -> str:
+        """Check a mongodump archive end to end (every collection's checksum and end marker)."""
+        source = op.source_path
+        if source is None or not await asyncio.to_thread(source.is_file):
+            raise _StepFailed("the dump file is missing")
+        path = source
+        if source.name.endswith(".gz"):
+            # Arkive's gzip setting compresses the whole archive stream;
+            # mongorestore reads it uncompressed. The source (for undo, the
+            # safety dump) is only read.
+            path = op.work_dir / "load.archive"
+            await asyncio.to_thread(self._gunzip, source, path)
+        try:
+            archive = await asyncio.to_thread(read_mongo_archive, path)
+        except DumpCheckError as exc:
+            raise _StepFailed(f"the dump is damaged or incomplete: {exc}") from exc
+        detail = await asyncio.to_thread(driver.check_archive, archive, op.kind)
+        holder["prepared"] = PreparedArchive(path=path, size_bytes=archive.size_bytes, archive=archive)
+        op.bytes_total = archive.size_bytes
+        return f"complete, every collection's checksum matches; {detail}"
+
+    def _gunzip(self, source: Path, dest: Path) -> None:
+        written = 0
+        next_check = 0
+        try:
+            with gzip.open(source, "rb") as src, open(dest, "wb") as out:
+                while chunk := src.read(MIB):
+                    out.write(chunk)
+                    written += len(chunk)
+                    if written >= next_check:
+                        next_check = written + 64 * MIB
+                        if shutil.disk_usage(dest.parent).free < self.min_free_bytes:
+                            raise _StepFailed(
+                                f"not enough free space in {self.config.restore_dir} to decompress the dump "
+                                f"(stopped after {_size(written)})"
+                            )
+        except (OSError, EOFError, zlib.error) as exc:
+            dest.unlink(missing_ok=True)
+            raise _StepFailed(f"the compressed dump is damaged or truncated: {exc}") from exc
+        except _StepFailed:
+            dest.unlink(missing_ok=True)
+            raise
+
+    async def _move_restored_file(self, op: _Operation) -> Path:
         source = op.source_path
         if source is None:
             raise _StepFailed("the dump file is missing")
@@ -1705,14 +2446,64 @@ class GuidedRestoreEngine:
 
         await asyncio.to_thread(_move)
         op.source_path = dest
+        return dest
+
+    async def _step_verify_sqlite(self, op: _Operation) -> str:
+        dest = await self._move_restored_file(op)
         status, detail = await asyncio.to_thread(verify_sqlite_file, dest)
         if status != "passed":
             raise _StepFailed(f"the restored database is not usable: {detail}")
         return detail
 
+    async def _step_verify_rdb(self, op: _Operation, driver: _RedisDriver) -> str:
+        dest = await self._move_restored_file(op)
+        try:
+            info = await asyncio.to_thread(read_rdb, dest)
+        except DumpCheckError as exc:
+            raise _StepFailed(f"the restored file is not usable: {exc}") from exc
+        live = driver.setup.version if driver.setup else None
+        readable = redis_reads_rdb(live, info.version)
+        if readable is False:
+            raise _StepFailed(
+                f"the dump is in RDB format {info.version}"
+                + (f" (written by Redis {info.redis_version})" if info.redis_version else "")
+                + f", which Redis {live} in {op.ref.container_name} cannot read; it would not start"
+            )
+        if readable is None:
+            op.warnings.append(
+                f"Arkive cannot tell whether Redis {live or '(unknown version)'} reads RDB format {info.version}; "
+                "if Redis does not start after the swap, put the copies back"
+            )
+        detail = f"RDB format {info.version}"
+        if info.redis_version:
+            detail += f", written by Redis {info.redis_version}"
+        if info.created:
+            detail += f" at {datetime.fromtimestamp(info.created, UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        if info.checksum_verified:
+            detail += "; checksum matches"
+        else:
+            detail += "; header and end marker are intact (the file carries no checksum to compare)"
+            op.warnings.append(
+                "The Redis dump was written without a checksum (rdbchecksum no), so only its header and end "
+                "marker could be checked"
+            )
+        return detail
+
     async def _step_safety_dump(self, op: _Operation, driver) -> str:
         if driver is not None and not driver.exists:
             raise _StepSkipped(f"{op.ref.db_name} does not exist yet; nothing to keep")
+        if driver is not None and hasattr(driver, "safety_dump"):
+            await self._require_free_space(max(op.bytes_total, op.dump_size_bytes), "take a safety dump")
+            stem = f"{dump_prefix(op.ref.container_name, op.ref.db_type, op.ref.db_name)}_{_timestamp()}"
+
+            def _dump() -> tuple[str, int, str]:
+                container = self._get_container(op.ref.container_name)
+                return driver.safety_dump(container, op.work_dir / "safety", stem, self.min_free_bytes)
+
+            path, size, what = await asyncio.to_thread(_dump)
+            op.safety_dump_path = path
+            op.safety_dump_size_bytes = size
+            return f"{os.path.basename(path)} ({_size(size)}; {what}), kept {self.retention_days} days"
         # The safety dump is plain SQL: expect it about as large as the
         # uncompressed dump being restored (bytes_total, measured after
         # gunzipping), not the compressed file in the snapshot. The current
@@ -1788,7 +2579,7 @@ class GuidedRestoreEngine:
         try:
             result: StdinExecResult = future.result()
         except Exception:
-            if op.bytes_done == 0:
+            if op.bytes_done == 0 and getattr(driver, "untouched", True):
                 op.database_changed = False  # failed before a single byte reached the client
             await asyncio.to_thread(self._after_load_blocking, op, driver, False)
             raise
@@ -1803,18 +2594,27 @@ class GuidedRestoreEngine:
                 op.database_changed = False
             await asyncio.to_thread(self._after_load_blocking, op, driver, False)
             errors = [ln for ln in result.stderr.splitlines() if ln.strip()]
-            important = [ln for ln in errors if "ERROR" in ln or "error" in ln.lower()] or errors
+            important = [ln for ln in errors if "error" in ln.lower() or "Failed:" in ln] or errors
             reason = " | ".join(important[-3:]) or result.write_error or "no error output"
             code = "unknown" if result.exit_code is None else result.exit_code
             raise _StepFailed(f"{driver.tool} exited with code {code}: {_clip(reason)}")
+        problem = driver.check_load(result) if hasattr(driver, "check_load") else None
+        if problem:
+            await asyncio.to_thread(self._after_load_blocking, op, driver, False)
+            raise _StepFailed(problem)
         warnings = await asyncio.to_thread(self._after_load_blocking, op, driver, True)
         op.warnings.extend(warnings)
-        return f"{_size(prepared.size_bytes)} loaded with {driver.tool} in {seconds}s"
+        detail = f"{_size(prepared.size_bytes)} loaded with {driver.tool} in {seconds}s"
+        if hasattr(driver, "load_detail"):
+            detail += f" ({driver.load_detail()})"
+        return detail
 
     def _load_blocking(self, op: _Operation, driver, prelude: bytes, path: Path, progress) -> StdinExecResult:
         container = self._get_container(op.ref.container_name)
-        cmd, env = driver.load_command()
         chunks = itertools.chain([prelude], _file_chunks(path))
+        if hasattr(driver, "run_load"):
+            return driver.run_load(container, chunks, progress)
+        cmd, env = driver.load_command()
         return exec_with_stdin(container, cmd, env, chunks, progress)
 
     def _unchanged_blocking(self, op: _Operation, driver) -> bool | None:
@@ -1831,6 +2631,10 @@ class GuidedRestoreEngine:
 
     async def _step_verify(self, op: _Operation, driver, prepared) -> str:
         container = await asyncio.to_thread(self._get_container, op.ref.container_name)
+        if hasattr(driver, "verify_restored"):
+            detail, warnings = await asyncio.to_thread(driver.verify_restored, container, prepared)
+            op.warnings.extend(warnings)
+            return detail
         count = await asyncio.to_thread(driver.count_tables, container)
         expected = prepared.create_tables
         if count is None:
@@ -1859,11 +2663,14 @@ class GuidedRestoreEngine:
             raise _StepFailed(f"could not start {', '.join(failed)}; start them from the Docker tab")
         return f"started {', '.join(started)}"
 
-    async def _step_instructions(self, op: _Operation) -> str:
+    async def _step_instructions(self, op: _Operation, redis: _RedisDriver | None = None) -> str:
         restored = await asyncio.to_thread(self._host_path, str(op.source_path))
         safety = await asyncio.to_thread(self._host_path, op.safety_dump_path) if op.safety_dump_path else None
         stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-        op.instructions = sqlite_instructions(op.ref, restored, safety, stamp)
+        if redis is not None and redis.setup is not None:
+            op.instructions = redis_instructions(op.ref.container_name, redis.setup, restored, safety)
+        else:
+            op.instructions = sqlite_instructions(op.ref, restored, safety, stamp)
         return "the restored file is ready; follow the steps below to put it in place"
 
     def _host_path(self, path: str) -> str:
@@ -2006,7 +2813,7 @@ class GuidedRestoreEngine:
             return
         shutil.rmtree(op.work_dir / "snapshot", ignore_errors=True)
         shutil.rmtree(op.work_dir / "manifest", ignore_errors=True)
-        for name in ("load.sql", "undo-source.sql", "undo-source.sql.gz"):
+        for name in ("load.sql", "load.archive", "undo-source.sql", "undo-source.sql.gz"):
             try:
                 (op.work_dir / name).unlink(missing_ok=True)
             except OSError:
@@ -2216,6 +3023,7 @@ class GuidedRestoreEngine:
             "db_type": row["db_type"],
             "db_name": row["db_name"],
             "host_path": row.get("host_path"),
+            "scope": restore_scope(row["db_type"], row["db_name"]),
             "target_id": row.get("target_id"),
             "target_name": row.get("target_name"),
             "snapshot_id": row.get("snapshot_id"),
