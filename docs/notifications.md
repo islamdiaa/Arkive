@@ -11,7 +11,11 @@ Go to **Settings → Notifications → Add Channel**:
 3. **URL**: an Apprise URL for the service (the field is labelled *Webhook URL*). See the examples below.
 4. **Events**: what this channel should hear about. A new channel starts with every event that means "your backups need attention" selected.
 
+![The Add Notification Channel form: name, type, webhook URL and the event list, with the default events ticked](images/notifications-add-channel.png)
+
 Click **Save**, then **Test** on the channel. The test sends "Arkive Test Notification" straight away, bypassing the rate limits below. If it fails, the URL is wrong or the service is unreachable from the container.
+
+An enabled channel completes the *Get told when backups fail* step of the [setup checklist](setup-checklist.md#4-get-told-when-backups-fail).
 
 Each channel can be paused with its toggle, renamed or re-subscribed with the edit button, and deleted. The web interface can't change a channel's URL after it has been saved: delete the channel and add it again, or send `{"url": "..."}` to `PUT /api/notifications/<channel-id>`.
 

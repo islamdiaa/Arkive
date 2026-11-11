@@ -18,7 +18,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/images/dashboard-light.png" />
-    <img src="docs/images/dashboard-dark.png" alt="Arkive dashboard: system health, last backup, storage used, backup trust score and the last restore drill" width="900" />
+    <img src="docs/images/dashboard-dark.png" alt="Arkive dashboard: the &quot;Finish protecting this server&quot; checklist with four of five steps done, then system health, last backup, storage used and the backup trust score" width="900" />
   </picture>
 </p>
 
@@ -32,7 +32,7 @@ Arkive is under active development. Backup, snapshot, restore, cloud targets and
 
 ## Documentation
 
-The [user guide](docs/index.md) covers installing on Unraid, the setup wizard, every storage provider, notifications, the recovery kit, restoring (including disaster recovery on a fresh server), restore drills, overdue-backup alerts and the heartbeat, troubleshooting, upgrading, and the security model. Start with the [quick start](docs/quick-start.md).
+The [user guide](docs/index.md) covers installing on Unraid, the setup wizard and the checklist that follows it, every storage provider, notifications, the recovery kit, restoring (including disaster recovery on a fresh server), restore drills, overdue-backup alerts and the heartbeat, troubleshooting, upgrading, and the security model. Start with the [quick start](docs/quick-start.md).
 
 To explore the interface with sample data before you configure anything, open any Arkive page with `?demo=true`, for example `http://your-server:8200/?demo=true`.
 
@@ -51,6 +51,8 @@ To explore the interface with sample data before you configure anything, open an
 - **Heartbeat.** Point Arkive at an Uptime Kuma push monitor or a healthchecks.io check. Arkive pings it only while every job is healthy, so you're also alerted when Arkive itself is down.
 - **Restore drills.** Every week, Arkive restores recent database dumps from the latest snapshot and loads each into a temporary, network-isolated copy of its own database image.
 - **Per-database health.** The Databases page shows, for every database, its last good dump, dump size and trend, last restore drill and the point in time it can be restored to. A dump that suddenly shrinks to half its usual size or less (configurable) makes runs `partial` until the size comes back or you accept it, since that usually means lost data. Redis dumps, which are cache and queue snapshots, are not checked.
+- **No offsite copy warning.** The dashboard warns, and a notification goes out, when every target your jobs upload to is on the server itself.
+- **Setup checklist.** After setup, the dashboard lists what is left before the server counts as protected (a clean first backup, a proven restore, an offsite target, a notification channel, a saved recovery kit) and ticks each step off from what Arkive has actually recorded.
 - **Repository checks.** A weekly `restic check`, a test restore of a random file, and a trust score on the dashboard.
 - **Notifications** through Apprise: Discord, Slack, ntfy, Telegram, email, Gotify, Pushover, Uptime Kuma and webhooks.
 
@@ -70,9 +72,9 @@ To explore the interface with sample data before you configure anything, open an
     <td width="50%">
       <picture>
         <source media="(prefers-color-scheme: light)" srcset="docs/images/databases-light.png" />
-        <img src="docs/images/databases-dark.png" alt="Databases page: discovered PostgreSQL, MariaDB, Redis and SQLite databases with Dump Now and Exclude actions" />
+        <img src="docs/images/databases-dark.png" alt="Databases page: PostgreSQL, MariaDB, Redis and SQLite databases, each with a health badge, last good dump, dump size trend, restorable-as-of time and last restore drill" />
       </picture>
-      <p align="center"><sub>Discovered databases, each dumped with its native tool</sub></p>
+      <p align="center"><sub>Every database with its own health: last dump, size trend, last drill</sub></p>
     </td>
     <td width="50%">
       <picture>
@@ -84,7 +86,7 @@ To explore the interface with sample data before you configure anything, open an
   </tr>
 </table>
 
-<sub>Screenshots use the built-in demo data: open any page with <code>?demo=true</code>.</sub>
+<sub>Screenshots use the built-in demo data: open any page with <code>?demo=true</code>. <code>frontend/scripts/docs-screenshots.sh</code> regenerates them.</sub>
 
 ---
 

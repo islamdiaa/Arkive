@@ -21,7 +21,9 @@ Storage provider credentials (keys, secrets, passwords, tokens) are **not** in t
 3. Store it somewhere other than this server: a password manager, or a printed copy kept safely.
 4. Tick **I stored this somewhere other than this server** and click **Confirm**.
 
-Until you confirm, the dashboard shows a "Save your recovery kit" reminder, and `GET /api/status` reports `recovery_kit_confirmed: false`.
+![Settings → Recovery Kit after generating a kit: a warning that the kit contains secrets, the masked encryption password and keyfile with Reveal buttons, the repositories, the restore steps, Download and Copy, and the confirmation checkbox](images/recovery-kit.png)
+
+Until you confirm, `GET /api/status` reports `recovery_kit_confirmed: false` and the dashboard reminds you: as the *Save the recovery kit* step of the [setup checklist](setup-checklist.md#5-save-the-recovery-kit) while that checklist is open, otherwise as a separate "Save your recovery kit" reminder.
 
 **Anyone who has the kit can decrypt and read all of your backups.** Don't store it on the server it protects, and don't e-mail it to yourself.
 
