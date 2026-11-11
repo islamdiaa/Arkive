@@ -9,6 +9,9 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Changed
+- Backend dependencies updated: sse-starlette 3.6 (live event and log streams), FastAPI 0.162, uvicorn 0.54, pydantic 2.14, docker 7.2, python-multipart 0.0.33 and click 8.5.1; test and lint tooling moves to pytest 9.2, ruff 0.17.4 and bandit 1.9.4.
+
 ## [0.5.0] - 2026-11-10
 
 Arkive 0.5.0 answers the questions that come after "do my backups work?": is there a copy somewhere else, is each database healthy, what is still missing after setup, and how do I get one database back without doing it by hand. It is also the first release prepared for Unraid Community Applications.

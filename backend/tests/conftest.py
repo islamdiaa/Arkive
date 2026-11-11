@@ -32,6 +32,41 @@ LIVE_PATH_MARKERS = {
 
 
 # ---------------------------------------------------------------------------
+# pytest-forked compatibility with pytest >= 9.2
+# ---------------------------------------------------------------------------
+#
+# pytest 9.2 stores a report's node id as ``TestReport._id`` (a ``NodeId``
+# dataclass) behind a ``nodeid`` property. pytest-forked 1.7.5 sends reports
+# from the child to the parent with ``marshal.dumps(rep.__dict__)``, which
+# cannot encode a ``NodeId``: the child dies with ValueError and every
+# ``@pytest.mark.forked`` test is reported as "EXITED with status 3". Send the
+# node id as the ``nodeid`` string instead, as pytest's own report
+# serialization does; ``TestReport(nodeid=...)`` rebuilds the ``NodeId``.
+
+
+def _patch_pytest_forked_serialization() -> None:
+    try:
+        import pytest_forked
+    except ImportError:
+        return
+    original = pytest_forked.serialize_report
+    if getattr(original, "_arkive_nodeid_compat", False):
+        return
+
+    def serialize_report(rep):
+        d = original(rep)
+        if "_id" in d:
+            d["nodeid"] = str(d.pop("_id"))
+        return d
+
+    serialize_report._arkive_nodeid_compat = True
+    pytest_forked.serialize_report = serialize_report
+
+
+_patch_pytest_forked_serialization()
+
+
+# ---------------------------------------------------------------------------
 # Stray files from mocked configs
 # ---------------------------------------------------------------------------
 
