@@ -124,6 +124,35 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.\-]", "_", value)
 
 
+def redis_auth_env(container) -> dict[str, str]:
+    """REDISCLI_AUTH for a password-protected Redis (never passed in argv).
+
+    The password comes from REDIS_PASSWORD or a ``--requirepass`` argument in
+    the container's command.
+    """
+    password = ""
+    try:
+        for item in container.attrs.get("Config", {}).get("Env") or []:
+            key, sep, value = str(item).partition("=")
+            if sep and key == "REDIS_PASSWORD":
+                password = value
+    except (AttributeError, TypeError):
+        password = ""
+    if not password:
+        try:
+            cmd = container.attrs.get("Config", {}).get("Cmd") or []
+            tokens: list[str] = []
+            for item in cmd if isinstance(cmd, list) else [cmd]:
+                tokens.extend(shlex.split(item) if isinstance(item, str) else [])
+            for index, token in enumerate(tokens[:-1]):
+                if token in ("--requirepass", "requirepass"):
+                    password = tokens[index + 1]
+                    break
+        except (ValueError, AttributeError, TypeError):
+            password = ""
+    return {"REDISCLI_AUTH": password} if password else {}
+
+
 def postgres_user_from_env(env: dict[str, str]) -> str:
     """The role Arkive connects as for a Postgres container (from its environment)."""
     return env.get("POSTGRES_USER") or env.get("DB_USERNAME") or env.get("DB_USER") or "postgres"
@@ -1687,20 +1716,7 @@ class DBDumper:
 
     def _redis_auth_env(self, container) -> dict[str, str]:
         """REDISCLI_AUTH for password-protected Redis (never passed in argv)."""
-        password = self._get_container_env(container).get("REDIS_PASSWORD", "")
-        if not password:
-            try:
-                cmd = container.attrs.get("Config", {}).get("Cmd") or []
-                tokens: list[str] = []
-                for item in cmd if isinstance(cmd, list) else [cmd]:
-                    tokens.extend(shlex.split(item) if isinstance(item, str) else [])
-                for index, token in enumerate(tokens[:-1]):
-                    if token in ("--requirepass", "requirepass"):
-                        password = tokens[index + 1]
-                        break
-            except (ValueError, AttributeError, TypeError):
-                password = ""
-        return {"REDISCLI_AUTH": password} if password else {}
+        return redis_auth_env(container)
 
     def _dump_redis_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump Redis via BGSAVE (non-blocking) + LASTSAVE polling."""

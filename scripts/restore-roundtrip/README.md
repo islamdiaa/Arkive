@@ -50,3 +50,27 @@ It is not part of CI: it needs a privileged container and pulls several
 database images. The problems it found are covered by unit tests
 (`backend/tests/unit/test_restore_roundtrip_findings.py` and the
 "Real-engine findings" section of `test_restore_drill.py`).
+
+## Guided restore round trip (MongoDB and Redis)
+
+`guided_roundtrip.py` runs guided restores against real engines in the same
+kind of throwaway Docker-in-Docker daemon, without publishing any port on the
+host (the API is called from inside the Arkive container):
+
+- MongoDB 8.0 with a root login and `MONGO_INITDB_DATABASE` (one database is
+  restored; another database on the server must stay as it is), MongoDB 8.0
+  without a login (the whole server) and a single-node MongoDB 7.0 replica
+  set: write data, back up, change it, restore through the API, compare,
+  undo through the API, compare again;
+- Redis 7.4 with the append-only file and a password, Redis 8.0 without it
+  and Redis 6.2 with the single-file append-only file: the harness runs the
+  steps Arkive returns exactly as written, restarts Redis to prove the data is
+  persisted the way Redis loads it next time, then runs the same steps with
+  the safety copy to go back.
+
+```sh
+python3 scripts/restore-roundtrip/guided_roundtrip.py --image arkive-rt:dev --live-code
+```
+
+It uses `--prefix` (default `arkive-grt`) and `--workdir` with the same
+ownership marker and teardown rules as `restore_roundtrip.py`.

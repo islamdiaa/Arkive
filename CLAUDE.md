@@ -541,6 +541,24 @@ can still lack, and a way back for one database.
   through a shell, never with user input in an option position. SQLite files
   are never written by Arkive; the operation ends `action_required` with the
   steps to swap the file in.
+- **Guided restore for MongoDB and Redis** (after v0.5.0). MongoDB is a
+  `load` type: the archive is checked end to end first (`services/dump_checks.py`:
+  every collection's EOF marker and CRC-64; `mongorestore --dryRun` reads no
+  documents), the databases being replaced are dropped with `mongosh` and
+  `mongorestore --archive --drop` reads the archive from stdin. A server
+  discovered as `admin` (no `MONGO_INITDB_DATABASE`; the dumper dumps the
+  whole server) means every database except admin/config/local, so undo
+  (safety `mongodump` of exactly that set) is exact. Passwords: mongosh and
+  mongodump read them on stdin (`--file=/dev/stdin`, `--config=/dev/stdin`),
+  mongorestore from a file in a `mktemp -d` folder in the container's own
+  /tmp (never a mounted one), argv only as a stated fallback. Redis is a
+  `manual` type with a `check_container` step: it reads `dir`, `dbfilename`,
+  `appendonly`, `appenddirname`, the version and the data volume, checks the
+  RDB (header, CRC-64, format the running Redis reads) and returns steps that
+  rebuild the append-only file from the RDB. Moving the AOF aside alone makes
+  Redis start empty, and Redis rewrites the RDB on shutdown (swap only while
+  stopped). `scripts/restore-roundtrip/guided_roundtrip.py` proves both on
+  real engines (MongoDB 7.0/8.0, Redis 6.2/7.4/8.0).
 - **Accessibility** (`frontend/tests/e2e/a11y.spec.ts`): axe runs on every
   route in both themes at desktop and phone widths.
 - **Unraid Community Applications** (`unraid-template.xml`, `ca_profile.xml`,
@@ -549,6 +567,9 @@ can still lack, and a way back for one database.
 Rules that follow from this:
 - a signal about where backups go or how the install is configured is a
   warning; only "backups are not happening" belongs in `evaluate_freshness`
+- guided restore steps for a manual type are run as written by the guided
+  round-trip harness; keep them POSIX sh and re-runnable (the safety copy is
+  restored by running the same steps with its path)
 - a new page goes into the axe route list and into `ROUTES` in
   `frontend/tests/visual/routes.spec.ts`; don't dim text with `opacity-*`
   (it fails contrast), use the secondary text colour
@@ -719,8 +740,11 @@ At the time this handoff was updated (v0.5.0):
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
 - v0.5.0 (section 17) was built as separate PRs, each reviewed adversarially;
-  known gap: guided restore does not cover MongoDB or Redis (MariaDB/MySQL
-  users and grants are dumped since the accounts dump, see section 15)
+  MariaDB/MySQL users and grants are dumped (the accounts dump, see section
+  15). Guided restore now covers MongoDB (in place) and Redis (prepared,
+  swapped in by hand); MongoDB sharded clusters, secondaries and pre-6.0
+  images (no mongosh) are refused, and the restore plan's own Redis command
+  is still the naive one
 - the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
 - the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
   (there is no svelte.config.js), `$lib` still works through the deprecated

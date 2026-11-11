@@ -63,6 +63,7 @@ nav:
   - Getting started:
       - Quick start on Unraid: quick-start.md
       - Setup wizard: setup-wizard.md
+      - Finish protecting this server: setup-checklist.md
   - Configure:
       - Storage providers: storage-providers.md
       - Notifications: notifications.md
