@@ -1,14 +1,14 @@
 # Web framework
-fastapi==0.161.1
-uvicorn[standard]==0.34.0
-python-multipart==0.0.32
-sse-starlette==2.2.1
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.33
+sse-starlette==3.6.0
 
 # Database
 aiosqlite==0.22.1
 
 # Docker
-docker==7.1.0
+docker==7.2.0
 
 # Scheduler
 apscheduler==3.11.3
@@ -22,14 +22,14 @@ httpx==0.28.1
 
 # Config
 pyyaml==6.0.3
-pydantic==2.10.4
+pydantic==2.14.3
 pydantic-settings==2.16.2
 
 # Security
 cryptography==50.0.2
 
 # CLI
-click==8.5.0
+click==8.5.1
 
 # PDF generation (restore plan)
 weasyprint==70.0
