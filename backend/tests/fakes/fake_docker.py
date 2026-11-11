@@ -62,6 +62,29 @@ INSERT INTO `users` VALUES (1,'alice'),(2,'bob');
 -- Dump completed
 """
 
+
+def _hex_row(user: str, host: str, is_role: str = "N") -> bytes:
+    return f"{user.encode().hex().upper()}\t{host.encode().hex().upper()}\t{is_role}\n".encode()
+
+
+# Answers of a MariaDB 11.4 server (client in -N -B -r mode) to the accounts
+# dump's statements (services/mysql_accounts.py).
+MARIADB_VERSION = b"11.4.13-MariaDB-ubu2404\n"
+MARIADB_USER_LISTING = b"".join(
+    [
+        _hex_row("alice", "%"),
+        _hex_row("healthcheck", "localhost"),
+        _hex_row("mariadb.sys", "localhost"),
+        _hex_row("root", "%"),
+        _hex_row("root", "localhost"),
+    ]
+)
+MARIADB_ALICE = (
+    b"CREATE USER `alice`@`%` IDENTIFIED BY PASSWORD '*35E884F91E1624B27D0039433D98E922FA1F3075'\n"
+    b"GRANT USAGE ON *.* TO `alice`@`%` IDENTIFIED BY PASSWORD '*35E884F91E1624B27D0039433D98E922FA1F3075'\n"
+    b"GRANT ALL PRIVILEGES ON `appdb`.* TO `alice`@`%`\n"
+)
+
 POSTGRES_GLOBALS = b"""\
 --
 -- PostgreSQL database cluster dump
@@ -272,6 +295,10 @@ def create_preconfigured_containers(redis_rdb_dir: str | None = None) -> list[Fa
                 # Database enumeration during discovery (mariadb -N -B -e ...).
                 "SELECT schema_name FROM information_schema.schemata": (0, b"appdb\n"),
                 "mariadb-dump": (0, MARIADB_DUMP),
+                # Users and grants (accounts dump).
+                "--execute=SELECT VERSION()": (0, MARIADB_VERSION),
+                "FROM mysql.user": (0, MARIADB_USER_LISTING),
+                "SHOW CREATE USER `alice`@`%`": (0, MARIADB_ALICE),
             },
         ),
         # MongoDB

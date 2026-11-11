@@ -8,8 +8,10 @@ against real database servers and a real Arkive instance:
   read-only role, extensions, large objects, partitions, a LATIN1 database,
   a database name with spaces, a non-default bootstrap superuser)
 - MariaDB 11.4 and MySQL 8.4 (utf8mb4, binary BLOBs, latin1, a view, a
-  trigger, a procedure, a function, an event, a second application database),
-  plus a MariaDB without MARIADB_DATABASE
+  trigger, a procedure, a function, an event, a second application database,
+  application users with table/column/routine grants, a role with a default
+  role, a locked account and a rotated MYSQL_USER password), plus a MariaDB
+  without MARIADB_DATABASE
 - SQLite in WAL mode held open by a running "app" (rows live only in the WAL)
 - Redis 7.4 and 6.2 with the append-only file (7.4 with a password the plan's
   steps can't use) and Redis 8.0 without it: the plan's steps go into fresh
@@ -82,6 +84,8 @@ WORKDIR_MARKER = ".arkive-restore-roundtrip"
 # have a "postgres" role (like an Immich-style POSTGRES_USER=immich setup).
 PG_USERS = {"pg16": "postgres", "pg17": "immich"}
 MYSQL_CLIENTS = {"mariadb": "mariadb", "mysql": "mysql"}
+# Database column of the users-and-grants step in Arkive's restore plan.
+ACCOUNTS_STEP_LABEL = "users and grants (accounts dump)"
 
 PG_CHECKS = {
     "appdb": {
@@ -139,6 +143,52 @@ MYSQL_CHECKS = {
     "views": "SELECT GROUP_CONCAT(TABLE_NAME) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = 'appdb'",
     "second database": "SELECT GROUP_CONCAT(HEX(title) ORDER BY id) FROM photos.albums",
 }
+
+# Application accounts created on each MariaDB/MySQL source server after the
+# fixture (MYSQL_USER "app" also gets a password that differs from its
+# environment): the restore must bring them back with their passwords,
+# lock state, resource limits, roles and exactly their grants.
+MYSQL_ACCOUNTS_SQL = (
+    "CREATE USER 'alice'@'%' IDENTIFIED BY 'alice-pass'; "
+    "GRANT SELECT, INSERT ON appdb.* TO 'alice'@'%'; "
+    "GRANT UPDATE (name) ON appdb.files TO 'alice'@'%'; "
+    "GRANT EXECUTE ON PROCEDURE appdb.count_files TO 'alice'@'%'; "
+    "CREATE ROLE photo_reader; "
+    "GRANT SELECT ON photos.* TO photo_reader; "
+    "CREATE USER 'bob'@'%' IDENTIFIED BY 'bob-pass' WITH MAX_USER_CONNECTIONS 3; "
+    "GRANT photo_reader TO 'bob'@'%'; "
+    "CREATE USER 'retired'@'%' IDENTIFIED BY 'retired-pass' ACCOUNT LOCK; "
+    "GRANT SELECT ON appdb.legacy TO 'retired'@'%'; "
+    "ALTER USER 'app'@'%' IDENTIFIED BY 'app-pass-rotated'; "
+)
+MYSQL_DEFAULT_ROLE_SQL = {
+    "mariadb": "SET DEFAULT ROLE photo_reader FOR 'bob'@'%'",
+    "mysql": "SET DEFAULT ROLE photo_reader TO 'bob'@'%'",
+}
+# (user, password, SQL, expected output or None for "must fail")
+MYSQL_LOGIN_CHECKS = [
+    ("alice", "alice-pass", "SELECT COUNT(*) > 0 FROM appdb.files", "1"),
+    ("alice", "alice-pass", "DELETE FROM appdb.files WHERE id < 0", None),
+    ("alice", "alice-pass", "CALL appdb.count_files(@n); SELECT @n > 0", "1"),
+    ("bob", "bob-pass", "SELECT COUNT(*) FROM photos.albums", "2"),
+    ("bob", "bob-pass", "SELECT COUNT(*) FROM appdb.files", None),
+    ("photos", "photos-pass", "SELECT COUNT(*) FROM photos.albums", "2"),
+    ("app", "app-pass-rotated", "SELECT COUNT(*) > 0 FROM appdb.files", "1"),
+    ("app", "app-pass", "SELECT 1", None),  # the environment's password must not win
+    ("retired", "retired-pass", "SELECT 1", None),  # still locked
+]
+# Accounts that belong to the server/image: never in the accounts dump, and
+# the restore must leave the new server's own ones exactly as they were.
+MYSQL_SYSTEM_ACCOUNTS_SQL = (
+    "SELECT CONCAT(User, '@', Host, ' ', HEX(authentication_string)) FROM mysql.user "
+    "WHERE User IN ('root', 'healthcheck', 'mariadb.sys', 'mysql.sys', 'mysql.session', 'mysql.infoschema') "
+    "ORDER BY User, Host"
+)
+MYSQL_APP_ACCOUNTS_SQL = (
+    "SELECT CONCAT(HEX(User), ' ', HEX(Host)) FROM mysql.user "
+    "WHERE User NOT IN ('root', 'healthcheck', 'mariadb.sys', 'mysql.sys', 'mysql.session', 'mysql.infoschema') "
+    "ORDER BY User, Host"
+)
 
 SQLITE_CHECK = r"""
 import json, sqlite3, sys
@@ -355,6 +405,8 @@ class Harness:
             client = MYSQL_CLIENTS[key]
             self.sh(key, f"{client} -uroot --default-character-set=utf8mb4 < /fixtures/mysql.sql",
                     env={"MYSQL_PWD": f"{key}-root"})  # fmt: skip
+            for sql in (MYSQL_ACCOUNTS_SQL, MYSQL_DEFAULT_ROLE_SQL[key]):
+                self.dind("exec", "-e", f"MYSQL_PWD={key}-root", self.name(key), client, "-uroot", f"--execute={sql}")
         self.wait_for(NODB_KEY, lambda: self.mysql_ready(NODB_KEY), 240)
         self.sh(
             NODB_KEY,
@@ -548,6 +600,37 @@ class Harness:
     def mysql_fingerprint(self, key: str, password: str) -> dict:
         return {label: self.mysql_query(key, sql, password) for label, sql in MYSQL_CHECKS.items()}
 
+    def mysql_login(self, key: str, user: str, password: str, sql: str) -> tuple[bool, str]:
+        """Run ``sql`` as an application account over TCP (as the app would)."""
+        result = self.dind(
+            "exec", "-e", f"MYSQL_PWD={password}", self.name(key), "sh", "-c",
+            '"$(command -v mariadb || command -v mysql)" -h127.0.0.1 --protocol=tcp -u"$1" -N -B -e "$0"',
+            sql, user, check=False,
+        )  # fmt: skip
+        output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()[-200:]
+        return result.returncode == 0, output.splitlines()[-1] if output else ""
+
+    def mysql_accounts(self, key: str, password: str) -> dict:
+        """Definition (SHOW CREATE USER, password hash included) and grants of
+        every non-system account of a server."""
+        flavor = "mariadb" if key.startswith("mariadb") else "mysql"
+        out = {}
+        listing = self.mysql_query(key, MYSQL_APP_ACCOUNTS_SQL, password)
+        if listing.startswith("ERROR"):
+            return {"error": listing}
+        for row in listing.splitlines():
+            user_hex, host_hex = row.split(" ")
+            user, host = bytes.fromhex(user_hex).decode(), bytes.fromhex(host_hex).decode()
+            quoted = "`" + user.replace("`", "``") + "`"
+            if flavor == "mariadb" and host == "":  # a MariaDB role
+                out[user] = self.mysql_query(key, f"SHOW GRANTS FOR {quoted}", password)
+                continue
+            account = quoted + "@`" + host.replace("`", "``") + "`"
+            hex_hashes = "SET SESSION print_identified_with_as_hex = ON; " if flavor == "mysql" else ""
+            sql = f"{hex_hashes}SHOW CREATE USER {account}; SHOW GRANTS FOR {account}"
+            out[f"{user}@{host}"] = self.mysql_query(key, sql, password)
+        return out
+
     def sqlite_fingerprint(self, container_path_app: str, container_path_other: str, mount: str) -> dict:
         result = self.dind(
             "run", "--rm", "-v", mount, SQLITE_APP_IMAGE, "python", "-c", SQLITE_CHECK,
@@ -586,6 +669,10 @@ class Harness:
             entry = dumped.get(key)
             ok = entry is not None and entry.get("status") == "success"
             r.check(ok, f"dumped {key[0]}/{key[1]}", "not discovered" if entry is None else str(entry.get("error")))
+        for key in [*MYSQL_IMAGES, NODB_KEY]:
+            entry = dumped.get((self.name(key), "accounts"))
+            ok = entry is not None and entry.get("status") == "success"
+            r.check(ok, f"accounts dump of {self.name(key)}", "missing" if entry is None else str(entry.get("error")))
         for (container, db_name), entry in sorted(dumped.items()):
             if (container, db_name) not in expected and entry.get("status") != "success":
                 r.check(False, f"dump {container}/{db_name}", str(entry.get("error")))
@@ -711,14 +798,38 @@ class Harness:
         scratch = self.name(scratch_key)
         prefix = "MARIADB" if key == "mariadb" else "MYSQL"
         self.dind("rm", "-f", scratch, check=False)
+        # The container is recreated with the same environment as before, so
+        # the image's init creates "app" (with the environment's password)
+        # and appdb before the restore; root gets a different password.
         self.dind(
-            "run", "-d", "--name", scratch, "-e", f"{prefix}_ROOT_PASSWORD=restored-root", MYSQL_IMAGES[key],
+            "run", "-d", "--name", scratch, "-e", f"{prefix}_ROOT_PASSWORD=restored-root",
+            "-e", f"{prefix}_DATABASE=appdb", "-e", f"{prefix}_USER=app", "-e", f"{prefix}_PASSWORD=app-pass",
+            MYSQL_IMAGES[key],
         )  # fmt: skip
         self.wait_for(scratch, lambda: self.mysql_ready(scratch_key, "restored-root"), 240)
+        system_before = self.mysql_query(scratch_key, MYSQL_SYSTEM_ACCOUNTS_SQL, "restored-root")
+        ours = [e for e in entries if e["container_name"] == container]
+        accounts = [e for e in ours if e.get("kind") == "accounts"]
+        r.check(len(accounts) == 1, f"{key}: accounts dump present", str([e["file"] for e in accounts]))
+        if accounts:
+            text = (
+                self.workdir / "mnt-user" / str(dumps_dir).removeprefix("/mnt/user/") / accounts[0]["file"]
+            ).read_text()
+            statements = [line for line in text.splitlines() if line and not line.startswith("--")]
+            leaked = [
+                line for line in statements if re.search(r"[`']root[`']@|mysql\.sys|mariadb\.sys|healthcheck", line)
+            ]
+            r.check(not leaked, f"{key}: accounts dump leaves out root and system accounts", "; ".join(leaked)[:300])
         steps = [s for s in plan if s["container"] == container]
         planned = {s["db_name"] for s in steps}
-        for entry in [e for e in entries if e["container_name"] == container]:
-            r.check(entry["db_name"] in planned, f"{key}: restore plan covers {entry['db_name']}", str(sorted(planned)))
+        for entry in ours:
+            label = ACCOUNTS_STEP_LABEL if entry.get("kind") == "accounts" else entry["db_name"]
+            r.check(label in planned, f"{key}: restore plan covers {entry['db_name']}", str(sorted(planned)))
+        r.check(
+            bool(steps) and steps[-1]["db_name"] == ACCOUNTS_STEP_LABEL,
+            f"{key}: restore plan restores users and grants after the databases",
+            str([s["db_name"] for s in steps]),
+        )
         for step in steps:
             loaded = self.run_plan_step(step, {container: scratch}, dumps_dir)
             r.check(
@@ -731,6 +842,33 @@ class Harness:
             r.check(
                 restored.get(label) == value, f"{key}: {label}", f"source={value!r} restored={restored.get(label)!r}"
             )
+        source_accounts = self.mysql_accounts(key, f"{key}-root")
+        restored_accounts = self.mysql_accounts(scratch_key, "restored-root")
+        r.check(
+            sorted(restored_accounts) == sorted(source_accounts),
+            f"{key}: same application accounts",
+            f"source={sorted(source_accounts)} restored={sorted(restored_accounts)}",
+        )
+        for account, definition in sorted(source_accounts.items()):
+            r.check(
+                restored_accounts.get(account) == definition,
+                f"{key}: {account} has the same authentication and grants",
+                f"source={definition!r} restored={restored_accounts.get(account)!r}",
+            )
+        for user, password, sql, expected in MYSQL_LOGIN_CHECKS:
+            ok, output = self.mysql_login(scratch_key, user, password, sql)
+            if expected is None:
+                r.check(not ok, f"{key}: {user} is refused: {sql}", output)
+            else:
+                r.check(ok and output == expected, f"{key}: {user} logs in and runs: {sql}", output)
+        r.check(
+            self.mysql_query(scratch_key, MYSQL_SYSTEM_ACCOUNTS_SQL, "restored-root") == system_before,
+            f"{key}: root and system accounts of the new server unchanged",
+        )
+        r.check(self.mysql_ready(scratch_key, "restored-root"), f"{key}: root still logs in with the new password")
+        if key == "mariadb":
+            health = self.dind("exec", scratch, "healthcheck.sh", "--connect", "--innodb_initialized", check=False)
+            r.check(health.returncode == 0, f"{key}: image healthcheck still works", health.stderr.strip()[-200:])
 
     def verify_sqlite(self, dumps_dir: Path, entries: list[dict], plan: list[dict]) -> None:
         """Follow the plan's SQLite steps against a scratch copy of the app's
@@ -769,6 +907,76 @@ class Harness:
         r.check(app.get("items") == [[2000, 2000 * 1024]], "sqlite: WAL-only rows restored", str(app))
         r.check(app.get("ticks") == [[1]], "sqlite: rows written while running restored", str(app.get("ticks")))
         r.check(other.get("theme") == [["dark"]], "sqlite: rollback-journal database restored", str(other))
+
+    def verify_missing_accounts_step(self, plan: list[dict]) -> None:
+        """The accounts step from a restore that has no accounts dump (Arkive
+        had no root password): it must say so and not fail or load anything."""
+        r = self.report
+        container = self.name("mariadb")
+        step = next((s for s in plan if s["container"] == container and s["db_name"] == ACCOUNTS_STEP_LABEL), None)
+        if step is None:
+            r.check(False, "mariadb: accounts step present for the missing-dump check")
+            return
+        self.host("exec", self.name("dind"), "mkdir", "-p", "/tmp/no-accounts-dump")
+        result = self.run_plan_step(step, {}, Path("/tmp/no-accounts-dump"))
+        r.check(
+            result.returncode == 0 and "No users-and-grants dump of" in result.stdout,
+            "mariadb: accounts step without an accounts dump says so and succeeds",
+            (result.stdout + result.stderr).strip()[-300:],
+        )
+
+    def accounts_files(self) -> dict[str, list[str]]:
+        dumps = self.workdir / "mnt-user" / ARKIVE_CONFIG.removeprefix("/mnt/user/") / "dumps"
+        out: dict[str, list[str]] = {}
+        for path in sorted(dumps.iterdir()):
+            if "_accounts-" in path.name:
+                out.setdefault(path.name.split("_accounts-")[0], []).append(path.name)
+        return out
+
+    def verify_line_break_names(self, jobs: list[dict]) -> None:
+        """A user name, and a database name in a grant, containing a line
+        break must fail the accounts dump (run partial) and keep the previous
+        file, instead of writing statements split across lines."""
+        r = self.report
+        print("== accounts dump with line breaks in names", flush=True)
+        before = self.accounts_files()
+        self.dind(
+            "exec", "-e", f"MYSQL_PWD={NODB_KEY}-root", self.name(NODB_KEY), "mariadb", "-uroot",
+            "--execute=CREATE USER 'evil\nGRANT ALL ON *.* TO x'@'%' IDENTIFIED BY 'evil-pass'",
+        )  # fmt: skip
+        self.dind(
+            "exec", "-e", "MYSQL_PWD=mysql-root", self.name("mysql"), "mysql", "-uroot",
+            "--execute=GRANT SELECT ON `a\nGRANT SUPER ON *.* TO evil`.* TO 'alice'@'%'",
+        )  # fmt: skip
+        run = self.run_backup(jobs)
+        message = run.get("error_message") or ""
+        r.check(run["status"] == "partial", "line-break names: backup run is partial", f"{run['status']}: {message}")
+        for key in (NODB_KEY, "mysql"):
+            container = self.name(key)
+            r.check(
+                f"accounts dump failed for {container}" in message or f"; {container} (" in message,
+                f"{key}: line-break name fails the accounts dump",
+                message[:400],
+            )
+            entry = next(
+                (
+                    d
+                    for d in run.get("databases", [])
+                    if d["container_name"] == container and d["db_name"] == "accounts"
+                ),
+                None,
+            )
+            r.check(
+                entry is not None and entry["status"] == "failed" and "line break" in (entry.get("error") or ""),
+                f"{key}: accounts dump error names the line break",
+                str(entry and entry.get("error"))[:300],
+            )
+            r.check(
+                self.accounts_files().get(container) == before.get(container),
+                f"{key}: previous accounts dump kept, no new file",
+                f"before={before.get(container)} after={self.accounts_files().get(container)}",
+            )
+        r.note(f"line-break run message: {message[:300]}")
 
     def run_drill(self) -> None:
         r = self.report
@@ -824,9 +1032,11 @@ class Harness:
         for key in MYSQL_IMAGES:
             self.verify_mysql(key, dumps_dir, entries, plan, mysql_source[key])
         self.verify_sqlite(dumps_dir, entries, plan)
+        self.verify_missing_accounts_step(plan)
         self.verify_redis(dumps_dir, plan, redis_source)
         self.remove_scratch()
         self.run_drill()
+        self.verify_line_break_names(jobs)
         r = self.report
         print(f"\n== {len(r.passed)} passed, {len(r.failed)} failed, {len(r.notes)} notes", flush=True)
         for line in r.failed:

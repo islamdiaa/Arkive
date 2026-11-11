@@ -43,7 +43,9 @@ from app.core.activity import log_activity
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_config
 from app.services.backup_engine import ResticError
+from app.services.db_dumper import dump_prefix
 from app.services.lock_manager import BackupLockManager
+from app.services.mysql_accounts import ACCOUNTS_DB_NAME, ACCOUNTS_KIND
 from app.services.settings_store import get_int_setting
 from app.utils.mounts import host_path_for, running_in_container
 from app.utils.redact import redact_credentials
@@ -389,7 +391,7 @@ class DumpCandidate:
     db_name: str = ""
     size_bytes: int = 0
     image: str | None = None
-    kind: str = "database"  # database | globals
+    kind: str = "database"  # database | globals | accounts
     in_snapshot: bool = True
 
     @property
@@ -505,6 +507,24 @@ def infer_candidates(
     # Longest pattern first so "app_db_x" beats "app_db".
     patterns.sort(key=lambda p: len(p[0]), reverse=True)
 
+    # Exact file-name prefixes of each server's roles/accounts dump: the
+    # identity hash tells them apart from a database named "globals" or
+    # "accounts", which the name patterns below would also match.
+    special: dict[str, tuple[str, str, str, str]] = {}
+    for container in containers.values():
+        special[dump_prefix(container, "postgres", "globals", kind="globals")] = (
+            container,
+            "postgres",
+            "globals",
+            "globals",
+        )
+        special[dump_prefix(container, "mariadb", ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND)] = (
+            container,
+            "mariadb",
+            ACCOUNTS_DB_NAME,
+            ACCOUNTS_KIND,
+        )
+
     newest: dict[tuple[str, str, str, str], tuple[str, DumpCandidate]] = {}
     for name, listing in files.items():
         if (
@@ -522,20 +542,32 @@ def infer_candidates(
         prefix, ts, ext = match.group("prefix"), match.group("ts"), match.group("ext").lower()
         size = listing.get("size") if isinstance(listing.get("size"), int) else 0
         cand: DumpCandidate | None = None
-        for pattern, record in patterns:
-            if prefix == pattern or (
-                prefix.startswith(pattern + "-") and re.fullmatch(r"[0-9a-f]{8}", prefix[len(pattern) + 1 :])
-            ):
-                container = str(record["container_name"])
-                cand = DumpCandidate(
-                    file=name,
-                    container_name=container,
-                    db_type=str(record["db_type"]).lower(),
-                    db_name=str(record["db_name"]),
-                    size_bytes=size,
-                    image=images.get(container),
-                )
-                break
+        if prefix in special:
+            container, db_type, db_name, kind = special[prefix]
+            cand = DumpCandidate(
+                file=name,
+                container_name=container,
+                db_type=db_type,
+                db_name=db_name,
+                size_bytes=size,
+                image=images.get(container),
+                kind=kind,
+            )
+        if cand is None:
+            for pattern, record in patterns:
+                if prefix == pattern or (
+                    prefix.startswith(pattern + "-") and re.fullmatch(r"[0-9a-f]{8}", prefix[len(pattern) + 1 :])
+                ):
+                    container = str(record["container_name"])
+                    cand = DumpCandidate(
+                        file=name,
+                        container_name=container,
+                        db_type=str(record["db_type"]).lower(),
+                        db_name=str(record["db_name"]),
+                        size_bytes=size,
+                        image=images.get(container),
+                    )
+                    break
         # New-style names end in an identity hash: "<container>_globals-<hash8>".
         roles_prefix = re.sub(r"-[0-9a-f]{8}$", "", prefix)
         if cand is None and roles_prefix.endswith("_globals") and roles_prefix[: -len("_globals")] in containers:
@@ -604,6 +636,21 @@ def select_candidates(
                     "roles/globals dump; loaded ahead of this server's database dumps when they are drilled",
                 )
             )
+        elif cand.kind == ACCOUNTS_KIND:
+            # A drill loads one database into an empty server; table and
+            # column grants for the server's other databases would fail there
+            # although a real restore (accounts after all databases) succeeds.
+            # The file's completion trailer is checked when it is written.
+            excluded.append(
+                (
+                    cand,
+                    "skipped",
+                    "users and grants dump; not loaded by drills (restored after all of this server's "
+                    "databases, see the restore plan)",
+                )
+            )
+        elif cand.kind != "database":
+            excluded.append((cand, "skipped", f"{cand.kind} dump; not drill-tested"))
         elif cand.db_type in NOT_DRILLED_TYPES:
             excluded.append((cand, "skipped", f"{cand.db_type} dumps are not drill-tested"))
         elif cand.db_type not in DRILLABLE_TYPES:

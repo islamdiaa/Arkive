@@ -47,6 +47,13 @@ from docker.utils.socket import STDERR, frames_iter
 from app import __version__
 from app.core.config import ArkiveConfig
 from app.models.discovery import DiscoveredDatabase
+from app.services.mysql_accounts import (
+    ACCOUNTS_DB_NAME,
+    ACCOUNTS_HEADER,
+    ACCOUNTS_KIND,
+    AccountsDumpError,
+    dump_accounts,
+)
 from app.services.settings_store import DEFAULTS as SETTING_DEFAULTS
 from app.services.settings_store import get_setting
 from app.utils.redact import redact_credentials
@@ -177,7 +184,8 @@ def dump_prefix(
     identity, so databases whose names collapse to the same file-safe form
     (``sales data`` vs ``sales_data``; container ``a`` + db ``b_c`` vs ``a_b`` +
     ``c``; same-basename SQLite files) never share a group, and the roles dump
-    (``kind="globals"``) never collides with a database named ``globals``.
+    (``kind="globals"``) and accounts dump (``kind="accounts"``) never collide
+    with a database of that name.
     ``mysql`` and ``mariadb`` are the same type here (dumps report ``mariadb``).
     """
     db_type = "mariadb" if db_type == "mysql" else db_type
@@ -187,6 +195,15 @@ def dump_prefix(
     digest = hashlib.sha1(identity.encode()).hexdigest()[:8]  # nosec B324 — file naming, not security
     label = GLOBALS_DB_NAME if kind == "globals" else db_name
     return f"{safe_name(container_name)}_{safe_name(label)}-{digest}"
+
+
+def server_dump_keys(container_name: str) -> set[str]:
+    """Identities (dump prefixes) of a server's non-database dumps: the
+    Postgres roles dump and the MariaDB/MySQL accounts dump."""
+    return {
+        dump_prefix(container_name, "postgres", GLOBALS_DB_NAME, kind="globals"),
+        dump_prefix(container_name, "mariadb", ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND),
+    }
 
 
 def legacy_dump_prefix(container_name: str, db_name: str) -> str:
@@ -446,6 +463,8 @@ def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) ->
         head = _read_head(path)
         if b"PostgreSQL database cluster dump" in head:
             db_type, kind = "postgres", "globals"
+        elif head.startswith(ACCOUNTS_HEADER.encode()):
+            db_type, kind = "mariadb", ACCOUNTS_KIND
         elif b"PostgreSQL database dump" in head:
             db_type = "postgres"
         elif b"MySQL dump" in head or b"MariaDB dump" in head:
@@ -466,11 +485,17 @@ def _infer_manifest_entry(path: Path, stat: os.stat_result, known_containers) ->
             db_name = prefix[len(safe_container) + 1 :]
             break
     if not container_name:
-        for marker, kind_or_type in ((f"_{GLOBALS_DB_NAME}", "globals"), ("_redis", "redis")):
+        for marker, kind_or_type in (
+            (f"_{GLOBALS_DB_NAME}", "globals"),
+            (f"_{ACCOUNTS_DB_NAME}", ACCOUNTS_KIND),
+            ("_redis", "redis"),
+        ):
             if prefix.endswith(marker) and kind_or_type in (kind, db_type):
                 container_name = prefix[: -len(marker)]
     if kind == "globals":
         db_name = GLOBALS_DB_NAME
+    elif kind == ACCOUNTS_KIND:
+        db_name = ACCOUNTS_DB_NAME
     elif db_type == "redis":
         db_name = "redis"
 
@@ -711,8 +736,10 @@ class DumpResult:
     status: str  # success, failed
     error: str | None = None
     duration_seconds: float = 0.0
-    # "database", or "globals" for a Postgres cluster's roles/tablespaces
-    # (pg_dumpall --globals-only, db_name "globals"); not a discovered database.
+    # "database", "globals" for a Postgres cluster's roles/tablespaces
+    # (pg_dumpall --globals-only, db_name "globals") or "accounts" for a
+    # MariaDB/MySQL server's users and grants (db_name "accounts"); the last
+    # two are not discovered databases.
     kind: str = "database"
     # Finer integrity detail for the manifest, e.g. "unverifiable" when the
     # stock checker cannot evaluate an app-specific SQLite schema.
@@ -1011,8 +1038,10 @@ class DBDumper:
         """Dump all discovered databases. Continue on failure.
 
         Besides one result per database, every Postgres container gets one
-        ``kind="globals"`` result (roles via pg_dumpall --globals-only). The
-        dump manifest is rewritten afterwards.
+        ``kind="globals"`` result (roles via pg_dumpall --globals-only) and
+        every MariaDB/MySQL container one ``kind="accounts"`` result (users,
+        roles and grants; ``skipped`` without root credentials). The dump
+        manifest is rewritten afterwards.
         """
         databases = self.dedupe(databases)
         self.compression = await self._load_compression()
@@ -1075,6 +1104,31 @@ class DBDumper:
             if result.status != "success":
                 self._remove_dump_file(result.dump_path)
             result.db_key = dump_prefix(container_name, "postgres", GLOBALS_DB_NAME, kind="globals")
+            result.started_at = started_at
+            results.append(result)
+
+        # Users, roles and grants of each MariaDB/MySQL server live in its
+        # "mysql" schema, outside the database dumps: one accounts dump per server.
+        mysql_servers = list(dict.fromkeys(db.container_name for db in databases if db.db_type in ("mariadb", "mysql")))
+        for container_name in mysql_servers:
+            started_at = _utc_iso()
+            try:
+                result = await asyncio.to_thread(self._dump_mysql_accounts_blocking, container_name)
+            except Exception as e:
+                result = DumpResult(
+                    container_name=container_name,
+                    db_type="mariadb",
+                    db_name=ACCOUNTS_DB_NAME,
+                    dump_path="",
+                    dump_size_bytes=0,
+                    integrity_check="skipped",
+                    status="failed",
+                    error=redact_credentials(str(e)),
+                    kind=ACCOUNTS_KIND,
+                )
+            if result.status == "failed":
+                self._remove_dump_file(result.dump_path)
+            result.db_key = dump_prefix(container_name, "mariadb", ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND)
             result.started_at = started_at
             results.append(result)
 
@@ -1571,6 +1625,93 @@ class DBDumper:
             )
         finally:
             self._discard(partial)
+
+    def _dump_mysql_accounts_blocking(self, container_name: str) -> DumpResult:
+        """Dump a MariaDB/MySQL server's application accounts and grants
+        (see services/mysql_accounts.py).
+
+        Needs root: other accounts' password hashes are only visible to an
+        administrator. When Arkive connects as the application user (no root
+        password in the container's environment) the dump is ``skipped`` with
+        that reason; the image recreates that user from the same environment
+        on a new server. Any other problem fails the dump; nothing is written
+        unless every account was dumped.
+        """
+        pseudo_db = DiscoveredDatabase(container_name=container_name, db_type="mariadb", db_name=ACCOUNTS_DB_NAME)
+        dump_path = self._dump_path(pseudo_db, self._timestamp(), self._sql_ext(), kind=ACCOUNTS_KIND)
+        partial = self._partial_path(dump_path)
+
+        def outcome(status: str, error: str | None = None) -> DumpResult:
+            return DumpResult(
+                container_name=container_name,
+                db_type="mariadb",
+                db_name=ACCOUNTS_DB_NAME,
+                dump_path=dump_path if status == "failed" else "",
+                dump_size_bytes=0,
+                integrity_check="skipped",
+                status=status,
+                error=redact_credentials(error) if error else None,
+                kind=ACCOUNTS_KIND,
+            )
+
+        start = time.monotonic()
+        try:
+            container = self.docker.containers.get(container_name)
+            env = self._get_container_env(container)
+            mysql_user, mysql_password = mysql_credentials_from_env(env)
+            if mysql_user != "root":
+                return outcome(
+                    "skipped",
+                    "users and grants not dumped: no MYSQL_ROOT_PASSWORD/MARIADB_ROOT_PASSWORD in the container's "
+                    f"environment, and the application user ({mysql_user}) cannot read other accounts' passwords",
+                )
+            client = "mariadb" if self._mysql_dump_binary(container) == "mariadb-dump" else "mysql"
+            exec_env = {"MYSQL_PWD": mysql_password} if mysql_password else None
+
+            def run_sql(sql: str) -> str:
+                # --execute=... keeps the statement one argv element that can
+                # never be read as an option; -r: account names unescaped.
+                exit_code, output = container.exec_run(
+                    [client, "-u", mysql_user, "--connect-timeout=10", "-N", "-B", "-r", f"--execute={sql}"],
+                    environment=exec_env,
+                    demux=True,
+                )
+                stdout, stderr = output if isinstance(output, tuple) else (output, b"")
+                if exit_code != 0:
+                    message = (stderr or stdout or b"").decode(errors="replace").strip()
+                    raise AccountsDumpError(
+                        f"{client} exited with code {exit_code}: {message.splitlines()[-1] if message else 'no output'}"
+                    )
+                return (stdout or b"").decode("utf-8", errors="strict")
+
+            accounts = dump_accounts(run_sql)
+            data = accounts.sql.encode()
+            writer = _open_dump_writer(partial, self.compression)
+            try:
+                writer.write(data)
+                writer.close()
+            except BaseException:
+                writer.abort()
+                raise
+            stream = StreamResult(exit_code=0, bytes_written=len(data), stderr="", tail=data[-_TAIL_BYTES:])
+            result = self._streamed_dump_result(
+                pseudo_db, "mariadb", "accounts dump", dump_path, stream, MYSQL_DUMP_TRAILER, partial
+            )
+            if result.status == "success":
+                logger.info(
+                    "Dumped %d account(s) of %s (not dumped: %s)",
+                    len(accounts.included),
+                    container_name,
+                    ", ".join(a.label for a, _ in accounts.excluded) or "none",
+                )
+        except Exception as e:
+            logger.error("Accounts dump of %s failed: %s", container_name, redact_credentials(str(e)))
+            result = outcome("failed", f"users and grants could not be dumped: {e}")
+        finally:
+            self._discard(partial)
+        result.kind = ACCOUNTS_KIND
+        result.duration_seconds = round(time.monotonic() - start, 2)
+        return result
 
     def _dump_mongodb_blocking(self, db: DiscoveredDatabase) -> DumpResult:
         """Dump MongoDB via docker exec with authentication support."""

@@ -119,7 +119,7 @@ Stop the apps that use a database before you restore it.
 
 ### PostgreSQL (`.sql`, or `.sql.gz` with gzip compression)
 
-Arkive dumps each database with `pg_dump --clean --create --if-exists --no-owner --no-privileges`. Loading the file drops the database if it exists, creates it again and fills it. PostgreSQL can't drop the database you are connected to, so connect to a different one:
+Arkive dumps each database with `pg_dump --clean --create --if-exists`. Loading the file drops the database if it exists, creates it again and fills it. The dump keeps object owners and grants (since 0.5.0), so the roles they name must exist first: on a new server, load the roles dump described below before any database dump. PostgreSQL can't drop the database you are connected to, so connect to a different one:
 
 - for most dumps, the `postgres` maintenance database:
 
@@ -135,9 +135,9 @@ Arkive dumps each database with `pg_dump --clean --create --if-exists --no-owner
     gunzip -c <dump>.sql.gz | docker exec -i <postgres-container> psql -U <user> -d template1 -v ON_ERROR_STOP=1
     ```
 
-`<user>` is the database superuser of that container, usually its `POSTGRES_USER`. A [restore drill](restore-drills.md) loads dumps the same way, connected to `template1` for the `postgres` database and to `postgres` for every other one. Because the dump has no owner or privilege statements, the restored objects belong to the user you load it with.
+`<user>` is the database superuser of that container, usually its `POSTGRES_USER`. A [restore drill](restore-drills.md) loads dumps the same way, connected to `template1` for the `postgres` database and to `postgres` for every other one, after the roles dump. The restored database and its objects belong to the roles that owned them before, and their grants come back too. Dumps made by Arkive 0.4 and earlier have no owner or privilege statements; their objects belong to the user you load them with.
 
-On a new database server, load the roles first. Arkive dumps them per PostgreSQL container with `pg_dumpall --globals-only` into `<container>_globals-<hash>_<timestamp>.sql`. Load that file connected to `postgres`, without `ON_ERROR_STOP` (the role you connect as already exists, and creating it again reports an error you can ignore). If the dump user couldn't read role passwords (it wasn't a superuser), Arkive made the roles dump with `--no-role-passwords`, and you need to set the passwords again.
+On a new database server, load the roles first, before any of that server's database dumps. Arkive dumps them per PostgreSQL container with `pg_dumpall --globals-only` into `<container>_globals-<hash>_<timestamp>.sql`. Load that file connected to `postgres`, without `ON_ERROR_STOP` (the role you connect as already exists, and creating it again reports an error you can ignore). If the dump user couldn't read role passwords (it wasn't a superuser), Arkive made the roles dump with `--no-role-passwords`, and you need to set the passwords again.
 
 ### MariaDB and MySQL (`.sql`, or `.sql.gz` with gzip compression)
 
@@ -149,6 +149,20 @@ gunzip -c <dump>.sql.gz | docker exec -i <mariadb-container> mysql -u root -p'<r
 ```
 
 On images without a `mysql` command, use `mariadb`.
+
+The database dumps do not contain user accounts: those live in the server's `mysql` system schema. Arkive dumps them separately, once per MariaDB/MySQL container, into `<container>_accounts-<hash>_<timestamp>.sql` (`accounts` as the database name and kind in the manifest). The file recreates every application user and role with its password hash, authentication plugin, lock state and resource limits, then gives back its grants and default roles. On a new server, load it **after all of that server's databases**: grants on single tables or columns need those tables to exist.
+
+```bash
+docker exec -i <mariadb-container> mysql -u root -p'<root-password>' < <container>_accounts-<hash>_<timestamp>.sql
+```
+
+What to know about this file:
+
+- Users that already exist on the new server, such as the `MYSQL_USER` the image creates from its environment, get the dumped password, so the app keeps working with the password it had. Grants are only added; nothing on the new server is revoked.
+- `root` is not in the file, so the new container keeps the root password from its own environment, which the image, its healthcheck and Arkive itself use. Neither are the server's own accounts (`mysql.sys`, `mysql.session`, `mysql.infoschema`, `mariadb.sys`), the MariaDB image's `healthcheck` accounts, `debian-sys-maint` or anonymous accounts. The header of the file lists every account it left out.
+- Arkive can only dump accounts when it connects as root, so the container needs `MYSQL_ROOT_PASSWORD` or `MARIADB_ROOT_PASSWORD` (or an empty root password). With only the application user's credentials (for example with `MARIADB_RANDOM_ROOT_PASSWORD`), the backup records the accounts dump as skipped with that reason. The run stays `success`, and its list of dumps shows the accounts dump as skipped with that reason. What you get on a new server in that case: the image creates `MYSQL_USER` again from the same environment (with the password in that environment), and every other account, and any password changed since the container was created, must be recreated by hand. The restore plan's users-and-grants step then prints that there is no accounts dump in the restore and loads nothing.
+- If you restore only some of the server's databases, a grant on a table you did not restore stops the load at that line. Add `--force` to the client to load the rest and see each error.
+- Restore drills don't load this file: a drill loads one database at a time into an empty server, where grants on the server's other tables would fail. The file is checked for its completion line when it is written, like the database dumps.
 
 ### MongoDB (`.archive`, or `.archive.gz`)
 
@@ -200,7 +214,7 @@ When the server is gone, you need:
     ```
 
 8. **Recreate your containers.** Their Unraid templates are in the flash archive under `plugins/dockerMan/templates-user/`.
-9. **Restore the databases** from their dumps, as described above, before you start the apps that use them.
+9. **Restore the databases** from their dumps, as described above, before you start the apps that use them. Recreate each database container with the same environment as before. For PostgreSQL, load the roles dump first; for MariaDB and MySQL, load the accounts dump after the server's databases. The restore plan PDF (Restore → Restore Plan) lists these steps in order with the commands for each container.
 10. **Resume the jobs,** run a backup, and run a restore drill.
 11. **Generate a new recovery kit.** The targets were created again, so their IDs and repository strings changed.
 
