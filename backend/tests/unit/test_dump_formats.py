@@ -736,7 +736,8 @@ class TestGlobals:
         results = await DBDumper(_docker(maria), mock_config).dump_all(
             [DiscoveredDatabase(container_name="mdb", db_type="mariadb", db_name="appdb")]
         )
-        assert [r.kind for r in results] == ["database"]
+        # A MariaDB server gets its users-and-grants dump instead (tests/unit/test_mysql_accounts.py).
+        assert [r.kind for r in results] == ["database", "accounts"]
 
     def test_database_named_globals_does_not_collide(self, tmp_path):
         config = MagicMock()

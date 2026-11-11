@@ -14,6 +14,7 @@ from app import __version__
 from app.core.dependencies import get_db, request_has_valid_credentials
 from app.models.status import StatusResponse
 from app.services.backup_coverage import evaluate_backup_coverage
+from app.services.db_dumper import server_dump_keys
 from app.services.db_exclusions import excluded_identities
 from app.services.db_exclusions import identity as db_identity
 from app.services.freshness import evaluate_freshness
@@ -240,7 +241,7 @@ async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
     run_id = latest_run["id"] if isinstance(latest_run, aiosqlite.Row) else latest_run[0]
     try:
         cursor = await db.execute(
-            """SELECT container_name, db_name, db_type, status
+            """SELECT container_name, db_name, db_type, status, db_key
                FROM job_run_databases
                WHERE run_id = ?""",
             (run_id,),
@@ -259,8 +260,11 @@ async def _database_stats(db: aiosqlite.Connection) -> tuple[int, int, bool]:
                 "db_name": row[1],
                 "db_type": row[2],
                 "status": row[3],
+                "db_key": row[4],
             }
         )
+        if row_dict.get("db_key") and row_dict["db_key"] in server_dump_keys(row_dict["container_name"]):
+            continue  # a server's roles/accounts dump, not a database named "globals"/"accounts"
         if row_dict["status"] == "success":
             successful_keys.add((row_dict["container_name"], row_dict["db_name"], row_dict["db_type"]))
 

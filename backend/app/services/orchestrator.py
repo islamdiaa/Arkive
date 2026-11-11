@@ -37,6 +37,7 @@ from app.services.lock_manager import (
     BackupLockManager,
     _get_proc_start_time,  # noqa: F401 — re-export for backward compat
 )
+from app.services.mysql_accounts import ACCOUNTS_DB_NAME, ACCOUNTS_KIND
 from app.services.notifier import Notifier
 from app.services.repo_paths import build_repo_path
 from app.services.retention import read_retention_settings
@@ -881,13 +882,24 @@ class BackupOrchestrator:
             # Step 9: Complete — check if any targets failed
             duration = int(time.monotonic() - start_time)
             database_failures = sum(1 for d in dump_results if d.status == "failed" and d.kind == "database")
-            roles_failures = [d.container_name for d in dump_results if d.status == "failed" and d.kind != "database"]
+            roles_failures = [
+                d.container_name
+                for d in dump_results
+                if d.status == "failed" and d.kind not in ("database", ACCOUNTS_KIND)
+            ]
+            accounts_failures = [
+                f"{d.container_name} ({d.error or 'no error text'})"
+                for d in dump_results
+                if d.status == "failed" and d.kind == ACCOUNTS_KIND
+            ]
             flash_failed = flash_result is not None and flash_result.status == "failed"
             substep_failures = []
             if database_failures:
                 substep_failures.append(f"{database_failures} database dump(s) failed")
             if roles_failures:
                 substep_failures.append(f"roles dump failed for {', '.join(roles_failures)}")
+            if accounts_failures:
+                substep_failures.append(f"accounts dump failed for {'; '.join(accounts_failures)}")
             if flash_failed:
                 flash_error = (flash_result.error or "").strip() if flash_result is not None else ""
                 if flash_error:
@@ -1071,6 +1083,8 @@ class BackupOrchestrator:
             legacy[prefix] = legacy_dump_prefix(d.container_name, d.db_name)
             if d.db_type == "postgres":
                 protect.add(dump_prefix(d.container_name, "postgres", "globals", kind="globals"))
+            elif d.db_type in ("mariadb", "mysql"):
+                protect.add(dump_prefix(d.container_name, "mariadb", ACCOUNTS_DB_NAME, kind=ACCOUNTS_KIND))
         stopped_exec = any(
             getattr(c, "status", "running") != "running"
             and any(db.db_type in EXEC_DUMP_TYPES for db in getattr(c, "databases", []) or [])

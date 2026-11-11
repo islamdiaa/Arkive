@@ -9,6 +9,9 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- **MariaDB and MySQL users and grants are backed up.** Each MariaDB/MySQL container gets an accounts dump next to its database dumps (`<container>_accounts-<hash>_<timestamp>.sql`) that recreates the application users and roles with their passwords, and gives back their grants and default roles. On a new server, load it after that server's databases; the restore plan lists the step. `root` and the server's own accounts are left out, so the new container keeps its own root password. This needs the root password in the container's environment (`MYSQL_ROOT_PASSWORD` or `MARIADB_ROOT_PASSWORD`); without it the accounts dump is recorded as skipped. This closes the 0.5.0 known limitation that the application's database user had to be recreated by hand.
+
 ## [0.5.0] - 2026-11-10
 
 Arkive 0.5.0 answers the questions that come after "do my backups work?": is there a copy somewhere else, is each database healthy, what is still missing after setup, and how do I get one database back without doing it by hand. It is also the first release prepared for Unraid Community Applications.

@@ -459,6 +459,17 @@ throwaway Docker-in-Docker daemon (see its README). Its first run found:
   functions and events; MySQL 5.7's default utf8 turned emoji into `?`.
 - Only `MYSQL_DATABASE` was dumped from a MariaDB/MySQL server; every
   application database is now listed (like Postgres since v0.4.0).
+- MariaDB/MySQL users and grants were not dumped at all (the app's user was
+  missing after a restore onto a new server). Now each server gets an
+  accounts dump (`services/mysql_accounts.py`, kind `accounts`, db_name
+  `accounts`): `SHOW CREATE USER` + `SHOW GRANTS` per account (MySQL 8.0.17+
+  with `print_identified_with_as_hex`; binary hashes are otherwise unsafe),
+  written as `CREATE USER IF NOT EXISTS` + `ALTER USER` + grants + default
+  roles. root, `mysql.*`/`mariadb.sys`, the image's `healthcheck` and
+  anonymous accounts are left out (the new container's root password comes
+  from its environment). Restored after the server's databases (table grants
+  need the tables); drills skip it; it needs root credentials and is
+  `skipped` with that reason otherwise.
 - Drill false failures: a `CREATE TABLE` inside a function/procedure body was
   counted as a table, and a `mysql` system-schema dump (no `MYSQL_DATABASE`)
   was counted outside its own schema.
@@ -471,7 +482,10 @@ throwaway Docker-in-Docker daemon (see its README). Its first run found:
 
 Rules that follow from this:
 - a restore must bring back what the app needs to run, not only its rows:
-  owners, grants, roles, routines, events
+  owners, grants, roles, routines, events, MariaDB/MySQL accounts
+- a non-database dump (Postgres `globals`, MariaDB/MySQL `accounts`) is told
+  apart from a database of the same name by its identity hash
+  (`dump_prefix(..., kind=...)`, `server_dump_keys`), never by its name
 - restore plan commands are executed by the round trip; keep them runnable
   in POSIX sh against the container's own environment (and never pass a bare
   `-p` to a MySQL client: with no TTY it reads the password from the piped dump)
@@ -705,8 +719,8 @@ At the time this handoff was updated (v0.5.0):
   and dumps all of its databases again
 - section 14 fixes landed before the v0.4.0 tag (the first GitHub release)
 - v0.5.0 (section 17) was built as separate PRs, each reviewed adversarially;
-  known gaps: MariaDB/MySQL users and grants are not dumped, and guided
-  restore does not cover MongoDB or Redis
+  known gap: guided restore does not cover MongoDB or Redis (MariaDB/MySQL
+  users and grants are dumped since the accounts dump, see section 15)
 - the frontend is on Tailwind CSS 4 (#53; see the Tailwind section above)
 - the frontend is on SvelteKit 3: its config lives in `frontend/vite.config.js`
   (there is no svelte.config.js), `$lib` still works through the deprecated

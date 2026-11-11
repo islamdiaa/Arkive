@@ -308,6 +308,61 @@ async def test_failed_roles_dump_makes_run_partial(config):
 
 
 @pytest.mark.asyncio
+async def test_failed_accounts_dump_makes_run_partial(config):
+    db = _db("mdb", db_type="mariadb")
+    accounts_failed = DumpResult(
+        container_name="mdb",
+        db_type="mariadb",
+        db_name="accounts",
+        dump_path="",
+        dump_size_bytes=0,
+        integrity_check="skipped",
+        status="failed",
+        error="users and grants could not be dumped: mariadb exited with code 1",
+        kind="accounts",
+    )
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("mdb", [db])]))
+    dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), accounts_failed]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
+
+    result = await orch.run_backup("job-db", run_id="r-accounts-bad")
+
+    assert result["status"] == "partial"
+    row = await _run_row(config, "r-accounts-bad")
+    assert (row["databases_dumped"], row["databases_failed"]) == (1, 0)
+    assert "accounts dump failed for mdb (users and grants could not be dumped" in row["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_skipped_accounts_dump_is_recorded_not_a_failure(config):
+    db = _db("mdb", db_type="mariadb")
+    accounts_skipped = DumpResult(
+        container_name="mdb",
+        db_type="mariadb",
+        db_name="accounts",
+        dump_path="",
+        dump_size_bytes=0,
+        integrity_check="skipped",
+        status="skipped",
+        error="users and grants not dumped: no MYSQL_ROOT_PASSWORD/MARIADB_ROOT_PASSWORD",
+        kind="accounts",
+    )
+    discovery = MagicMock(scan=AsyncMock(return_value=[_container("mdb", [db])]))
+    dumper = MagicMock(dump_all=AsyncMock(return_value=[_ok_dump(db), accounts_skipped]))
+    orch = make_orchestrator(config, discovery=discovery, db_dumper=dumper)
+
+    result = await orch.run_backup("job-db", run_id="r-accounts-skip")
+
+    assert result["status"] == "success"
+    async with aiosqlite.connect(config.db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT status, error FROM job_run_databases WHERE run_id = ? AND db_name = 'accounts'",
+            ("r-accounts-skip",),
+        )
+        assert await cursor.fetchall() == [("skipped", accounts_skipped.error)]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_companion_databases_are_dumped_once(config):
     db = _db("immich_postgres", name="immich")
     discovery = MagicMock(
