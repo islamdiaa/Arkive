@@ -94,7 +94,7 @@ To explore the interface with sample data before you configure anything, open an
 
 ### Unraid
 
-Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; `latest` is rebuilt from every commit to `main`.
+Add the template from `https://raw.githubusercontent.com/islamdiaa/Arkive/main/unraid-template.xml` (or install from Community Applications if it's listed there). The template mounts `/mnt/user/appdata`, the flash config and the Docker socket read-only, keeps Arkive's own state in `/mnt/user/appdata/arkive`, and maps `/mnt/user/backups` read-write for a local target. To back up another share, add a path that maps it to the same path in the container, read-only (for example `/mnt/user/photos` to `/mnt/user/photos`). Map shares one at a time rather than all of `/mnt/user`: an exclusive share is a symlink in `/mnt/user` and can't be read through it. Its image tag, `islamdiaa/arkive:0`, follows releases; the `main` tag is rebuilt from every commit to `main` and is not a release.
 
 ### Docker Compose
 
