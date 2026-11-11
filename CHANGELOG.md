@@ -9,6 +9,12 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- **Guided restore for MongoDB and Redis.** MongoDB is restored in place like PostgreSQL and MariaDB: Arkive checks every collection's checksum in the archive first, takes a safety dump, drops the database (or, for a server dumped whole, every database except `admin`, `config` and `local`) and loads the archive with `mongorestore`; Undo puts the safety dump back the same way. The MongoDB password never appears on a command line. Redis is prepared like SQLite: Arkive restores the `.rdb` file, checks its checksum and that the running Redis can read it, saves the current data and gives you the exact steps to swap it in, including a new append-only file when `appendonly` is on (moving the old one aside alone makes Redis start empty).
+
+### Fixed
+- The manual MongoDB and Redis restore steps in the restore guide: a `.archive.gz` dump is decompressed with `gunzip -c` (not `mongorestore --gzip`), and Redis with the append-only file needs a new one made from the dump.
+
 ## [0.5.0] - 2026-11-10
 
 Arkive 0.5.0 answers the questions that come after "do my backups work?": is there a copy somewhere else, is each database healthy, what is still missing after setup, and how do I get one database back without doing it by hand. It is also the first release prepared for Unraid Community Applications.

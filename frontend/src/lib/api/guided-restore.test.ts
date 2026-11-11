@@ -6,6 +6,7 @@ import {
   loadPercent,
   methodLabel,
   optionKey,
+  replacedLabel,
   statusBadgeClass,
   statusLabel,
 } from './guided-restore';
@@ -77,7 +78,35 @@ describe('guided restore demo mock', () => {
       expect(['load', 'manual', 'unsupported']).toContain(option.method);
       expect(Array.isArray(option.dependents)).toBe(true);
     }
-    expect(result.databases.find((d: any) => d.db_type === 'redis').method).toBe('unsupported');
+    const redis = result.databases.find((d: any) => d.db_type === 'redis');
+    expect(redis.method).toBe('manual');
+    expect(redis.scope).toMatch(/whole Redis data set/);
+    const mongo = result.databases.find((d: any) => d.db_type === 'mongodb');
+    expect(mongo.method).toBe('load');
+    expect(mongo.scope).toBe('every database on the server except admin, config and local');
+    expect(result.databases.find((d: any) => d.db_type === 'postgres').scope).toBeNull();
+  });
+
+  it('prepares Redis restores as hand-run steps after checking the container', async () => {
+    const selection = { container_name: 'authelia-redis', db_type: 'redis', db_name: 'redis', snapshot_id: 'abc12345', target_id: 'target-b2-main' };
+    const preview: any = await mockApi.post('/restore/database/preview', selection);
+    expect(preview.method).toBe('manual');
+    expect(preview.confirm_phrase).toBeNull();
+    expect(preview.steps[0].key).toBe('check_container');
+    expect(preview.dump.file.endsWith('.rdb')).toBe(true);
+    const started: any = await mockApi.post('/restore/database', { ...selection, confirm: '' });
+    vi.setSystemTime(new Date('2026-11-09T12:01:00Z'));
+    const op: any = await mockApi.get(`/restore/database/${started.id}`);
+    expect(op.status).toBe('action_required');
+    const commands = op.instructions.map((i: any) => i.command);
+    expect(commands[0]).toBe('docker stop authelia-redis');
+    expect(commands.some((c: string) => c.includes('appendonly.aof.manifest'))).toBe(true);
+    expect(commands.indexOf('docker start authelia-redis')).toBeGreaterThan(commands.indexOf('docker stop authelia-redis'));
+  });
+
+  it('labels what a whole-server MongoDB restore replaces', () => {
+    expect(replacedLabel({ db_name: 'admin', scope: 'every database on the server except admin, config and local' })).toMatch(/every database/);
+    expect(replacedLabel({ db_name: 'immich', scope: null })).toBe('immich');
   });
 
   it('previews, runs and undoes a restore like the API', async () => {

@@ -94,6 +94,11 @@ def entry(file, container="pg", db_type="postgres", db_name="appdb", host_path=N
 
 @pytest_asyncio.fixture
 async def config(tmp_path):
+    return await make_config(tmp_path)
+
+
+async def make_config(tmp_path):
+    """Arkive config with a target, a snapshot and discovered containers (shared with other test modules)."""
     cfg = ArkiveConfig(config_dir=tmp_path)
     cfg.ensure_dirs()
     await init_db(cfg.db_path)
@@ -112,6 +117,7 @@ async def config(tmp_path):
             ("unrelated", "running", [], None),
             ("mariadb", "running", [{"container_name": "mariadb", "db_type": "mariadb", "db_name": "appdb"}], None),
             ("cache", "running", [{"container_name": "cache", "db_type": "redis", "db_name": "redis"}], None),
+            ("search", "running", [{"container_name": "search", "db_type": "elasticsearch", "db_name": "idx"}], None),
             (
                 "vaultwarden",
                 "running",
@@ -796,7 +802,7 @@ async def test_resolve_errors(config):
     engine = make_engine(config, files, pg, app)
     cases = [
         (body(db_name="nope"), 404),
-        (body(container="cache", db_type="redis", db_name="redis"), 422),
+        (body(container="search", db_type="elasticsearch", db_name="idx"), 422),
         (GuidedRestoreStart(**{**body().model_dump(), "target_id": "missing"}), 404),
         (GuidedRestoreStart(**{**body().model_dump(), "snapshot_id": "ffffffff"}), 404),
     ]
@@ -820,10 +826,13 @@ async def test_options_lists_methods_and_dependents(config):
     assert [d["name"] for d in options[("pg", "appdb")]["dependents"]] == ["app-server"]
     assert options[("mariadb", "appdb")]["method"] == "load"
     assert options[("vaultwarden", "db.sqlite3")]["method"] == "manual"
-    assert options[("cache", "redis")]["method"] == "unsupported"
-    assert "mongorestore" not in options[("cache", "redis")]["reason"]
+    assert options[("cache", "redis")]["method"] == "manual"
+    assert options[("cache", "redis")]["scope"] == "the whole Redis data set (every logical database)"
+    assert options[("pg", "appdb")]["scope"] is None
+    assert options[("search", "idx")]["method"] == "unsupported"
+    assert "MongoDB" in options[("search", "idx")]["reason"]
     # Unsupported entries sort last.
-    assert list(options)[-1] == ("cache", "redis")
+    assert list(options)[-1] == ("search", "idx")
 
 
 # ---------------------------------------------------------------------------
@@ -1327,8 +1336,10 @@ def test_restore_method():
     assert restore_method("postgres") == ("load", None)
     assert restore_method("mysql") == ("load", None)
     assert restore_method("sqlite") == ("manual", None)
-    method, reason = restore_method("mongodb")
-    assert method == "unsupported" and "mongorestore" in reason
+    assert restore_method("mongodb") == ("load", None)
+    assert restore_method("redis") == ("manual", None)
+    method, reason = restore_method("influxdb")
+    assert method == "unsupported" and "influxdb" in reason and "restore plan" in reason
 
 
 def test_mysql_dump_databases(tmp_path):
