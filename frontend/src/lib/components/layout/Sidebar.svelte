@@ -63,9 +63,9 @@
 
 	$: currentPath = $page.url.pathname;
 
-	function isActive(href: string): boolean {
-		if (href === '/') return currentPath === '/';
-		return currentPath === href || currentPath.startsWith(href + '/');
+	function isActive(href: string, path: string): boolean {
+		if (href === '/') return path === '/';
+		return path === href || path.startsWith(href + '/');
 	}
 
 	// Close sidebar on mobile when navigating
@@ -148,10 +148,10 @@
 					<li>
 						<a
 							href={item.href}
-							aria-current={isActive(item.href) ? 'page' : undefined}
+							aria-current={isActive(item.href, currentPath) ? 'page' : undefined}
 							class={cn(
 								'nav-item flex items-center gap-3 px-3 py-2 rounded text-sm transition-colors',
-								isActive(item.href)
+								isActive(item.href, currentPath)
 									? 'active bg-primary/10 text-primary font-medium'
 									: 'text-text-secondary hover:text-text hover:bg-bg-surface-hover'
 							)}

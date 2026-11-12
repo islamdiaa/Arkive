@@ -134,6 +134,7 @@ const DEMO_JOBS = {
 };
 
 const DEMO_RUN_DETAIL = {
+  progress: null,
   id: 'run-demo-1',
   job_id: 'job-db-dumps',
   job_name: 'DB Dumps',
@@ -156,7 +157,7 @@ const DEMO_RUN_DETAIL = {
     { id: 3, container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', dump_size_bytes: 0, integrity_check: 'skipped', status: 'skipped', host_path: null, error: 'Container paperless-db is not running' },
   ],
   targets: [
-    { id: 1, target_id: 'target-b2-main', status: 'success', snapshot_id: 'abc12345', upload_bytes: 3221225472, duration_seconds: 80, error: null, target_name: 'Backblaze B2 — Primary', target_provider: 'b2' },
+    { id: 1, target_id: 'target-b2-main', status: 'success', snapshot_id: 'abc12345', upload_bytes: 3221225472, duration_seconds: 80, error: null, target_name: 'Backblaze B2 — Primary', target_provider: 'b2', stats: { data_added: 268435456, data_added_packed: 134217728, files_new: 12, files_changed: 8, files_unmodified: 420, total_files_processed: 440, total_bytes_processed: 3221225472 } },
   ],
 };
 
@@ -389,6 +390,7 @@ const DEMO_CONTAINERS = {
 };
 
 const DEMO_SETTINGS = {
+  backup_timeout_minutes: 60,
   encryption_password_set: true,
   api_key_set: true,
   server_name: 'tower',

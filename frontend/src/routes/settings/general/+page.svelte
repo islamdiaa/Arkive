@@ -24,6 +24,7 @@
   let keepMonthly = 6;
   let logLevel = 'INFO';
   let dumpCompression = 'none';
+  let backupTimeoutMinutes: number | string = 60;
   let drillEnabled = true;
   let drillSchedule = '0 7 * * 0';
   let drillMaxDatabases: number | string = 3;
@@ -39,12 +40,12 @@
   function snapshot(): string {
     return JSON.stringify({
       serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel,
-      dumpCompression, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
+      dumpCompression, backupTimeoutMinutes, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
     });
   }
   $: currentValues = JSON.stringify({
     serverName, timezone, retentionDays, keepDaily, keepWeekly, keepMonthly, logLevel,
-    dumpCompression, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
+    dumpCompression, backupTimeoutMinutes, drillEnabled, drillSchedule, drillMaxDatabases, drillMaxDumpMb,
   });
   $: isDirty = !loading && originalValues !== currentValues;
 
@@ -83,6 +84,7 @@
       keepMonthly = data.keep_monthly || 6;
       logLevel = data.log_level || 'INFO';
       dumpCompression = data.dump_compression === 'gzip' ? 'gzip' : 'none';
+      backupTimeoutMinutes = data.backup_timeout_minutes ?? 60;
       drillEnabled = data.restore_drill_enabled !== false && data.restore_drill_enabled !== 'false';
       drillSchedule = data.restore_drill_schedule || '0 7 * * 0';
       drillMaxDatabases = Number(data.restore_drill_max_databases) || 3;
@@ -107,6 +109,7 @@
       keep_daily: keepDaily, keep_weekly: keepWeekly, keep_monthly: keepMonthly,
       log_level: logLevel,
       dump_compression: dumpCompression,
+      backup_timeout_minutes: backupTimeoutMinutes === '' ? NaN : Number(backupTimeoutMinutes),
       restore_drill_enabled: drillEnabled,
       restore_drill_schedule: drillSchedule.trim(),
       // Empty number inputs become 0/NaN here so validation rejects them.
@@ -203,6 +206,18 @@
           mono={true}
         />
       </div>
+    </SectionCard>
+
+    <SectionCard title="Backup Timeout" description="Maximum runtime for each target's backup attempt, including scanning and uploading">
+      <FormInput
+        id="backup-timeout-minutes"
+        label="Backup timeout (minutes)"
+        type="number"
+        bind:value={backupTimeoutMinutes}
+        error={errors.backup_timeout_minutes}
+        hint="0 = no time limit. For example, 1440 = 24 hours. Applies to the next backup attempt; manual cancellation remains available. Without a limit, a stalled backup can block later jobs until cancelled."
+        mono={true}
+      />
     </SectionCard>
 
     <SectionCard title="Database Dumps" description="How Arkive writes database dumps before each backup">

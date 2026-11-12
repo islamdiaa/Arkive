@@ -229,6 +229,7 @@ class BackupOrchestrator:
         self.lock_manager = BackupLockManager(config.config_dir)
         self._cancel_requested = False
         self._active_runs: dict[str, bool] = {}
+        self.run_progress: dict[str, dict] = {}
 
     def _lock_conflict_message(self) -> str:
         """Return the best available explanation for a lock acquisition failure."""
@@ -742,7 +743,11 @@ class BackupOrchestrator:
                             warnings.append(f"storage target {target} no longer exists")
                             continue
 
-                    await self._update_progress(run_id, f"uploading:{target.get('name', target.get('id', ''))}")
+                    upload_phase = f"uploading:{target.get('name', target.get('id', ''))}"
+                    await self._update_progress(run_id, upload_phase)
+
+                    async def on_progress(transfer: dict):
+                        await self._update_progress(run_id, upload_phase, transfer)
 
                     if target.get("type") != "local":
                         # rclone reads credentials from rclone.conf; regenerate
@@ -763,6 +768,7 @@ class BackupOrchestrator:
                         excludes,
                         tags,
                         cancel_check=lambda rid=run_id: self._is_cancelled(rid),
+                        progress_callback=on_progress,
                     )
 
                     if result.get("status") == "cancelled":
@@ -783,8 +789,8 @@ class BackupOrchestrator:
                         else:
                             target_failures.append(target_name)
                     await db.execute(
-                        """INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id, upload_bytes, error)
-                        VALUES (?, ?, ?, ?, ?, ?)""",
+                        """INSERT INTO job_run_targets (run_id, target_id, status, snapshot_id, upload_bytes, error, stats)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                         (
                             run_id,
                             target.get("id", ""),
@@ -792,9 +798,13 @@ class BackupOrchestrator:
                             result.get("snapshot_id", ""),
                             upload_bytes,
                             target_error or None,
+                            json.dumps(result["stats"]) if result.get("stats") is not None else None,
                         ),
                     )
                     await db.commit()
+                    await self.event_bus.publish(
+                        "backup:target_complete", {"run_id": run_id, "target_id": target.get("id", "")}
+                    )
                     if target_status in ("success", "partial"):
                         resolved_targets.append(target)
 
@@ -1038,6 +1048,7 @@ class BackupOrchestrator:
                 logger.warning("Dump cleanup failed: %s", e)
             self._release_lock()
             self._active_runs.pop(run_id, None)
+            self.run_progress.pop(run_id, None)
             if _run_id_token is not None:
                 current_run_id.reset(_run_id_token)
 
@@ -1206,19 +1217,14 @@ class BackupOrchestrator:
                 aliases.append(host_path + pattern)
         return aliases
 
-    async def _update_progress(self, run_id: str, phase: str) -> None:
+    async def _update_progress(self, run_id: str, phase: str, transfer: dict | None = None) -> None:
         """Publish progress update via SSE."""
         normalized = phase.split(":")[0] if ":" in phase else phase
         idx = _PHASE_ORDER.index(normalized) if normalized in _PHASE_ORDER else 0
         percent = round(((idx + 1) / len(_PHASE_ORDER)) * 100)
-        await self.event_bus.publish(
-            "backup:progress",
-            {
-                "run_id": run_id,
-                "phase": phase,
-                "percent": percent,
-            },
-        )
+        progress = {"run_id": run_id, "phase": phase, "percent": percent, "transfer": transfer}
+        self.run_progress[run_id] = progress
+        await self.event_bus.publish("backup:progress", progress)
 
     async def _check_disk_space_for_backup(
         self, run_id: str, min_bytes: int = DEFAULT_MIN_DISK_BYTES, warn_bytes: int = DEFAULT_WARN_DISK_BYTES

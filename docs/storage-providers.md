@@ -44,6 +44,12 @@ The `config` you send replaces the stored one, so include every field.
 
 `<target-id>` is the rclone remote name Arkive uses, not part of the storage path. The [recovery kit](recovery-kit.md) lists the exact repository of every target.
 
+### Backup runtime limit
+
+Settings → General → Backup Timeout sets the maximum runtime in minutes for each target's backup attempt, including scanning and uploading. The default is 60 minutes. For large initial backups, use a longer limit such as 1440 minutes (24 hours), or 0 for no runtime limit. With no limit, a stalled backup can block later jobs until manually cancelled. The setting applies when the next target backup starts; it does not change an already running process. Each retry gets the configured runtime limit.
+
+The setting is also available as `backup_timeout_minutes` through the settings API and config export/import.
+
 ### Limiting upload speed
 
 The `bandwidth_limit` setting caps uploads, in KiB/s, using restic's `--limit-upload`. It has no field in the web interface yet. Set it through the API (an empty value removes the limit):

@@ -9,6 +9,13 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- Backup progress shows source data processed, file counts, average processing speed and estimated time remaining for the current target. Run details keep each target's newly stored data size and counts of new, changed and unchanged files (migration 9; unavailable for older runs).
+- Settings → General includes a backup timeout in minutes per target and attempt. The default remains 60 minutes; 0 disables the runtime limit while keeping manual cancellation available. Timeout errors explain where to change the limit.
+
+### Fixed
+- The sidebar's active link updates when navigating between pages, including nested routes and browser back navigation.
+
 ## [0.6.0] - 2026-11-11
 
 Arkive 0.6.0 closes the gaps 0.5.0 listed as known limitations: MariaDB and MySQL users and grants are now part of the backup, and guided restore covers MongoDB and Redis as well as PostgreSQL, MariaDB/MySQL and SQLite.

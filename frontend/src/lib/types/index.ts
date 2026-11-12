@@ -36,6 +36,33 @@ export interface StorageTarget {
 }
 
 // ── Job Runs ──
+export interface BackupTransfer {
+  bytes_done?: number;
+  total_bytes?: number;
+  files_done?: number;
+  total_files?: number;
+  seconds_elapsed?: number;
+  seconds_remaining?: number;
+  percent_done?: number;
+}
+
+export interface BackupProgress {
+  run_id: string;
+  phase: string;
+  percent: number;
+  transfer: BackupTransfer | null;
+}
+
+export interface BackupStats {
+  data_added?: number;
+  data_added_packed?: number;
+  files_new?: number;
+  files_changed?: number;
+  files_unmodified?: number;
+  total_files_processed?: number;
+  total_bytes_processed?: number;
+}
+
 export interface JobRun {
   id: string;
   job_id: string;
@@ -52,6 +79,7 @@ export interface JobRun {
   error_message?: string | null;
   job_name?: string | null;
   job_type?: 'full' | 'db_dump' | 'flash' | null;
+  progress?: BackupProgress | null;
 }
 
 // ── Snapshots ──
@@ -197,6 +225,7 @@ export interface FileNode {
 
 // ── Settings ──
 export interface ArkiveSettings {
+  backup_timeout_minutes?: number;
   server_name: string;
   timezone: string;
   retention_days: number;

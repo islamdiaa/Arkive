@@ -13,7 +13,7 @@ import { mockSetupComplete } from './fixtures/api-mocks';
 const MOCK_SETTINGS = {
   server_name: 'unraid-tower',
   timezone: 'UTC',
-  log_level: 'info',
+  log_level: 'INFO',
   theme: 'dark',
   api_key_set: true,
   encryption_password_set: true,
@@ -43,7 +43,7 @@ const MOCK_DIRECTORY = {
 async function mockSettingsRoutes(page: Page) {
   await mockSetupComplete(page);
 
-  let currentSettings = { ...MOCK_SETTINGS };
+  let currentSettings: Record<string, unknown> = { ...MOCK_SETTINGS };
 
   await page.route('**/api/settings', (route, request) => {
     if (request.method() === 'GET') {
@@ -55,7 +55,10 @@ async function mockSettingsRoutes(page: Page) {
     }
     if (request.method() === 'PUT') {
       const updates = request.postDataJSON() || {};
-      currentSettings = { ...currentSettings, ...updates };
+      for (const [key, value] of Object.entries(updates.settings ?? updates)) {
+        currentSettings[key] = ['retention_days', 'keep_daily', 'keep_weekly', 'keep_monthly', 'backup_timeout_minutes'].includes(key)
+          ? Number(value) : value;
+      }
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -201,6 +204,24 @@ async function mockDirectoriesRoutes(page: Page) {
 test.describe('Settings — General', () => {
   test.beforeEach(async ({ page }) => {
     await mockSettingsRoutes(page);
+  });
+
+  test('saves backup timeout and preserves unlimited time after reload', async ({ page }) => {
+    await page.goto('/settings/general');
+    const timeout = page.getByLabel('Backup timeout (minutes)', { exact: true });
+    await expect(timeout).toHaveValue('60');
+    for (const minutes of ['1440', '0']) {
+      await timeout.fill(minutes);
+      const request = page.waitForRequest(r => r.url().endsWith('/api/settings') && r.method() === 'PUT');
+      await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
+      expect((await request).postDataJSON().settings.backup_timeout_minutes).toBe(minutes);
+      await expect(page.getByRole('button', { name: 'Save Settings', exact: true })).toBeEnabled();
+      await page.reload();
+      await expect(timeout).toHaveValue(minutes);
+    }
+    await timeout.fill('-1');
+    await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
+    await expect(page.locator('#backup-timeout-minutes-error')).toBeVisible();
   });
 
   test('general settings page loads', async ({ page }) => {
