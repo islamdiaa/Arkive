@@ -11,6 +11,8 @@
   import { jobTypeLabel } from '$lib/utils/job-types';
   import { statusTone } from '$lib/utils/run-status';
   import type { LogEntry } from '$lib/types';
+  import type { BackupStats, BackupTransfer } from '$lib/types';
+  import BackupTransferDetails from '$lib/components/shared/BackupTransferDetails.svelte';
 
   export let data: { runId: string };
 
@@ -24,6 +26,7 @@
     upload_bytes?: number | null;
     duration_seconds?: number | null;
     error?: string | null;
+    stats?: BackupStats | null;
   }
 
   interface RunDatabase {
@@ -45,6 +48,7 @@
   let logsLoading = false;
   let livePhase: string | null = null;
   let livePercent: number | null = null;
+  let transfer: BackupTransfer | null = null;
 
   $: targets = (run?.targets ?? []) as RunTarget[];
   $: databases = (run?.databases ?? []) as RunDatabase[];
@@ -73,9 +77,15 @@
     error = '';
     try {
       run = (await backupApi.getRun(data.runId)) as any;
+      if (run?.progress) {
+        livePhase = run.progress.phase;
+        livePercent = run.progress.percent;
+        transfer = run.progress.transfer;
+      }
       if (run?.status !== 'running') {
         livePhase = null;
         livePercent = null;
+        transfer = null;
       }
     } catch (err: any) {
       error = err.message || 'Failed to load backup run';
@@ -107,8 +117,10 @@
       if (!isThisRun(event)) return;
       livePhase = (event.data.phase as string) ?? livePhase;
       livePercent = typeof event.data.percent === 'number' ? (event.data.percent as number) : livePercent;
+      transfer = (event.data.transfer as BackupTransfer) ?? null;
     }),
     sseSubscribe('backup:completed', (event) => { if (isThisRun(event)) refreshAll(); }),
+    sseSubscribe('backup:target_complete', (event) => { if (isThisRun(event)) loadRun(); }),
     sseSubscribe('backup:failed', (event) => { if (isThisRun(event)) refreshAll(); }),
     sseSubscribe('backup:cancelled', (event) => { if (isThisRun(event)) refreshAll(); }),
   ];
@@ -221,6 +233,11 @@
           {/if}
         </p>
       {/if}
+      {#if run.status === 'running' && transfer}
+        <div class="mt-4">
+          <BackupTransferDetails {transfer} target={livePhase?.split(':').slice(1).join(':') ?? ''} />
+        </div>
+      {/if}
     </div>
 
     <!-- What went wrong -->
@@ -287,12 +304,21 @@
                   {#if t.target_provider}<span class="ml-2 text-xs text-text-secondary">{t.target_provider}</span>{/if}
                 </div>
                 <div class="flex items-center gap-3 text-xs text-text-secondary">
-                  {#if t.upload_bytes}<span class="font-mono">{formatBytes(t.upload_bytes)}</span>{/if}
+                  {#if t.upload_bytes != null}<span class="font-mono">{formatBytes(t.upload_bytes)} processed</span>{/if}
                   {#if t.duration_seconds}<span class="font-mono">{formatDuration(t.duration_seconds)}</span>{/if}
                   {#if t.snapshot_id}<span class="font-mono">snapshot {t.snapshot_id.slice(0, 8)}</span>{/if}
                   <StatusBadge status={t.status} size="sm" />
                 </div>
               </div>
+              {#if t.stats}
+                <dl class="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                  <div><dt class="text-xs text-text-secondary">Uploaded (stored size)</dt><dd class="text-text">{t.stats.data_added_packed != null ? formatBytes(t.stats.data_added_packed) : 'Unavailable'}</dd></div>
+                  <div><dt class="text-xs text-text-secondary">New files</dt><dd class="text-text">{t.stats.files_new ?? '—'}</dd></div>
+                  <div><dt class="text-xs text-text-secondary">Changed files</dt><dd class="text-text">{t.stats.files_changed ?? '—'}</dd></div>
+                  <div><dt class="text-xs text-text-secondary">Unchanged files</dt><dd class="text-text">{t.stats.files_unmodified ?? '—'}</dd></div>
+                </dl>
+                <p class="mt-2 text-xs text-text-secondary">Compared with restic's parent snapshot for this target. Stored size is new data after deduplication and compression, excluding transfer overhead.</p>
+              {/if}
               {#if t.error}
                 <p class="mt-2 text-xs font-mono whitespace-pre-wrap wrap-break-word {t.status === 'success' ? 'text-text-secondary' : 'text-danger'}">{t.error}</p>
               {/if}

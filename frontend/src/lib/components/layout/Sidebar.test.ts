@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
-import { writable } from 'svelte/store';
+import { flushSync } from 'svelte';
+import { page as appState } from '../../../tests/mocks/app/state.svelte';
 
 // Sidebar reads the route through $lib/stores/page, which wraps $app/state.
 // vitest.config.ts aliases $app/state to src/tests/mocks/app/state.svelte.ts.
@@ -11,7 +12,7 @@ import { sidebarOpen, systemStatus } from '$lib/stores/app';
 
 describe('Sidebar', () => {
 	beforeEach(() => {
-		// Reset DOM between tests
+		appState.url = new URL('http://localhost');
 	});
 
 	it('renders the Arkive branding', () => {
@@ -83,6 +84,28 @@ describe('Sidebar', () => {
 		// The default mock page URL is http://localhost (pathname = '/').
 		expect(screen.getByText('Dashboard').closest('a')).toHaveAttribute('aria-current', 'page');
 		expect(screen.getByText('Backups').closest('a')).not.toHaveAttribute('aria-current');
+	});
+
+	it('moves the active marker after navigation, including nested backup routes', async () => {
+		render(Sidebar);
+		const dashboard = screen.getByText('Dashboard').closest('a');
+		const backups = screen.getByText('Backups').closest('a');
+		const jobs = screen.getByText('Jobs').closest('a');
+
+		for (const [path, active] of [['/backups/run-1', backups], ['/settings/jobs', jobs], ['/', dashboard]] as const) {
+			appState.url = new URL(`http://localhost${path}`);
+			flushSync();
+			await tick();
+			for (const link of [dashboard, backups, jobs]) {
+				if (link === active) {
+					expect(link).toHaveAttribute('aria-current', 'page');
+					expect(link).toHaveClass('active');
+				} else {
+					expect(link).not.toHaveAttribute('aria-current');
+					expect(link).not.toHaveClass('active');
+				}
+			}
+		}
 	});
 
 	it('takes the closed sidebar out of the tab order and accessibility tree', async () => {

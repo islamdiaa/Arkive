@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.utils.redact import redact_command, redact_credentials
@@ -48,18 +49,21 @@ def _kill_process_group(pid: int) -> None:
 
 async def run_command(
     cmd: list[str],
-    timeout: int = 300,
+    timeout: int | None = 300,
     env: dict | None = None,
     cwd: str | None = None,
     input_data: str | None = None,
     cancel_check=None,
     cancel_poll_interval: float = 0.5,
+    stdout_callback: Callable[[str], Awaitable[None]] | None = None,
 ) -> CommandResult:
     """Run a subprocess command asynchronously with timeout.
 
     The rendered command string used for logging (and returned in
     ``CommandResult.command``) has secret-bearing arguments masked; secrets
     should still be passed via ``env`` or ``input_data`` rather than argv.
+    ``stdout_callback`` receives each line while stdout is still captured.
+    A ``None`` timeout disables the runtime limit while keeping cancellation checks.
     """
     cmd_str = redact_command(cmd)
     logger.debug("Running: %s", cmd_str)
@@ -68,6 +72,7 @@ async def run_command(
     # On POSIX, start the child in its own process group so that on
     # timeout/cancel we can kill the whole tree (parent + children).
     preexec = os.setsid if sys.platform != "win32" else None
+    communicate_task = None
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -80,8 +85,45 @@ async def run_command(
             preexec_fn=preexec,
         )
 
-        communicate_task = asyncio.create_task(process.communicate(input=input_data.encode() if input_data else None))
-        deadline = time.monotonic() + timeout
+        async def communicate():
+            if stdout_callback is None:
+                return await process.communicate(input=input_data.encode() if input_data else None)
+
+            async def read_stdout():
+                chunks = []
+                pending = b""
+                while chunk := await process.stdout.read(65536):
+                    chunks.append(chunk)
+                    lines = (pending + chunk).split(b"\n")
+                    pending = lines.pop()
+                    for line in lines:
+                        await notify_stdout(line)
+                if pending:
+                    await notify_stdout(pending)
+                return b"".join(chunks)
+
+            async def notify_stdout(line: bytes):
+                try:
+                    await stdout_callback(line.decode(errors="replace").removesuffix("\r"))
+                except Exception:
+                    logger.warning("Subprocess progress callback failed", exc_info=True)
+
+            async def write_stdin():
+                if process.stdin is not None:
+                    try:
+                        process.stdin.write((input_data or "").encode())
+                        await process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    finally:
+                        process.stdin.close()
+
+            stdout, stderr, _ = await asyncio.gather(read_stdout(), process.stderr.read(), write_stdin())
+            await process.wait()
+            return stdout, stderr
+
+        communicate_task = asyncio.create_task(communicate())
+        deadline = time.monotonic() + timeout if timeout is not None else float("inf")
 
         while True:
             wait_timeout = min(cancel_poll_interval, max(deadline - time.monotonic(), 0))
@@ -157,3 +199,10 @@ async def run_command(
             duration_seconds=round(duration, 2),
             command=cmd_str,
         )
+    finally:
+        if communicate_task is not None and not communicate_task.done():
+            communicate_task.cancel()
+            try:
+                await communicate_task
+            except BaseException:
+                pass

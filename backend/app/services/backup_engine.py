@@ -5,12 +5,14 @@ import json
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.config import ArkiveConfig
 from app.core.security import decrypt_value
 from app.services.host_identity import resolve_hostname
 from app.services.repo_paths import build_repo_path
+from app.services.settings_store import DEFAULTS, get_int_setting
 from app.utils.subprocess_runner import run_command
 
 logger = logging.getLogger("arkive.backup_engine")
@@ -167,6 +169,18 @@ class BackupEngine:
             logger.debug("Could not read bandwidth_limit, uploading unthrottled: %s", e)
         return ""
 
+    async def _get_backup_timeout(self) -> int | None:
+        """Read the per-target/attempt runtime limit in seconds; zero disables it."""
+        import aiosqlite
+
+        minutes = int(DEFAULTS["backup_timeout_minutes"])
+        try:
+            async with aiosqlite.connect(self.config.db_path) as db:
+                minutes = await get_int_setting(db, "backup_timeout_minutes", minimum=0)
+        except Exception as exc:
+            logger.debug("Could not read backup timeout, using default: %s", exc)
+        return minutes * 60 if minutes else None
+
     async def _get_server_name(self) -> str:
         """Read optional server_name from settings."""
         import aiosqlite
@@ -224,6 +238,7 @@ class BackupEngine:
         tags: list[str] | None = None,
         cancel_check=None,
         hostname: str | None = None,
+        progress_callback: Callable[[dict], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Run restic backup. Returns snapshot info."""
         password = await self._get_password()
@@ -232,6 +247,7 @@ class BackupEngine:
             return {"status": "failed", "error": "No encryption password configured"}
         repo = self._repo_path(target)
         env = self._get_restic_env(password)
+        env["RESTIC_PROGRESS_FPS"] = "1"
 
         if target.get("type") != "local":
             env["RCLONE_CONFIG"] = str(self.config.rclone_config)
@@ -263,14 +279,39 @@ class BackupEngine:
         cmd.append("--")
         cmd.extend(paths)
 
+        async def on_stdout(line: str):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                return
+            if progress_callback and isinstance(data, dict) and data.get("message_type") == "status":
+                # Source bytes processed are not bytes uploaded after deduplication.
+                await progress_callback(
+                    {
+                        key: data[key]
+                        for key in (
+                            "bytes_done",
+                            "total_bytes",
+                            "files_done",
+                            "total_files",
+                            "seconds_elapsed",
+                            "seconds_remaining",
+                            "percent_done",
+                        )
+                        if isinstance(data.get(key), (int, float)) and data[key] >= 0
+                    }
+                )
+
+        timeout = await self._get_backup_timeout()
         # Run with retry for transient network errors
         last_result = None
         for attempt in range(1, MAX_RETRIES + 1):
             last_result = await run_command(
                 cmd,
                 env=env,
-                timeout=3600,
+                timeout=timeout,
                 cancel_check=cancel_check,
+                stdout_callback=on_stdout if progress_callback else None,
             )
             if last_result.returncode in (0, RESTIC_EXIT_INCOMPLETE, -2):
                 break
@@ -293,6 +334,12 @@ class BackupEngine:
             logger.warning("Backup cancelled for %s", target.get("name"))
             return {"status": "cancelled", "error": result.stderr}
         if result.returncode not in (0, RESTIC_EXIT_INCOMPLETE):
+            if timeout is not None and result.stderr == f"Command timed out after {timeout}s":
+                result.stderr = (
+                    f"Backup stopped after reaching the configured runtime limit of {timeout // 60} minutes "
+                    "for this target. Increase Backup timeout in Settings > General, or set it to 0 for no limit. "
+                    "This limit applies even while data is being transferred."
+                )
             logger.error("Backup failed for %s: %s", target.get("name"), result.stderr)
             return {"status": "failed", "error": result.stderr}
 
@@ -314,6 +361,19 @@ class BackupEngine:
                 item = data.get("item") or ""
                 file_errors.append(f"{item}: {message}" if item else str(message))
 
+        stats = {
+            key: snapshot_info[key]
+            for key in (
+                "data_added",
+                "data_added_packed",
+                "files_new",
+                "files_changed",
+                "files_unmodified",
+                "total_files_processed",
+                "total_bytes_processed",
+            )
+            if key in snapshot_info
+        } or None
         if result.returncode == RESTIC_EXIT_INCOMPLETE:
             detail = "; ".join(file_errors) or result.stderr.strip()[:500]
             logger.warning("Backup for %s is incomplete — some files could not be read: %s", target.get("name"), detail)
@@ -324,6 +384,7 @@ class BackupEngine:
                 "total_bytes_processed": snapshot_info.get("total_bytes_processed", 0),
                 "files_new": snapshot_info.get("files_new", 0),
                 "files_changed": snapshot_info.get("files_changed", 0),
+                "stats": stats,
             }
 
         return {
@@ -332,6 +393,7 @@ class BackupEngine:
             "total_bytes_processed": snapshot_info.get("total_bytes_processed", 0),
             "files_new": snapshot_info.get("files_new", 0),
             "files_changed": snapshot_info.get("files_changed", 0),
+            "stats": stats,
         }
 
     async def forget(

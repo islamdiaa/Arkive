@@ -10,10 +10,11 @@ import pytest_asyncio
 @pytest_asyncio.fixture
 async def db_path(tmp_path):
     """Create an isolated test database with schema."""
-    from app.core.database import init_db
+    from app.core.database import init_db, run_migrations
 
     db_file = tmp_path / "test_arkive.db"
     await init_db(db_file)
+    await run_migrations(db_file)
 
     async with aiosqlite.connect(db_file) as db:
         await db.execute(

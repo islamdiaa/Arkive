@@ -127,6 +127,28 @@ describe('BackupProgressPanel', () => {
 		expect(get(backupRunning)).toBe(false);
 	});
 
+	it('shows live counters and clears them when the next target starts', async () => {
+		await renderIdlePanel();
+		emit('backup:progress', { run_id: 'r1', phase: 'uploading:Remote', percent: 67, transfer: {
+			bytes_done: 1024, total_bytes: 2048, percent_done: 0.5, seconds_remaining: 30,
+		} });
+		await tick();
+		expect(screen.getByText('Target: Remote')).toBeInTheDocument();
+		expect(screen.getByText('1 KB / 2 KB (50%)')).toBeInTheDocument();
+		emit('backup:progress', { run_id: 'r1', phase: 'uploading:Local', percent: 67, transfer: null });
+		await tick();
+		expect(screen.queryByTestId('backup-transfer')).not.toBeInTheDocument();
+	});
+
+	it('fetches live counters when opening a running backup', async () => {
+		mocks.listRuns.mockResolvedValue({ items: [{ id: 'r1', status: 'running' }] });
+		mocks.getRun.mockResolvedValue({ progress: { phase: 'uploading:Remote', percent: 67, transfer: {
+			bytes_done: 1024, total_bytes: 2048, percent_done: 0.5,
+		} } });
+		render(BackupProgressPanel);
+		await waitFor(() => expect(screen.getByText('1 KB / 2 KB (50%)')).toBeInTheDocument());
+	});
+
 	it('renders a partial completion as a warning, never as success', async () => {
 		mocks.getRun.mockResolvedValue({ id: 'r1', error_message: 'Backup completed with problems (backup path(s) not found: /x)' });
 		const { container } = await renderIdlePanel();

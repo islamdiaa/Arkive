@@ -104,6 +104,54 @@ async def _run_row(config, run_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target_status", ["success", "partial"])
+async def test_transfer_progress_and_target_stats_reach_run_api(config, target_status):
+    from app.api.jobs import get_run
+
+    orch = make_orchestrator(config)
+    stats = {
+        "data_added_packed": 512,
+        "total_bytes_processed": 4096,
+        "files_new": 1,
+        "files_changed": 2,
+        "files_unmodified": 3,
+    }
+    async with aiosqlite.connect(config.db_path) as db:
+        await db.execute("INSERT INTO storage_targets (id, name, type, config) VALUES ('t2', 'Second', 'local', '{}')")
+        await db.commit()
+    seen_targets = []
+
+    async def backup(target, *args, progress_callback, **kwargs):
+        # Each target starts with empty counters instead of the previous target's data.
+        assert orch.run_progress["r-stats"]["transfer"] is None
+        transfer = {"bytes_done": 2048, "total_bytes": 4096, "percent_done": 0.5}
+        await progress_callback(transfer)
+        async with aiosqlite.connect(config.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            run = await get_run("r-stats", db, orch)
+        assert run["progress"]["transfer"] == transfer
+        assert run["progress"]["phase"] == f"uploading:{target['name']}"
+        seen_targets.append(target["id"])
+        return {"status": target_status, "snapshot_id": "abc123", "total_bytes_processed": 4096, "stats": stats}
+
+    orch.backup_engine.backup.side_effect = backup
+    await orch.run_backup("job-flash", run_id="r-stats")
+    assert set(seen_targets) == {"t1", "t2"}
+    assert "r-stats" not in orch.run_progress
+    async with aiosqlite.connect(config.db_path) as db:
+        db.row_factory = aiosqlite.Row
+        run = await get_run("r-stats", db, orch)
+        assert run["progress"] is None
+        assert len(run["targets"]) == 2
+        assert all(t["stats"] == stats for t in run["targets"])
+        # Older runs retain unknown statistics, rather than fabricated zeroes.
+        await db.execute("UPDATE job_run_targets SET stats = NULL WHERE run_id = 'r-stats'")
+        await db.commit()
+        legacy = await get_run("r-stats", db, orch)
+        assert all(t["stats"] is None for t in legacy["targets"])
+
+
+@pytest.mark.asyncio
 async def test_docker_unavailable_marks_run_partial_and_still_uploads(config):
     discovery = MagicMock()
     discovery.scan = AsyncMock(side_effect=DockerUnavailableError("Docker daemon unavailable: timed out"))

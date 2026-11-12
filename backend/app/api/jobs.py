@@ -212,7 +212,7 @@ async def list_all_runs(
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
+async def get_run(run_id: str, db: aiosqlite.Connection = Depends(get_db), orchestrator=Depends(get_orchestrator)):
     """Get a single job run with related databases, targets, and job info."""
     cursor = await db.execute(
         """SELECT r.*, b.name AS job_name, b.type AS job_type
@@ -238,7 +238,7 @@ async def get_run(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
 
     cursor = await db.execute(
         """SELECT jrt.id, jrt.target_id, jrt.status, jrt.snapshot_id,
-                  jrt.upload_bytes, jrt.duration_seconds, jrt.error,
+                  jrt.upload_bytes, jrt.duration_seconds, jrt.error, jrt.stats,
                   st.name AS target_name, st.type AS target_provider
            FROM job_run_targets jrt
            LEFT JOIN storage_targets st ON jrt.target_id = st.id
@@ -247,6 +247,9 @@ async def get_run(run_id: str, db: aiosqlite.Connection = Depends(get_db)):
         (run_id,),
     )
     run["targets"] = [dict(r) for r in await cursor.fetchall()]
+    for target in run["targets"]:
+        target["stats"] = json.loads(target["stats"]) if target["stats"] else None
+    run["progress"] = orchestrator.run_progress.get(run_id) if orchestrator and run["status"] == "running" else None
 
     return run
 
