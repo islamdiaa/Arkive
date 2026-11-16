@@ -9,6 +9,9 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Changed
+- rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
+
 ## [0.6.0] - 2026-11-11
 
 Arkive 0.6.0 closes the gaps 0.5.0 listed as known limitations: MariaDB and MySQL users and grants are now part of the backup, and guided restore covers MongoDB and Redis as well as PostgreSQL, MariaDB/MySQL and SQLite.
