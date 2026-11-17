@@ -1,8 +1,8 @@
 # Web framework
-fastapi==0.162.0
+fastapi==0.162.7
 uvicorn[standard]==0.54.0
 python-multipart==0.0.33
-sse-starlette==3.6.0
+sse-starlette==3.7.0
 
 # Database
 aiosqlite==0.22.1
@@ -15,7 +15,7 @@ apscheduler==3.11.3
 croniter==6.2.4
 
 # Notifications (90+ services)
-apprise==2.1.0
+apprise==2.2.0
 
 # HTTP client
 httpx==0.28.1
@@ -23,7 +23,7 @@ httpx==0.28.1
 # Config
 pyyaml==6.0.3
 pydantic==2.14.3
-pydantic-settings==2.16.2
+pydantic-settings==2.16.3
 
 # Security
 cryptography==50.0.2
