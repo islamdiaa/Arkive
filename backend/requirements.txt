@@ -12,7 +12,7 @@ docker==7.2.0
 
 # Scheduler
 apscheduler==3.11.3
-croniter==6.2.4
+croniter==7.0.0
 
 # Notifications (90+ services)
 apprise==2.1.0
