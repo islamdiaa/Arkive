@@ -33,6 +33,11 @@ updates:
       npm-minor-and-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # SvelteKit 3 accepts TypeScript 6 only (peer "typescript@^6.0.0").
+      # Remove this once SvelteKit supports TypeScript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

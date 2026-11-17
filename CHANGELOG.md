@@ -9,6 +9,13 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Changed
+- Dependency updates. Backend: FastAPI 0.162.7, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
+  croniter 7.0.0, structlog 26.1.0, python-dateutil 4.0.0 (used only through croniter); development tools
+  pytest-asyncio 1.5.0, ruff 0.17.5, mypy 2.4.1. Frontend: SvelteKit 3.2.0, Vite 8.3.8, lucide-svelte 1.0.1,
+  jsdom 31.0.1, Playwright 1.65.1, @types/node 26.6.6. lucide 1.0 dropped brand icons, so the footer's GitHub
+  mark is now an inline icon. TypeScript stays on 6: SvelteKit 3 does not accept TypeScript 7 yet.
+
 ## [0.6.0] - 2026-11-11
 
 Arkive 0.6.0 closes the gaps 0.5.0 listed as known limitations: MariaDB and MySQL users and grants are now part of the backup, and guided restore covers MongoDB and Redis as well as PostgreSQL, MariaDB/MySQL and SQLite.
