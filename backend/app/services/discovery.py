@@ -725,7 +725,10 @@ class DiscoveryEngine:
         start = time.monotonic()
         self._pg_database_cache = {}
         self._pg_warnings = {}
-        containers = self.docker.containers.list(all=True)
+        # ignore_removed: docker-py lists the containers and then inspects each
+        # one, and a container removed in between (a finished CI job, a cron
+        # container, a build step) would otherwise fail the whole scan.
+        containers = self.docker.containers.list(all=True, ignore_removed=True)
         all_containers = containers
         discovered = []
 
