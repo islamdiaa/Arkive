@@ -31,8 +31,8 @@ FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS tools-builder
 ARG TARGETARCH
 ARG RESTIC_VERSION=0.19.1
 ARG RESTIC_COMMIT=6aa3a516ce654808a1f28f9fa21e9b7c8e6e90bf
-ARG RCLONE_VERSION=1.75.2
-ARG RCLONE_COMMIT=be8d6044eacb843b74d335db0c5fbe09222031fe
+ARG RCLONE_VERSION=1.76.0
+ARG RCLONE_COMMIT=e982ff36668f5130d94b4f70409babb3d964df42
 ENV CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local GOFLAGS=-trimpath
 WORKDIR /src
 RUN git clone --depth 1 --branch "v${RESTIC_VERSION}" https://github.com/restic/restic.git && \
@@ -44,8 +44,6 @@ RUN git clone --depth 1 --branch "v${RESTIC_VERSION}" https://github.com/restic/
       -ldflags "-s -w -X main.version=${RESTIC_VERSION}" -o /out/restic ./cmd/restic
 RUN git clone --depth 1 --branch "v${RCLONE_VERSION}" https://github.com/rclone/rclone.git && \
     cd rclone && test "$(git rev-parse HEAD)" = "${RCLONE_COMMIT}" && \
-    go get golang.org/x/net@v0.62.0 && \
-    go mod tidy && \
     GOARCH="${TARGETARCH}" go build -tags noselfupdate \
       -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=v${RCLONE_VERSION}" -o /out/rclone .
 
