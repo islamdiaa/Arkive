@@ -191,7 +191,7 @@ class FakeContainerCollection:
     def __init__(self, containers: list[FakeContainer]):
         self._containers = {c.name: c for c in containers}
 
-    def list(self, all: bool = False) -> list[FakeContainer]:
+    def list(self, all: bool = False, ignore_removed: bool = False) -> list[FakeContainer]:
         if all:
             return list(self._containers.values())
         return [c for c in self._containers.values() if c.status == "running"]

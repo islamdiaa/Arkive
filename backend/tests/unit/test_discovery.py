@@ -302,3 +302,43 @@ class TestDiscovery:
         names = [container.name for container in containers]
         assert "arkive" not in names
         assert "vaultwarden" in names
+
+    @pytest.mark.asyncio
+    async def test_scan_survives_a_container_removed_while_listing(self, mock_config):
+        """A container removed between Docker's list and inspect calls is skipped.
+
+        docker-py's containers.list() inspects every listed container; without
+        ignore_removed one short-lived container fails the whole scan, and the
+        backup run then dumps no databases at all.
+        """
+        from docker.errors import NotFound
+        from docker.models.containers import ContainerCollection
+        from docker.models.images import Image
+
+        from app.services.discovery import DiscoveryEngine
+
+        def inspect(container_id):
+            if container_id == "gone":
+                raise NotFound(f"No such container: {container_id}")
+            return {
+                "Id": container_id,
+                "Name": "/vaultwarden",
+                "Image": "sha256:0123",
+                "State": {"Status": "running"},
+                "Config": {"Image": "vaultwarden/server:latest", "Env": [], "Labels": {}},
+                "Mounts": [],
+            }
+
+        client = MagicMock()
+        client.api.containers.return_value = [{"Id": "gone"}, {"Id": "kept"}]
+        client.api.inspect_container.side_effect = inspect
+        client.images.get.return_value = Image(attrs={"RepoTags": ["vaultwarden/server:latest"]})
+        docker = MagicMock()
+        docker.containers = ContainerCollection(client=client)
+
+        with pytest.raises(NotFound):
+            docker.containers.list(all=True)  # the race, as docker-py reports it by default
+
+        containers = await DiscoveryEngine(docker, mock_config).scan()
+
+        assert [container.name for container in containers] == ["vaultwarden"]
