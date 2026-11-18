@@ -10,11 +10,17 @@ When a version is tagged, its section here becomes the GitHub release notes
 ## [Unreleased]
 
 ### Changed
+- rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
 - Dependency updates. Backend: FastAPI 0.162.7, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
   croniter 7.0.0, structlog 26.1.0, python-dateutil 4.0.0 (used only through croniter); development tools
   pytest-asyncio 1.5.0, ruff 0.17.5, mypy 2.4.1. Frontend: SvelteKit 3.2.0, Vite 8.3.8, lucide-svelte 1.0.1,
   jsdom 31.0.1, Playwright 1.65.1, @types/node 26.6.6. lucide 1.0 dropped brand icons, so the footer's GitHub
   mark is now an inline icon. TypeScript stays on 6: SvelteKit 3 does not accept TypeScript 7 yet.
+
+### Fixed
+- A container that is removed while Arkive is listing containers no longer fails the whole scan. On a server that
+  starts and removes short-lived containers (CI jobs, scheduled containers, image builds), a backup run could end
+  `partial` with "container discovery failed, databases were not dumped"; the vanished container is now skipped.
 
 ## [0.6.0] - 2026-11-11
 

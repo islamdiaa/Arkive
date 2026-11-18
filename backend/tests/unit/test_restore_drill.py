@@ -286,7 +286,7 @@ class FakeDocker:
         self.created.append(container)
         return container
 
-    def _list(self, all=False, filters=None):
+    def _list(self, all=False, filters=None, ignore_removed=False):
         return list(self.leftovers)
 
     def _image_get(self, image):
