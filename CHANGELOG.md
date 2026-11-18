@@ -12,6 +12,11 @@ When a version is tagged, its section here becomes the GitHub release notes
 ### Changed
 - rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
 
+### Fixed
+- A container that is removed while Arkive is listing containers no longer fails the whole scan. On a server that
+  starts and removes short-lived containers (CI jobs, scheduled containers, image builds), a backup run could end
+  `partial` with "container discovery failed, databases were not dumped"; the vanished container is now skipped.
+
 ## [0.6.0] - 2026-11-11
 
 Arkive 0.6.0 closes the gaps 0.5.0 listed as known limitations: MariaDB and MySQL users and grants are now part of the backup, and guided restore covers MongoDB and Redis as well as PostgreSQL, MariaDB/MySQL and SQLite.

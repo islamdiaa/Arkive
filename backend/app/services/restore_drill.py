@@ -1709,7 +1709,9 @@ class RestoreDrillEngine:
 
     def _remove_leftover_containers_blocking(self) -> int:
         removed = 0
-        for container in self.docker_client.containers.list(all=True, filters={"label": DRILL_LABEL}):
+        for container in self.docker_client.containers.list(
+            all=True, filters={"label": DRILL_LABEL}, ignore_removed=True
+        ):
             labels = getattr(container, "labels", None) or {}
             if self._current_drill_id and labels.get(DRILL_LABEL) == self._current_drill_id:
                 continue
