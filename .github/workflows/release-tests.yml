@@ -124,9 +124,11 @@ jobs:
       - name: Load the image
         run: gunzip -c arkive-image.tar.gz | docker load
 
+      # sudo: the harness reaches its private daemon through a socket that
+      # daemon creates as root, and removes the daemon's files afterwards.
       - name: Back up and restore PostgreSQL, MariaDB, MySQL, SQLite and Redis
         run: >
-          python3 scripts/restore-roundtrip/restore_roundtrip.py
+          sudo python3 scripts/restore-roundtrip/restore_roundtrip.py
           --image "$IMAGE"
           --memory 10g
           --workdir "$RUNNER_TEMP/arkive-rt"
@@ -148,8 +150,9 @@ jobs:
       - name: Load the image
         run: gunzip -c arkive-image.tar.gz | docker load
 
+      # sudo: as for the restore round trip.
       - name: Guided restore of MongoDB and Redis
         run: >
-          python3 scripts/restore-roundtrip/guided_roundtrip.py
+          sudo python3 scripts/restore-roundtrip/guided_roundtrip.py
           --image "$IMAGE"
           --workdir "$RUNNER_TEMP/arkive-grt"
