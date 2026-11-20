@@ -9,6 +9,10 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- Backup progress shows source data processed, file counts, average processing speed and estimated time remaining for the current target. Run details keep each target's newly stored data size and counts of new, changed and unchanged files (migration 9; unavailable for older runs).
+- Settings → General includes a backup timeout in minutes per target and attempt. The default remains 60 minutes; 0 disables the runtime limit while keeping manual cancellation available. Timeout errors explain where to change the limit.
+
 ### Changed
 - rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
 - Dependency updates. Backend: FastAPI 0.162.7, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
@@ -18,6 +22,7 @@ When a version is tagged, its section here becomes the GitHub release notes
   mark is now an inline icon. TypeScript stays on 6: SvelteKit 3 does not accept TypeScript 7 yet.
 
 ### Fixed
+- The sidebar's active link updates when navigating between pages, including nested routes and browser back navigation.
 - A container that is removed while Arkive is listing containers no longer fails the whole scan. On a server that
   starts and removes short-lived containers (CI jobs, scheduled containers, image builds), a backup run could end
   `partial` with "container discovery failed, databases were not dumped"; the vanished container is now skipped.

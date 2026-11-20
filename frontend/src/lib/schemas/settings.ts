@@ -14,6 +14,7 @@ export const settingsSchema = z.object({
   keep_monthly: z.number().int().min(0).max(24).optional(),
   log_level: z.enum(['DEBUG', 'INFO', 'WARN', 'ERROR']).optional(),
   dump_compression: z.enum(['none', 'gzip']).optional(),
+  backup_timeout_minutes: z.number().int('Must be a whole number').min(0).max(10080).optional(),
   restore_drill_enabled: z.boolean().optional(),
   restore_drill_schedule: cronExpression.optional(),
   restore_drill_max_databases: z.number().int('Must be a whole number').min(1).max(100).optional(),

@@ -578,7 +578,7 @@ Rules that follow from this:
 - a new page goes into the axe route list and into `ROUTES` in
   `frontend/tests/visual/routes.spec.ts`; don't dim text with `opacity-*`
   (it fails contrast), use the secondary text colour
-- the next schema migration is 9
+- the next schema migration is 10
 
 ## Validation Summary
 

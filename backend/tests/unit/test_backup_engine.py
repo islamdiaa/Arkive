@@ -9,6 +9,63 @@ import pytest
 class TestBackupEngine:
     """Backup engine (restic) tests."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("returncode,status", [(0, "success"), (3, "partial")])
+    async def test_backup_streams_source_progress_and_returns_stored_size(
+        self, monkeypatch, tmp_path, returncode, status
+    ):
+        from app.services.backup_engine import BackupEngine
+        from app.utils.subprocess_runner import CommandResult
+
+        config = MagicMock()
+        config.db_path = tmp_path / "settings.db"
+        engine = BackupEngine(config)
+        engine._get_password = AsyncMock(return_value="test-password")
+        engine._get_bandwidth_limit = AsyncMock(return_value="")
+        progress = AsyncMock()
+        stats = {
+            "total_bytes_processed": 4096,
+            "data_added_packed": 512,
+            "files_new": 1,
+            "files_changed": 2,
+            "files_unmodified": 3,
+        }
+        summary = json.dumps({"message_type": "summary", "snapshot_id": "abc123", **stats})
+
+        async def run(cmd, **kwargs):
+            assert kwargs["env"]["RESTIC_PROGRESS_FPS"] == "1"
+            callback = kwargs["stdout_callback"]
+            for line in [
+                "not json",
+                "[]",
+                json.dumps(
+                    {
+                        "message_type": "status",
+                        "bytes_done": 2048,
+                        "total_bytes": 4096,
+                        "percent_done": 0.5,
+                        "seconds_remaining": 15,
+                        "current_files": ["/private/path"],
+                    }
+                ),
+                summary,
+            ]:
+                await callback(line)
+            return CommandResult(returncode, summary, "", 1, "restic backup")
+
+        monkeypatch.setattr("app.services.backup_engine.run_command", run)
+        result = await engine.backup(
+            {"type": "local", "config": {"path": "/data"}},
+            ["/source"],
+            hostname="test-server",
+            progress_callback=progress,
+        )
+        progress.assert_awaited_once_with(
+            {"bytes_done": 2048, "total_bytes": 4096, "percent_done": 0.5, "seconds_remaining": 15}
+        )
+        assert result["status"] == status
+        assert result["stats"] == stats
+
     def test_restic_init_command_construction(self):
         """restic init should include repo path and password."""
         repo = "rclone:b2:arkive-backups"

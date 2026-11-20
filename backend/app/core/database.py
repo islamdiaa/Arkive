@@ -373,6 +373,9 @@ MIGRATIONS: dict[int, list[str]] = {
         """CREATE INDEX IF NOT EXISTS idx_job_run_databases_legacy
             ON job_run_databases(container_name, status, shrink_flagged) WHERE db_key IS NULL""",
     ],
+    9: [
+        "ALTER TABLE job_run_targets ADD COLUMN stats TEXT",
+    ],
 }
 
 
