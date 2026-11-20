@@ -9,13 +9,22 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
+Arkive 0.7.0 makes long backups workable and visible: the time limit per storage target is now a setting, and a running backup shows how far it is. It also brings restic 0.20.0 (which fixes a security problem in restore) and rclone 1.76.0, and fixes two problems found on real servers. The time limit and the progress display were contributed by @Roalkege.
+
+Upgrade by recreating the container with the same `/config` volume. This release has one database migration (9, a column for the new per-target numbers); it runs by itself on the first start. Upgrading was tested from 0.2.4, 0.5.0 and 0.6.0.
+- The time limit stays at 60 minutes per target and attempt unless you change it under Settings → General. Raise it if a large first backup was being stopped after an hour. With 0 there is no limit: an upload that stalls then holds the backup lock until you cancel the run.
+- Per-target numbers (data stored, new, changed and unchanged files) are recorded from this release on; runs made before the upgrade show none.
+- If your server starts and removes containers often (CI jobs, scheduled containers, image builds), upgrade soon: on 0.6.0 and earlier a backup that starts at such a moment can end `partial` without dumping any database.
+
 ### Added
 - Backup progress shows source data processed, file counts, average processing speed and estimated time remaining for the current target. Run details keep each target's newly stored data size and counts of new, changed and unchanged files (migration 9; unavailable for older runs).
 - Settings → General includes a backup timeout in minutes per target and attempt. The default remains 60 minutes; 0 disables the runtime limit while keeping manual cancellation available. Timeout errors explain where to change the limit.
 
 ### Changed
 - rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
-- Dependency updates. Backend: FastAPI 0.162.7, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
+- Dependency updates. Backend: FastAPI 0.163.1, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
   croniter 7.0.0, structlog 26.1.0, python-dateutil 4.0.0 (used only through croniter); development tools
   pytest-asyncio 1.5.0, ruff 0.17.5, mypy 2.4.1. Frontend: SvelteKit 3.2.0, Vite 8.3.8, lucide-svelte 1.0.1,
   jsdom 31.0.1, Playwright 1.65.1, @types/node 26.6.6. lucide 1.0 dropped brand icons, so the footer's GitHub
@@ -202,7 +211,8 @@ If you run 0.2.x on a network others can reach, upgrade.
 ### Added
 - First public release: discovery of Docker containers and their databases with app profiles; dumps of PostgreSQL, MariaDB/MySQL, MongoDB, SQLite and Redis; encrypted restic snapshots of the dumps, watched directories and Unraid flash configuration on local disk, Backblaze B2, S3-compatible, Wasabi, SFTP, Google Drive and Dropbox targets; cron schedules and retention; notifications; a snapshot browser, granular restore and a restore-plan PDF; a setup wizard, dashboard, REST API and CLI.
 
-[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/islamdiaa/Arkive/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/islamdiaa/Arkive/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/islamdiaa/Arkive/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/islamdiaa/Arkive/compare/v0.2.4...v0.4.0
