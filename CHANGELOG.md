@@ -25,6 +25,9 @@ When a version is tagged, its section here becomes the GitHub release notes
   existing ones) and already includes the dependency updates Arkive used to add when building 0.19.1.
 
 ### Fixed
+- A new install no longer reports `degraded` for its first minutes. A storage target that had not had its first
+  health check yet was counted as unhealthy, so the dashboard and `/api/status` said `degraded` right after setup
+  (and after adding a target) even when the first backup had already succeeded.
 - A container that is removed while Arkive is listing containers no longer fails the whole scan. On a server that
   starts and removes short-lived containers (CI jobs, scheduled containers, image builds), a backup run could end
   `partial` with "container discovery failed, databases were not dumped"; the vanished container is now skipped.

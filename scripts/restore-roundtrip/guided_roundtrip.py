@@ -136,11 +136,11 @@ class GuidedHarness(Harness):
             "-v", f"{repo}:/src:ro",
             self.args.dind_image, "dockerd", "--host=unix:///var/run/docker.sock",
         )  # fmt: skip
-        self.wait_for(
-            "the DinD daemon",
-            lambda: self.dind("info", check=False).returncode == 0,
-            60,
-        )
+        try:
+            self.wait_for("the DinD daemon", lambda: self.dind("info", check=False).returncode == 0, 120)
+        except RuntimeError:
+            self.explain_dind_failure()
+            raise
         images = sorted(
             {spec[0] for spec in MONGO.values()}
             | {spec[0] for spec in REDIS.values()}

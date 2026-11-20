@@ -639,6 +639,15 @@ def flash_archive_path(env: Env, container: str, suffix: str) -> str:
     return newest_flash_archive(env.exec(container, "ls", DUMP_DIR).decode().split(), suffix)
 
 
+def old_flash_archive_path(env: Env, container: str) -> str:
+    """The old release's flash archive: ``.tar.gz`` from 0.2.4, ``.tar`` from later releases."""
+    names = env.exec(container, "ls", DUMP_DIR).decode().split()
+    for suffix in (".tar.gz", ".tar"):
+        if any(n.startswith("flash_") and n.endswith(suffix) for n in names):
+            return newest_flash_archive(names, suffix)
+    raise UpgradeCheckError(f"no flash_*.tar.gz or flash_*.tar archive in {DUMP_DIR} ({names})")
+
+
 def check_flash_archive(env: Env, container: str, path: str, flash: dict[str, bytes], what: str) -> None:
     """``path`` (in ``container``) is a flash archive holding the fake flash."""
     raw = env.exec(container, "cat", path)
@@ -818,7 +827,7 @@ def phase_old(env: Env, marker: str) -> dict:
     log(f"  ok: old release dumped {env.pg}/{PG_DB} to {old_dump}")
     check(run.get("flash_backed_up") == 1, "old release backed up the flash")
     # 0.2.4 wrote gzipped flash archives; the new image writes plain .tar.
-    old_flash = flash_archive_path(env, env.old, ".tar.gz")
+    old_flash = old_flash_archive_path(env, env.old)
     log(f"  ok: old release archived the flash to {old_flash}")
     snaps = [t.get("snapshot_id") for t in run.get("targets", []) if t.get("snapshot_id")]
     check(len(snaps) == 1, "old release recorded one snapshot")
@@ -868,7 +877,12 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
         set(range(2, schema["code"] + 1)) <= set(schema["applied"]) and max(schema["applied"]) == schema["code"],
         f"all migrations applied (code {schema['code']}, database {schema['applied']})",
     )
-    check(max(schema["applied"]) > max(state["old_schema"]["applied"]), "the upgrade applied new migrations")
+    old_newest = max(state["old_schema"]["applied"])
+    if old_newest < schema["code"]:
+        check(max(schema["applied"]) > old_newest, "the upgrade applied new migrations")
+    else:
+        # The old release already has this tree's schema (nothing was added since).
+        log(f"  the old release is already on schema {old_newest}: no migrations to apply")
 
     status = env.api.ok("GET", "/api/status")
     check(status.get("setup_completed") is True, "status reports setup completed")
