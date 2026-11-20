@@ -27,11 +27,11 @@ This repo is now the clean public repository:
 
 ## Current Repo State
 
-Branch: `main` (v0.6.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
+Branch: `main` (v0.7.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
 work" releases landed together in PR #52; sections 12 and 13 below describe
-them, and section 17 describes v0.5.0 and what v0.6.0 added to it. Use
-`git log` for the commit history and `CHANGELOG.md` for what each release
-changed for users.
+them, section 17 describes v0.5.0 and what v0.6.0 added to it, and section 18
+describes v0.7.0. Use `git log` for the commit history and `CHANGELOG.md` for
+what each release changed for users.
 
 Public-repo cleanup already happened:
 - hosted/paid product surface was removed
@@ -580,6 +580,42 @@ Rules that follow from this:
   (it fails contrast), use the secondary text colour
 - the next schema migration is 10
 
+### 18. Long backups and release tests (v0.7.0)
+
+- **Backup time limit is a setting** (`backup_timeout_minutes`, default 60,
+  0 = none, at most 10080; the first outside contribution, #114). It replaced
+  a hard-coded hour per target in `BackupEngine.backup`. `run_command` takes
+  `timeout=None` and a `stdout_callback` that sees each line while stdout is
+  still captured.
+- **Live progress.** restic runs with `RESTIC_PROGRESS_FPS=1`; its JSON status
+  lines feed `orchestrator.run_progress` (in memory, dropped when the run
+  ends) and the `backup:target_complete` event. Per-target numbers are kept in
+  `job_run_targets.stats` (migration 9, JSON; `NULL` for older runs).
+- **A container that vanishes during discovery is skipped.** docker-py's
+  `containers.list()` inspects every listed container; pass
+  `ignore_removed=True` wherever a listing is followed by a loop (discovery,
+  the drill's leftover sweep). On a server with short-lived containers the
+  old behaviour failed all three discovery attempts and the run dumped no
+  database.
+- **An unchecked target is not an unhealthy one.** A target is `unknown` until
+  the first five-minute health check; `/api/status` leaves it out of the
+  "targets unhealthy" decision (`_targets_degrade_status`), so a new install
+  is not `degraded` for its first minutes.
+- **Release tests run on GitHub** (see "CI and Test Notes"). The harnesses
+  must keep working there: not as root unless the workflow says `sudo`, on a
+  machine fast enough to finish before the first health check, and with an
+  "old" release that is not 0.2.4 (event names are validated since 0.4.0, the
+  flash archive is `.tar`, the schema may already be current).
+- restic 0.20.0 and rclone 1.76.0 need no dependency overrides in the
+  Dockerfile; the comment there says how to add one when a scan asks for it.
+
+Rules that follow from this:
+- a limit that stops a backup is a setting with a safe default, and its error
+  message says where to change it
+- don't run the heavy harnesses (round trips, upgrade path) on a machine that
+  also runs real workloads; push a `release-test/<name>` branch or open the
+  pull request and let the "Release tests" workflow do it
+
 ## Validation Summary
 
 This codebase was exercised well beyond unit-only confidence.
@@ -747,7 +783,7 @@ If picking this repo up cold:
 
 ## Last Known Intent
 
-At the time this handoff was updated (v0.6.0):
+At the time this handoff was updated (v0.7.0):
 - v0.3.0/v0.4.0 were merged (PR #52) after two rounds of adversarial review;
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
@@ -769,8 +805,13 @@ At the time this handoff was updated (v0.6.0):
   `alias` option (moving to `#lib` subpath imports is a follow-up), and `$:`
   components read the route from `$lib/stores/page` because `$app/stores` is
   gone and `$app/state` only notifies runes. The one npm advisory left is
-  deepmerge (GHSA-gcqx-w48m-w2h4, via vite-plugin-svelte, build-time only): no
-  patched release exists and its CVE was rejected upstream
+  picomatch (GHSA-fc5q-39xc-vjpf, a ReDoS in glob matching, via Vite and
+  Vitest, build-time only): no patched release exists yet (4.0.7 is the
+  newest); Dependabot will raise it when one does
+- v0.7.0 (section 18) added the configurable backup time limit and live
+  progress from the first outside contribution, restic 0.20.0 and rclone
+  1.76.0, and the "Release tests" workflow that runs the upgrade-path test and
+  both round trips on hosted runners
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still
