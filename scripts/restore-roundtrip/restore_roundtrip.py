@@ -265,6 +265,7 @@ class Harness:
         self.api_key: str | None = None
         self.report = Report()
         self.expected_databases: list[tuple[str, str]] = []
+        self.last_probe_error = ""
 
     # ---- docker helpers ----
 
@@ -306,7 +307,23 @@ class Harness:
             if probe():
                 return
             time.sleep(2)
+        self.explain_timeout(what)
         raise RuntimeError(f"timed out waiting for {what}")
+
+    def explain_timeout(self, what: str) -> None:
+        """Print what is known about a fixture that never became ready."""
+        if self.last_probe_error:
+            print(f"   last probe of {what}: {self.last_probe_error[-600:]}", flush=True)
+        try:
+            names = self.dind("ps", "-a", "--format", "{{.Names}}", check=False).stdout.split()
+        except OSError:
+            return
+        if self.name(what) in names:
+            logs = self.dind("logs", "--tail", "40", self.name(what), check=False)
+            print(f"   last lines of {self.name(what)}:\n{(logs.stdout + logs.stderr)[-4000:]}", flush=True)
+            sockets = self.sh(what, "ls -la /var/run/mysqld /run/mysqld 2>&1; id", check=False)
+            if "mysql" in what or "mariadb" in what:
+                print(f"   socket directory in {self.name(what)}:\n{sockets.stdout[-800:]}", flush=True)
 
     # ---- environment ----
 
@@ -513,6 +530,7 @@ class Harness:
             env={"MYSQL_PWD": password or f"{key}-root"},
             check=False,
         )
+        self.last_probe_error = "" if result.returncode == 0 else (result.stderr or result.stdout or "").strip()
         return result.returncode == 0
 
     def start_arkive(self) -> None:
