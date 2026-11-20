@@ -13,6 +13,8 @@
     type PanelStatus,
   } from '$lib/utils/run-status';
   import { jobTypeLabel } from '$lib/utils/job-types';
+  import BackupTransferDetails from './BackupTransferDetails.svelte';
+  import type { BackupProgress, BackupTransfer } from '$lib/types';
 
   const STORAGE_KEY = 'arkive_backup_progress';
   const AUTO_HIDE_MS = 10000;
@@ -39,6 +41,7 @@
   let userAction = '';
   let runId: string | null = null;
   let jobType: string | null = null;
+  let transfer: BackupTransfer | null = null;
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
   $: phases = phasesForJobType(jobType);
@@ -141,6 +144,7 @@
     runId = null;
     jobType = null;
     currentPhaseKey = null;
+    transfer = null;
     percent = 0;
     errorMessage = '';
     userAction = '';
@@ -153,10 +157,17 @@
 
   /** Best-effort fetch of job type (for the phase rail) and error summary. */
   async function loadRunDetails(id: string, wantError: boolean) {
+    const phaseAtRequest = currentPhaseKey;
+    const transferAtRequest = transfer;
     try {
       const run: any = await backupApi.getRun(id);
       if (!run || id !== runId) return;
       if (run.job_type) jobType = run.job_type;
+      if (run.progress && status === 'running' && currentPhaseKey === phaseAtRequest && transfer === transferAtRequest) {
+        currentPhaseKey = run.progress.phase;
+        percent = run.progress.percent;
+        transfer = run.progress.transfer;
+      }
       if (wantError && run.error_message && (status === 'partial' || status === 'failed')) {
         errorMessage = run.error_message;
       }
@@ -187,8 +198,11 @@
           errorMessage = '';
           userAction = '';
           jobType = null;
+          transfer = null;
         }
         if (activeRun.job_type) jobType = activeRun.job_type;
+        // Fetch the current server-side counters, including after a page refresh.
+        await loadRunDetails(activeRun.id, false);
         persistState();
         return;
       }
@@ -217,6 +231,7 @@
     status = 'running';
     runId = data.run_id ?? null;
     currentPhaseKey = null;
+    transfer = null;
     percent = 0;
     errorMessage = '';
     userAction = '';
@@ -229,7 +244,7 @@
   const unsubProgress = subscribe('backup:progress', (event) => {
     // Progress is only emitted by the run holding the backup lock, so it
     // always describes the real active run.
-    const data = event.data as { run_id?: string; phase?: string; percent?: number };
+    const data = event.data as Partial<BackupProgress>;
     const switched = !!data.run_id && data.run_id !== runId;
     if (switched) {
       runId = data.run_id ?? null;
@@ -241,6 +256,7 @@
     if (data.phase) {
       currentPhaseKey = data.phase;
     }
+    transfer = data.transfer ?? null;
     if (typeof data.percent === 'number') {
       percent = data.percent;
     }
@@ -263,6 +279,7 @@
     if (ignoreTerminal(data)) return;
     runId = data.run_id ?? runId;
     status = panelStatusForCompletion(data.status);
+    transfer = null;
     visible = true;
     userAction = '';
     backupRunning.set(false);
@@ -285,6 +302,7 @@
     if (ignoreTerminal(data)) return;
     runId = data.run_id ?? runId;
     status = 'failed';
+    transfer = null;
     errorMessage = data.error || data.message || 'Backup failed';
     userAction = data.user_action || '';
     visible = true;
@@ -298,6 +316,7 @@
     if (ignoreTerminal(data)) return;
     runId = data.run_id ?? runId;
     status = panelStatusForCancellation(data);
+    transfer = null;
     errorMessage = status === 'skipped'
       ? data.error || data.message || 'A run was skipped because another backup was already in progress.'
       : data.message || 'Backup was cancelled.';
@@ -392,6 +411,13 @@
       variant={progressVariant[status] ?? 'primary'}
       active={status === 'running'}
     />
+
+    {#if status === 'running' && transfer}
+      <BackupTransferDetails {transfer} target={currentPhaseKey?.split(':').slice(1).join(':') ?? ''} />
+    {/if}
+    {#if runId && status !== 'partial' && status !== 'failed'}
+      <a href="/backups/{runId}" class="text-xs text-primary hover:text-primary-hover">View run details</a>
+    {/if}
 
     {#if status === 'success'}
       <p class="text-xs text-text-secondary">Backup completed successfully. This panel will close in 10 seconds.</p>

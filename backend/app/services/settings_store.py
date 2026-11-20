@@ -10,6 +10,7 @@ import aiosqlite
 
 # Defaults for settings read outside the settings API.
 DEFAULTS: dict[str, str] = {
+    "backup_timeout_minutes": "60",  # 0 = no runtime limit per target/attempt
     "heartbeat_url": "",
     "stale_backup_hours": "0",  # 0 = derive from each job's schedule
     "dump_compression": "none",  # none | gzip
