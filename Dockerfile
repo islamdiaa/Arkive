@@ -23,23 +23,21 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Built from the release tags (checked against their commits) rather than
 # downloaded: the published binaries lag behind Go security releases, and the
-# release workflow's Trivy scan fails on fixable HIGH/CRITICAL findings. The
-# dependency bumps below fix advisories in the modules each release pins
-# (golang.org/x/net 0.62.0: CVE-2026-78661); drop them when a restic or rclone
-# release includes them.
+# release workflow's Trivy scan fails on fixable HIGH/CRITICAL findings. When
+# a scan finds an advisory in a module a release pins, bump that module here
+# with `go get <module>@<fixed version> && go mod tidy` before the build, and
+# drop the bump when a restic or rclone release includes it. Neither needs one
+# at the moment.
 FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS tools-builder
 ARG TARGETARCH
-ARG RESTIC_VERSION=0.19.1
-ARG RESTIC_COMMIT=6aa3a516ce654808a1f28f9fa21e9b7c8e6e90bf
+ARG RESTIC_VERSION=0.20.0
+ARG RESTIC_COMMIT=9c88ff768f10c192dc6a87619a65a16374080e33
 ARG RCLONE_VERSION=1.76.0
 ARG RCLONE_COMMIT=e982ff36668f5130d94b4f70409babb3d964df42
 ENV CGO_ENABLED=0 GOOS=linux GOTOOLCHAIN=local GOFLAGS=-trimpath
 WORKDIR /src
 RUN git clone --depth 1 --branch "v${RESTIC_VERSION}" https://github.com/restic/restic.git && \
     cd restic && test "$(git rev-parse HEAD)" = "${RESTIC_COMMIT}" && \
-    go get github.com/klauspost/compress@v1.18.7 golang.org/x/crypto@v0.58.0 \
-      golang.org/x/net@v0.62.0 golang.org/x/text@v0.43.0 google.golang.org/grpc@v1.83.2 && \
-    go mod tidy && \
     GOARCH="${TARGETARCH}" go build -tags disable_grpc_modules \
       -ldflags "-s -w -X main.version=${RESTIC_VERSION}" -o /out/restic ./cmd/restic
 RUN git clone --depth 1 --branch "v${RCLONE_VERSION}" https://github.com/rclone/rclone.git && \

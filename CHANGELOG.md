@@ -21,6 +21,13 @@ When a version is tagged, its section here becomes the GitHub release notes
   jsdom 31.0.1, Playwright 1.65.1, @types/node 26.6.6. lucide 1.0 dropped brand icons, so the footer's GitHub
   mark is now an inline icon. TypeScript stays on 6: SvelteKit 3 does not accept TypeScript 7 yet.
 
+### Security
+- restic 0.20.0 (was 0.19.1). It fixes a problem in `restic restore` where a crafted snapshot could make a restore
+  write through a symbolic link to files outside the restore folder; restic now refuses such a snapshot. Someone
+  would need write access to the backup repository to plant one. It also carries restic's other fixes since 0.19.1
+  (truncated key or config files no longer make a repository unreadable, hard-linked files restore correctly over
+  existing ones) and already includes the dependency updates Arkive used to add when building 0.19.1.
+
 ### Fixed
 - The sidebar's active link updates when navigating between pages, including nested routes and browser back navigation.
 - A new install no longer reports `degraded` for its first minutes. A storage target that had not had its first
