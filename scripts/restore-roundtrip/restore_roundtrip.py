@@ -321,9 +321,21 @@ class Harness:
         if self.name(what) in names:
             logs = self.dind("logs", "--tail", "40", self.name(what), check=False)
             print(f"   last lines of {self.name(what)}:\n{(logs.stdout + logs.stderr)[-4000:]}", flush=True)
-            sockets = self.sh(what, "ls -la /var/run/mysqld /run/mysqld 2>&1; id", check=False)
             if "mysql" in what or "mariadb" in what:
-                print(f"   socket directory in {self.name(what)}:\n{sockets.stdout[-800:]}", flush=True)
+                # Where the server listens against where the client looks: a server that
+                # does not read its config file falls back to the compiled-in socket path.
+                details = self.sh(
+                    what,
+                    "ls -la /var/run/mysqld /etc/my.cnf /etc/mysql /etc/mysql/conf.d 2>&1; "
+                    "echo '--- my.cnf'; cat /etc/my.cnf 2>&1; echo '--- defaults'; "
+                    "mysqld --print-defaults 2>&1 | tail -3; stat -c '%a %U %n' / /etc /usr /usr/share 2>&1",
+                    check=False,
+                )
+                print(f"   config and sockets in {self.name(what)}:\n{details.stdout[-2500:]}", flush=True)
+                head = self.dind("logs", self.name(what), check=False)
+                print(f"   first lines of its log:\n{(head.stdout + head.stderr)[:1800]}", flush=True)
+                info = self.dind("info", "--format", "{{.Driver}} {{.DriverStatus}}", check=False)
+                print(f"   private daemon storage: {info.stdout.strip()[:300]}", flush=True)
 
     # ---- environment ----
 
