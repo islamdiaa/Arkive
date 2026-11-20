@@ -31,11 +31,16 @@ Before tagging (the rules in `CLAUDE.md` section 14):
       must pass.
 - [ ] **Dependencies.** Run `pip-audit -r backend/requirements.txt` and
       `cd frontend && npm audit`; fix anything fixable that ships in the image.
+- [ ] **Release tests.** The "Release tests" workflow has passed on the release
+      pull request: upgrade from 0.2.4 and the two previous releases, the
+      restore round trip, the guided round trip and the image scan. It runs by
+      itself when a pull request changes the version files.
 - [ ] **Image scan.** Trivy runs after the image is pushed, so a finding there
-      leaves a published image without a release. Scan locally first, with
-      the Trivy version CI uses (trivy-action v0.36.0 runs Trivy 0.70.0),
-      pinned by digest, and without giving it the Docker socket: it scans a
-      saved copy of the image.
+      leaves a published image without a release. The "image scan" job of the
+      Release tests workflow scans the image built from the pull request with
+      the same settings. To scan by hand instead, use the Trivy version CI
+      uses (trivy-action v0.36.0 runs Trivy 0.70.0), pinned by digest, and
+      without giving it the Docker socket: it scans a saved copy of the image.
       ```bash
       docker build -t arkive:release-check .
       docker save -o /tmp/arkive-release-check.tar arkive:release-check
