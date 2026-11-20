@@ -19,7 +19,8 @@ restic is invoked. On GitHub it runs in the "Release tests" workflow
 (`.github/workflows/release-tests.yml`): on pull requests that touch the image,
 the schema, the dump and restore code or the version files, and on demand from
 the Actions tab, upgrading from 0.2.4 and from the two releases before the
-tree. Prefer that to a machine that runs other things: the test needs an image
+tree. Pushing a branch named `release-test/<anything>` runs it on that tree
+without a pull request. Prefer that to a machine that runs other things: the test needs an image
 built from the tree and either a privileged daemon or a Docker host of its own,
 and on a busy host most of the time goes into copying the images into the
 private daemon.
