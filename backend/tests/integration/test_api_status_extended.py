@@ -199,3 +199,36 @@ async def test_status_marks_unraid_migration_ready_when_appdata_and_flash_are_co
     assert coverage["flash_protected"] is True
     assert coverage["migration_ready"] is True
     assert coverage["warnings"] == []
+
+
+async def test_unchecked_target_does_not_degrade_status():
+    """A target waiting for its first health check is not counted as unhealthy."""
+    from app.api.status import _targets_degrade_status
+
+    assert _targets_degrade_status(total=1, healthy=0, unchecked=1) is False
+    assert _targets_degrade_status(total=2, healthy=1, unchecked=1) is False
+    assert _targets_degrade_status(total=0, healthy=0, unchecked=0) is False
+    # A failed check sets "error": that target is neither healthy nor unchecked.
+    assert _targets_degrade_status(total=1, healthy=0, unchecked=0) is True
+    assert _targets_degrade_status(total=3, healthy=1, unchecked=1) is True
+
+
+async def test_status_with_a_new_target_matches_status_with_a_healthy_one(client):
+    """Right after setup the target is `unknown`; that must read like a healthy one, and `error` must not."""
+    await do_setup(client, storage={"type": "local", "name": "Local", "path": "/tmp/arkive-status-test-repo"})
+    db_path = client._transport.app.state.config.db_path
+
+    async def status_with(target_status: str) -> str:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("UPDATE storage_targets SET status = ?", (target_status,))
+            await db.commit()
+            cursor = await db.execute("SELECT COUNT(*) FROM storage_targets")
+            assert (await cursor.fetchone())[0] == 1
+        resp = await client.get("/api/status")
+        assert resp.status_code == 200
+        return resp.json()["status"]
+
+    healthy = await status_with("online")
+    assert await status_with("unknown") == healthy
+    if healthy == "ok":
+        assert await status_with("error") == "degraded"
