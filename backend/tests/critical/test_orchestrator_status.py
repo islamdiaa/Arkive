@@ -15,7 +15,7 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 
-from app.core.database import init_db
+from app.core.database import init_db, run_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ async def orch_db(tmp_path):
     """Initialize a test database with a seeded backup job."""
     db_path = tmp_path / "orch_test.db"
     await init_db(db_path)
+    await run_migrations(db_path)
 
     async with aiosqlite.connect(db_path) as db:
         await db.execute(

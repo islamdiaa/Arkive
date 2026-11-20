@@ -58,6 +58,48 @@ async def test_bulk_update_retention_days_round_trip(client):
     assert get_resp.json()["retention_days"] == 45
 
 
+async def test_backup_timeout_round_trip_export_import_and_reset(client):
+    api_key = await setup_auth(client)
+    headers = auth_headers(api_key)
+    assert (await client.get("/api/settings", headers=headers)).json()["backup_timeout_minutes"] == 60
+    response = await client.put("/api/settings", json={"settings": {"backup_timeout_minutes": 1440}}, headers=headers)
+    assert response.status_code == 200
+    exported = await client.get("/api/settings/export", headers=headers)
+    settings = yaml.safe_load(exported.text)["arkive_config"]["settings"]
+    assert any(s["key"] == "backup_timeout_minutes" and s["value"] == "1440" for s in settings)
+    assert (
+        await client.put("/api/settings/backup_timeout_minutes", json={"value": "0"}, headers=headers)
+    ).status_code == 200
+    assert (await client.get("/api/settings", headers=headers)).json()["backup_timeout_minutes"] == 0
+    imported = await client.post(
+        "/api/settings/import", content=exported.content, headers={**headers, "Content-Type": "application/x-yaml"}
+    )
+    assert imported.status_code == 200
+    assert (await client.get("/api/settings", headers=headers)).json()["backup_timeout_minutes"] == 1440
+    await client.post("/api/settings/reset", json={"confirm": True}, headers=headers)
+    assert (await client.get("/api/settings", headers=headers)).json()["backup_timeout_minutes"] == 60
+
+
+@pytest.mark.parametrize("value", ["-1", "10081", "1.5", "", "invalid"])
+async def test_backup_timeout_rejects_invalid_values_on_every_write_path(client, value):
+    headers = auth_headers(await setup_auth(client))
+    assert (
+        await client.put("/api/settings", json={"backup_timeout_minutes": value}, headers=headers)
+    ).status_code == 422
+    assert (
+        await client.put("/api/settings/backup_timeout_minutes", json={"value": value}, headers=headers)
+    ).status_code == 422
+    imported = yaml.safe_dump(
+        {"arkive_config": {"version": 1, "settings": [{"key": "backup_timeout_minutes", "value": value}]}}
+    )
+    response = await client.post(
+        "/api/settings/import", content=imported.encode(), headers={**headers, "Content-Type": "application/x-yaml"}
+    )
+    assert response.status_code == 200
+    assert any("backup_timeout_minutes" in warning for warning in response.json()["warnings"])
+    assert (await client.get("/api/settings", headers=headers)).json()["backup_timeout_minutes"] == 60
+
+
 async def test_single_key_update(client):
     """PUT /api/settings/{key} should update a specific setting."""
     api_key = await setup_auth(client)

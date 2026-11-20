@@ -173,6 +173,20 @@ test.describe('Sidebar — Active State Highlighting', () => {
     await mockAllRoutes(page);
   });
 
+  test('moves the active marker when clicking sidebar links and going back', async ({ page }) => {
+    await page.goto('/snapshots');
+    const nav = page.getByRole('navigation', { name: 'Main', exact: true });
+    const snapshots = nav.getByRole('link', { name: 'Snapshots', exact: true });
+    const backups = nav.getByRole('link', { name: 'Backups', exact: true });
+    await expect(snapshots).toHaveAttribute('aria-current', 'page');
+    await backups.click();
+    await expect(backups).toHaveAttribute('aria-current', 'page');
+    await expect(snapshots).not.toHaveAttribute('aria-current');
+    await page.goBack();
+    await expect(snapshots).toHaveAttribute('aria-current', 'page');
+    await expect(backups).not.toHaveAttribute('aria-current');
+  });
+
   const mainRoutes: [string, string][] = [
     ['/', 'Dashboard'],
     ['/backups', 'Backups'],
