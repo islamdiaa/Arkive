@@ -89,6 +89,17 @@ def _check_disk_space(config_dir: str = "/config") -> dict:
         return {"ok": False, "free_bytes": 0, "total_bytes": 0, "used_percent": 0, "message": f"Cannot check disk: {e}"}
 
 
+def _targets_degrade_status(total: int, healthy: int, unchecked: int) -> bool:
+    """Whether target health turns an otherwise ok status into ``degraded``.
+
+    A target that has not had its first health check yet (status ``unknown``,
+    for up to five minutes after it is added) is not known to be unhealthy:
+    counting it made every new install report ``degraded`` right after setup.
+    A check that fails sets ``error``, which does count.
+    """
+    return total > 0 and healthy + unchecked < total
+
+
 def _check_binaries() -> dict:
     """Check that restic and rclone are available on PATH."""
     missing = []
@@ -367,14 +378,17 @@ async def get_status(request: Request, db: aiosqlite.Connection = Depends(get_db
             "SELECT COUNT(*) as healthy FROM storage_targets WHERE status IN ('healthy', 'online', 'ok')"
         )
         healthy_targets = (await cursor.fetchone())["healthy"]
+        cursor = await db.execute("SELECT COUNT(*) as unchecked FROM storage_targets WHERE status = 'unknown'")
+        unchecked_targets = (await cursor.fetchone())["unchecked"]
     except (sqlite3.OperationalError, aiosqlite.OperationalError):
         total_targets = 0
         healthy_targets = 0
+        unchecked_targets = 0
         if overall_status == "ok":
             overall_status = "degraded"
 
     # Target health as a warning if some targets are unhealthy
-    if total_targets > 0 and healthy_targets < total_targets and overall_status == "ok":
+    if _targets_degrade_status(total_targets, healthy_targets, unchecked_targets) and overall_status == "ok":
         overall_status = "degraded"
 
     # Databases
