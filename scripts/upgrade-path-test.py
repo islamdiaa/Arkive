@@ -877,7 +877,12 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
         set(range(2, schema["code"] + 1)) <= set(schema["applied"]) and max(schema["applied"]) == schema["code"],
         f"all migrations applied (code {schema['code']}, database {schema['applied']})",
     )
-    check(max(schema["applied"]) > max(state["old_schema"]["applied"]), "the upgrade applied new migrations")
+    old_newest = max(state["old_schema"]["applied"])
+    if old_newest < schema["code"]:
+        check(max(schema["applied"]) > old_newest, "the upgrade applied new migrations")
+    else:
+        # The old release already has this tree's schema (nothing was added since).
+        log(f"  the old release is already on schema {old_newest}: no migrations to apply")
 
     status = env.api.ok("GET", "/api/status")
     check(status.get("setup_completed") is True, "status reports setup completed")

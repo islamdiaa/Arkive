@@ -503,9 +503,13 @@ class Harness:
         return self.sh(key, "pg_isready -q -h 127.0.0.1", check=False).returncode == 0
 
     def mysql_ready(self, key: str, password: str | None = None) -> bool:
+        # TCP: the image's first-start server has no networking, so only the
+        # real one answers. Socket: what the fixtures and Arkive's dumps use;
+        # on a fast machine TCP can answer a moment before the socket exists.
         result = self.sh(
             key,
-            '"$(command -v mariadb || command -v mysql)" -uroot -h127.0.0.1 --protocol=tcp -e "select 1"',
+            'client="$(command -v mariadb || command -v mysql)"; '
+            '"$client" -uroot -h127.0.0.1 --protocol=tcp -e "select 1" && "$client" -uroot -e "select 1"',
             env={"MYSQL_PWD": password or f"{key}-root"},
             check=False,
         )
