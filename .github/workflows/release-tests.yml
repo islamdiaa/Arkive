@@ -129,6 +129,18 @@ jobs:
       - name: Load the image
         run: gunzip -c arkive-image.tar.gz | docker load
 
+      # Hosted runners ship an AppArmor profile for /usr/sbin/mysqld (MySQL is
+      # preinstalled). Containers of the harness's private daemon are not
+      # confined by Docker, so the kernel attaches that host profile to the
+      # mysqld inside the MySQL fixture: it cannot read /etc/my.cnf, listens on
+      # the compiled-in socket path and the client never finds it.
+      - name: Unload the runner's AppArmor profile for mysqld
+        run: |
+          if [ -f /etc/apparmor.d/usr.sbin.mysqld ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld
+          fi
+          sudo aa-status 2>/dev/null | grep -i mysqld || echo "no AppArmor profile for mysqld is loaded"
+
       # sudo: the harness reaches its private daemon through a socket that
       # daemon creates as root, and removes the daemon's files afterwards.
       - name: Back up and restore PostgreSQL, MariaDB, MySQL, SQLite and Redis
