@@ -619,6 +619,15 @@ CI (`.github/workflows/build.yml`) runs on every PR:
 - `sast`: bandit
 - `build`: multi-arch image; pushed to Docker Hub only from `main` and tags
 
+"Release tests" (`.github/workflows/release-tests.yml`) builds the image once
+and runs the upgrade-path test (from 0.2.4 and the two previous releases), the
+restore round trip and the guided round trip on hosted runners. It triggers on
+pull requests that touch the image, the schema, the dump and restore code, the
+harnesses or the version files (so every release pull request), and from the
+Actions tab. Run the heavy harnesses there, not on a machine that also runs
+real workloads: they start a privileged Docker daemon and several database
+servers.
+
 CI runners are not root and run pytest under xdist: tests must not depend on
 the effective uid, on test order, or on files in the working directory (the
 suite fails if a test creates files named after a mocked config path; rerun

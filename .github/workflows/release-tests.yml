@@ -1,0 +1,155 @@
+name: Release tests
+
+# The heavy tests that need a Docker host of their own: upgrading an install
+# made by an earlier release, and the backup -> restore round trips on real
+# database engines. They build the image from the tree once and run on a
+# hosted runner, a throwaway machine with nothing else on its Docker daemon.
+#
+# They run on pull requests that touch what they cover (the image, the
+# schema, the dump and restore code, the harnesses, the version files that a
+# release pull request changes) and on demand from the Actions tab.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - "release/**"
+    paths:
+      - ".github/workflows/release-tests.yml"
+      - "Dockerfile"
+      - "backend/requirements.txt"
+      - "backend/app/__init__.py"
+      - "backend/app/core/database.py"
+      - "backend/app/core/security.py"
+      - "backend/app/services/backup_engine.py"
+      - "backend/app/services/db_dumper.py"
+      - "backend/app/services/guided_restore.py"
+      - "backend/app/services/mysql_accounts.py"
+      - "backend/app/services/orchestrator.py"
+      - "backend/app/services/redis_swap.py"
+      - "backend/app/services/restore_drill.py"
+      - "backend/app/services/restore_plan.py"
+      - "scripts/upgrade-path-test.py"
+      - "scripts/restore-roundtrip/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: arkive-rt:dev
+
+jobs:
+  image:
+    name: build image
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # A cache scope of its own: the CI workflow's build writes the default
+      # scope, and two jobs writing one scope at once can lose blobs.
+      - name: Build the image from this tree
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=release-tests
+          cache-to: type=gha,mode=max,scope=release-tests
+
+      - name: Save the image
+        run: docker save "$IMAGE" | gzip > arkive-image.tar.gz
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v7
+        with:
+          name: arkive-image
+          path: arkive-image.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  upgrade-path:
+    name: upgrade from ${{ matrix.old }}
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # The first public line, and the two releases before this tree.
+        old: ["0.2.4", "0.5.0", "0.6.0"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download the image
+        uses: actions/download-artifact@v8
+        with:
+          name: arkive-image
+
+      - name: Load the image
+        run: gunzip -c arkive-image.tar.gz | docker load
+
+      # --docker host: the runner's daemon holds nothing else, which is the
+      # only place that mode is meant for.
+      - name: Upgrade an install made by ${{ matrix.old }}
+        run: >
+          python3 scripts/upgrade-path-test.py
+          --docker host
+          --old-image "islamdiaa/arkive:${{ matrix.old }}"
+          --new-image "$IMAGE"
+
+  restore-round-trip:
+    name: restore round trip
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download the image
+        uses: actions/download-artifact@v8
+        with:
+          name: arkive-image
+
+      - name: Load the image
+        run: gunzip -c arkive-image.tar.gz | docker load
+
+      - name: Back up and restore PostgreSQL, MariaDB, MySQL, SQLite and Redis
+        run: >
+          python3 scripts/restore-roundtrip/restore_roundtrip.py
+          --image "$IMAGE"
+          --memory 10g
+          --workdir "$RUNNER_TEMP/arkive-rt"
+
+  guided-round-trip:
+    name: guided restore round trip
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download the image
+        uses: actions/download-artifact@v8
+        with:
+          name: arkive-image
+
+      - name: Load the image
+        run: gunzip -c arkive-image.tar.gz | docker load
+
+      - name: Guided restore of MongoDB and Redis
+        run: >
+          python3 scripts/restore-roundtrip/guided_roundtrip.py
+          --image "$IMAGE"
+          --workdir "$RUNNER_TEMP/arkive-grt"

@@ -525,7 +525,7 @@ class Env:
             "-e", f"POSTGRES_DB={PG_DB}",
             self.args.postgres_image,
         )  # fmt: skip
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             # pg_isready answers during the init-script restart too; a query
             # over TCP only works once the final server is up.
@@ -797,12 +797,19 @@ def phase_old(env: Env, marker: str) -> dict:
     job_id = by_type["full"]
 
     # A channel with events the old UI offered; its URL is stored encrypted.
-    channel = env.api.ok(
-        "POST",
-        "/api/notifications",
-        {"name": "Upgrade test", "type": "webhook", "url": "json://127.0.0.1:9/upgrade-test", "events": OLD_EVENTS},
-        expect=(200, 201),
-    )
+    # Releases that validate event names refuse the retired ones (422); those
+    # already carry the subscription migrations, so the channel is created
+    # with the one event that exists everywhere and is only checked for being kept.
+    channel_body = {"name": "Upgrade test", "type": "webhook", "url": "json://127.0.0.1:9/upgrade-test"}
+    channel_events = list(OLD_EVENTS)
+    status, channel = env.api.call("POST", "/api/notifications", {**channel_body, "events": channel_events})
+    if status == 422:
+        channel_events = ["backup.failed"]
+        channel = env.api.ok(
+            "POST", "/api/notifications", {**channel_body, "events": channel_events}, expect=(200, 201)
+        )
+    elif status not in (200, 201):
+        raise UpgradeCheckError(f"POST /api/notifications returned HTTP {status}: {str(channel)[:300]}")
 
     log("running a backup with the old release")
     run = run_full_job(env, job_id)
@@ -824,6 +831,7 @@ def phase_old(env: Env, marker: str) -> dict:
         "job_id": job_id,
         "legacy_jobs": {t: i for t, i in by_type.items() if t != "full"},
         "channel_id": channel["id"],
+        "channel_events": channel_events,
         "old_run_id": run["id"],
         "old_snapshot": old_snapshot,
         "old_dump": old_dump,
@@ -878,10 +886,14 @@ def phase_new(env: Env, state: dict, marker: str) -> None:
     # Migrations 5/6 extend subscriptions of channels that wanted failures.
     channels = items(env.api.ok("GET", "/api/notifications"), "channels")
     events = next((c.get("events") for c in channels if c.get("id") == state["channel_id"]), None)
-    check(
-        events is not None and set(OLD_EVENTS) | MIGRATED_EVENTS <= set(events),
-        f"the old notification channel kept its events and gained the new failure events ({events})",
-    )
+    kept = set(state["channel_events"])
+    if kept == set(OLD_EVENTS):
+        check(
+            events is not None and kept | MIGRATED_EVENTS <= set(events),
+            f"the old notification channel kept its events and gained the new failure events ({events})",
+        )
+    else:
+        check(events is not None and kept <= set(events), f"the old notification channel kept its events ({events})")
 
     old_snapshot = state["old_snapshot"]
     target_id = state["target_id"]

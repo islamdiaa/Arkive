@@ -55,8 +55,12 @@ empty: the harness marks it with a `.arkive-restore-roundtrip` file, refuses a
 non-empty directory without that marker, and teardown deletes only a marked
 directory (its contents are removed as root).
 
-It is not part of CI: it needs a privileged container and pulls several
-database images. The problems it found are covered by unit tests
+It is not part of the CI workflow that every pull request must pass: it needs
+a privileged container and pulls several database images. The "Release tests"
+workflow (`.github/workflows/release-tests.yml`) runs it, the guided round trip
+below and the upgrade-path test on a hosted runner, for pull requests that
+touch the image, the schema, the dump and restore code or the version files,
+and on demand from the Actions tab. The problems it found are covered by unit tests
 (`backend/tests/unit/test_restore_roundtrip_findings.py` and the
 "Real-engine findings" section of `test_restore_drill.py`).
 
