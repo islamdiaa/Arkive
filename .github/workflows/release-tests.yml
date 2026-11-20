@@ -81,6 +81,31 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # The same scan, with the same settings, that the release workflow runs on
+  # the pushed image: a finding there leaves a published image without a
+  # release, so find it here first.
+  image-scan:
+    name: image scan
+    needs: image
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the image
+        uses: actions/download-artifact@v8
+        with:
+          name: arkive-image
+
+      - name: Unpack the image archive
+        run: gunzip arkive-image.tar.gz
+
+      - name: Scan the image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          input: arkive-image.tar
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
   upgrade-path:
     name: upgrade from ${{ matrix.old }}
     needs: image
