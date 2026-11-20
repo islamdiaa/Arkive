@@ -9,6 +9,10 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Added
+- Backup progress shows source data processed, file counts, average processing speed and estimated time remaining for the current target. Run details keep each target's newly stored data size and counts of new, changed and unchanged files (migration 9; unavailable for older runs).
+- Settings → General includes a backup timeout in minutes per target and attempt. The default remains 60 minutes; 0 disables the runtime limit while keeping manual cancellation available. Timeout errors explain where to change the limit.
+
 ### Changed
 - rclone 1.76.0 (was 1.75.2). It already includes the `golang.org/x/net` fix that 0.5.0 had to add by rebuilding 1.75.2.
 - Dependency updates. Backend: FastAPI 0.162.7, sse-starlette 3.7.0, Apprise 2.2.0, pydantic-settings 2.16.3,
@@ -25,6 +29,7 @@ When a version is tagged, its section here becomes the GitHub release notes
   existing ones) and already includes the dependency updates Arkive used to add when building 0.19.1.
 
 ### Fixed
+- The sidebar's active link updates when navigating between pages, including nested routes and browser back navigation.
 - A new install no longer reports `degraded` for its first minutes. A storage target that had not had its first
   health check yet was counted as unhealthy, so the dashboard and `/api/status` said `degraded` right after setup
   (and after adding a target) even when the first backup had already succeeded.

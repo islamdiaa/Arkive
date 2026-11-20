@@ -64,6 +64,7 @@ _RETENTION_KEYS = {"retention_days", "keep_daily", "keep_weekly", "keep_monthly"
 _DISK_SPACE_KEYS = {"min_disk_space_bytes", "warn_disk_space_bytes"}
 # key -> (minimum, maximum) for bounded integer settings
 _BOUNDED_INT_KEYS = {
+    "backup_timeout_minutes": (0, 10080),
     "stale_backup_hours": (0, 8760),
     "restore_drill_max_databases": (1, 100),
     "restore_drill_max_dump_mb": (1, 1024 * 1024),
@@ -206,6 +207,9 @@ async def get_settings(db: aiosqlite.Connection = Depends(get_db)):
         "web_url": values.get("web_url", ""),
         "theme": values.get("theme", "dark"),
         "bandwidth_limit": values.get("bandwidth_limit", ""),
+        "backup_timeout_minutes": _int_setting(
+            values, "backup_timeout_minutes", int(DEFAULTS["backup_timeout_minutes"])
+        ),
         "heartbeat_url": values.get("heartbeat_url", DEFAULTS["heartbeat_url"]),
         "stale_backup_hours": _int_setting(values, "stale_backup_hours", 0),
         "dump_compression": values.get("dump_compression", DEFAULTS["dump_compression"]),
@@ -259,6 +263,7 @@ WRITABLE_SETTINGS = {
     "min_disk_space_bytes",
     "warn_disk_space_bytes",
     "bandwidth_limit",
+    "backup_timeout_minutes",
     "heartbeat_url",
     "stale_backup_hours",
     "dump_compression",

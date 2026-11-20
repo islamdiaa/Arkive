@@ -265,6 +265,7 @@ class Harness:
         self.api_key: str | None = None
         self.report = Report()
         self.expected_databases: list[tuple[str, str]] = []
+        self.last_probe_error = ""
 
     # ---- docker helpers ----
 
@@ -306,7 +307,35 @@ class Harness:
             if probe():
                 return
             time.sleep(2)
+        self.explain_timeout(what)
         raise RuntimeError(f"timed out waiting for {what}")
+
+    def explain_timeout(self, what: str) -> None:
+        """Print what is known about a fixture that never became ready."""
+        if self.last_probe_error:
+            print(f"   last probe of {what}: {self.last_probe_error[-600:]}", flush=True)
+        try:
+            names = self.dind("ps", "-a", "--format", "{{.Names}}", check=False).stdout.split()
+        except OSError:
+            return
+        if self.name(what) in names:
+            logs = self.dind("logs", "--tail", "40", self.name(what), check=False)
+            print(f"   last lines of {self.name(what)}:\n{(logs.stdout + logs.stderr)[-4000:]}", flush=True)
+            if "mysql" in what or "mariadb" in what:
+                # Where the server listens against where the client looks: a server that
+                # does not read its config file falls back to the compiled-in socket path.
+                details = self.sh(
+                    what,
+                    "ls -la /var/run/mysqld /etc/my.cnf /etc/mysql /etc/mysql/conf.d 2>&1; "
+                    "echo '--- my.cnf'; cat /etc/my.cnf 2>&1; echo '--- defaults'; "
+                    "mysqld --print-defaults 2>&1 | tail -3; stat -c '%a %U %n' / /etc /usr /usr/share 2>&1",
+                    check=False,
+                )
+                print(f"   config and sockets in {self.name(what)}:\n{details.stdout[-2500:]}", flush=True)
+                head = self.dind("logs", self.name(what), check=False)
+                print(f"   first lines of its log:\n{(head.stdout + head.stderr)[:1800]}", flush=True)
+                info = self.dind("info", "--format", "{{.Driver}} {{.DriverStatus}}", check=False)
+                print(f"   private daemon storage: {info.stdout.strip()[:300]}", flush=True)
 
     # ---- environment ----
 
@@ -513,6 +542,7 @@ class Harness:
             env={"MYSQL_PWD": password or f"{key}-root"},
             check=False,
         )
+        self.last_probe_error = "" if result.returncode == 0 else (result.stderr or result.stdout or "").strip()
         return result.returncode == 0
 
     def start_arkive(self) -> None:

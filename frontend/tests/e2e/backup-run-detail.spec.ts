@@ -38,6 +38,7 @@ interface MockRun {
   error_message: string | null;
   databases: Array<Record<string, unknown>>;
   targets: Array<Record<string, unknown>>;
+  progress?: { run_id: string; phase: string; percent: number; transfer: Record<string, number> };
 }
 
 const MOCK_RUN_SUCCESS: MockRun = {
@@ -83,7 +84,7 @@ const MOCK_RUN_PARTIAL: MockRun = {
     { id: 2, container_name: 'paperless-db', db_type: 'postgres', db_name: 'paperless', dump_size_bytes: 0, integrity_check: 'skipped', status: 'skipped', host_path: null, error: 'Container paperless-db is not running' },
   ],
   targets: [
-    { id: 1, target_id: 't1', status: 'success', snapshot_id: 'abcd1234', upload_bytes: 524288000, duration_seconds: 60, error: null, target_name: 'Local NAS', target_provider: 'local' },
+    { id: 1, target_id: 't1', status: 'success', snapshot_id: 'abcd1234', upload_bytes: 524288000, duration_seconds: 60, error: null, target_name: 'Local NAS', target_provider: 'local', stats: { data_added_packed: 1048576, files_new: 5, files_changed: 7, files_unmodified: 90 } },
   ],
 };
 
@@ -381,6 +382,22 @@ test.describe('Backup Run Detail — Running', () => {
     await mockRunDetailRoutes(page, MOCK_RUN_RUNNING);
   });
 
+  test('restores live upload progress from the run API after a refresh', async ({ page }) => {
+    await mockRunDetailRoutes(page, { ...MOCK_RUN_RUNNING, progress: {
+      run_id: MOCK_RUN_RUNNING.id, phase: 'uploading:Offsite', percent: 67,
+      transfer: { bytes_done: 1048576, total_bytes: 2097152, percent_done: 0.5, seconds_elapsed: 2, seconds_remaining: 65 },
+    } });
+    await page.goto('/backups/run-running123');
+    for (let i = 0; i < 2; i++) {
+      const transfer = page.getByTestId('backup-transfer');
+      await expect(transfer).toContainText('Target: Offsite');
+      await expect(transfer).toContainText('1 MB / 2 MB (50%)');
+      await expect(transfer).toContainText('512 KB/s');
+      await expect(transfer).toContainText('~1m 5s');
+      if (i === 0) await page.reload();
+    }
+  });
+
   test('running run shows running status', async ({ page }) => {
     await page.goto('/backups/run-running123', { waitUntil: 'networkidle' });
 
@@ -395,6 +412,14 @@ test.describe('Backup Run Detail — Running', () => {
 
     await expect(page.getByText('In progress')).toBeVisible();
   });
+});
+
+test('shows stored upload size and file changes for each completed target', async ({ page }) => {
+  await mockRunDetailRoutes(page, MOCK_RUN_PARTIAL);
+  await page.goto(`/backups/${MOCK_RUN_PARTIAL.id}`);
+  for (const [label, value] of [['Uploaded (stored size)', '1 MB'], ['New files', '5'], ['Changed files', '7'], ['Unchanged files', '90']]) {
+    await expect(page.getByText(label, { exact: true }).locator('..').locator('dd')).toHaveText(value);
+  }
 });
 
 // ---------------------------------------------------------------------------

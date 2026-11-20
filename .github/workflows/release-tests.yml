@@ -7,9 +7,14 @@ name: Release tests
 #
 # They run on pull requests that touch what they cover (the image, the
 # schema, the dump and restore code, the harnesses, the version files that a
-# release pull request changes) and on demand from the Actions tab.
+# release pull request changes), on demand from the Actions tab, and on a
+# push to a `release-test/**` branch: a way to test a tree (several pull
+# requests merged together, say) without opening a pull request for it.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "release-test/**"
   pull_request:
     branches:
       - main

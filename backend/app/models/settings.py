@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SettingsResponse(BaseModel):
@@ -15,6 +15,7 @@ class SettingsResponse(BaseModel):
     log_level: str = "INFO"
     web_url: str = ""
     bandwidth_limit: str = ""
+    backup_timeout_minutes: int = Field(default=60, ge=0, le=10080)
 
 
 class SettingsUpdate(BaseModel):
@@ -27,6 +28,7 @@ class SettingsUpdate(BaseModel):
     log_level: str | None = None
     web_url: str | None = None
     bandwidth_limit: str | None = None
+    backup_timeout_minutes: int | None = Field(default=None, ge=0, le=10080)
 
 
 class SetupCompleteRequest(BaseModel):
