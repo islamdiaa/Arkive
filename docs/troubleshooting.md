@@ -28,6 +28,19 @@
 
 Databases you excluded on the Databases page are recorded as `skipped` and don't make a run partial.
 
+## A database is not listed
+
+Database servers (PostgreSQL, MariaDB/MySQL, MongoDB, Redis) are recognised by their image name. SQLite databases are files, and Arkive looks for them in the folders a container maps from the host:
+
+- Only running containers are scanned.
+- Only bind-mounted folders that belong to one app are scanned, such as `/mnt/user/appdata/sonarr`. A whole share (`/mnt/user/appdata`), a folder outside `/mnt/user` and a named Docker volume are not.
+- The file name has to end in `.db`, `.sqlite` or `.sqlite3`, and the file has to be in the mapped folder or at most two folders below it.
+- Folders named `cache`, `tmp`, `backup`, `backups`, `dump`, `dumps`, `restore`, `restores` or `node_modules` are skipped, and so are media folders (`media`, `movies`, `tv`, `music`, `photos`, `audiobooks`, `downloads`, `transcode`).
+
+For an app with a profile in [`profiles/`](https://github.com/islamdiaa/Arkive/tree/main/profiles), Arkive takes the databases the profile names. It scans the mapped folders only when the profile names a SQLite file and none is at that path.
+
+After you change a mapping, click **Re-scan** on the Databases page.
+
 ## Flash backups are missing
 
 Arkive recognises an Unraid server by its flash configuration mapped at `/boot-config`. If `/boot/config` isn't mapped there, Arkive treats the host as plain Linux and skips the flash backup without a warning, and `GET /api/status` reports `platform: "linux"`. Map `/boot/config` to `/boot-config` read-only (the Unraid template does) and restart the container.
