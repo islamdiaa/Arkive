@@ -28,7 +28,7 @@ RUN npm run build
 # with `go get <module>@<fixed version> && go mod tidy` before the build, and
 # drop the bump when a restic or rclone release includes it. Neither needs one
 # at the moment.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS tools-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm AS tools-builder
 ARG TARGETARCH
 ARG RESTIC_VERSION=0.20.0
 ARG RESTIC_COMMIT=9c88ff768f10c192dc6a87619a65a16374080e33
