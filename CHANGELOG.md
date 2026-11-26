@@ -9,6 +9,9 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Security
+- restic and rclone are built with Go 1.26.11 (was 1.26.10), which has security fixes in `net/http`, the package both tools use to reach cloud storage, and in the compiler and linker.
+
 ## [0.7.0] - 2026-11-20
 
 Arkive 0.7.0 makes long backups workable and visible: the time limit per storage target is now a setting, and a running backup shows how far it is. It also brings restic 0.20.0 (which fixes a security problem in restore) and rclone 1.76.0, and fixes two problems found on real servers. The time limit and the progress display were contributed by @Roalkege.
