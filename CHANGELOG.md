@@ -9,17 +9,33 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-27
+
+Arkive 0.7.1 finds SQLite databases that earlier releases did not list, and its image is rebuilt on current Debian packages.
+
+Upgrade by recreating the container with the same `/config` volume. There is no database migration. Upgrading was tested from 0.2.4, 0.6.0 and 0.7.0.
+- The first backup after the upgrade can list and dump databases that Arkive did not see before, so it may be larger. Check the Databases page afterwards and exclude the ones you don't want.
+
 ### Fixed
 - SQLite databases in files named `<name>.sqlite` are found. Discovery only looked at file names ending in `.db`
   or `.sqlite3`, so the databases of Nginx Proxy Manager, Audiobookshelf, Stash, Speedtest Tracker and other apps
-  that use `.sqlite` were never listed and never dumped. After you upgrade, the next run lists and dumps them.
-  Exclude the ones you don't want on the Databases page.
+  that use `.sqlite` were never listed and never dumped.
 - Overseerr's database is found when the container keeps its data in `/config`, as the linuxserver image does. The
   built-in profile names `/app/config`, the upstream image's folder, and a container that matched a profile was
   not scanned any further. When none of a profile's SQLite files is where the profile says, Arkive now scans the
   container's mapped folders, as it does for an app without a profile.
 
+### Changed
+- Dependency updates. Backend: FastAPI 0.165.0, python-multipart 0.0.34, Apprise 2.3.0, PyYAML 6.0.4,
+  pydantic 2.14.4; development tool ruff 0.17.6. Frontend: SvelteKit 3.4.0, Svelte 5.59.1, tailwind-merge 3.7.1,
+  Vitest 5.1.1, @testing-library/jest-dom 8.0.0.
+
 ### Security
+- The image has Debian's libpam 1.5.2-6+deb12u3, which fixes CVE-2025-6020 in the `pam_namespace` module. Trivy
+  reports it as HIGH on 0.7.0. Nothing in the image turns that module on, and the update clears the finding.
+- Apprise 2.3.0 fixes GHSA-rmjg-h4cf-m74j: a configuration file fetched from a remote URL could make Apprise read
+  a local file into a notification. Arkive does not load Apprise configuration files. It gives Apprise the channel
+  URLs entered under Settings → Notifications.
 - restic and rclone are built with Go 1.26.11 (was 1.26.10), which has security fixes in `net/http`, the package both tools use to reach cloud storage, and in the compiler and linker.
 
 ## [0.7.0] - 2026-11-20
@@ -224,7 +240,8 @@ If you run 0.2.x on a network others can reach, upgrade.
 ### Added
 - First public release: discovery of Docker containers and their databases with app profiles; dumps of PostgreSQL, MariaDB/MySQL, MongoDB, SQLite and Redis; encrypted restic snapshots of the dumps, watched directories and Unraid flash configuration on local disk, Backblaze B2, S3-compatible, Wasabi, SFTP, Google Drive and Dropbox targets; cron schedules and retention; notifications; a snapshot browser, granular restore and a restore-plan PDF; a setup wizard, dashboard, REST API and CLI.
 
-[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/islamdiaa/Arkive/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/islamdiaa/Arkive/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/islamdiaa/Arkive/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/islamdiaa/Arkive/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/islamdiaa/Arkive/compare/v0.4.0...v0.5.0

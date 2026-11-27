@@ -11,7 +11,7 @@ Images are published to Docker Hub as `islamdiaa/arkive`:
 | `latest` | The newest stable release |
 | `0` (major version) | The newest `0.x` release |
 | `main` | Every change merged to the `main` branch |
-| `0.7.0` (full version) | One release, never changes |
+| `0.7.1` (full version) | One release, never changes |
 | `0.7` (minor version) | The newest `0.7.x` release |
 | A commit SHA, such as `0f3f094` | One build of `main` |
 
