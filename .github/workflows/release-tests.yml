@@ -115,7 +115,7 @@ jobs:
       fail-fast: false
       matrix:
         # The first public line, and the two releases before this tree.
-        old: ["0.2.4", "0.5.0", "0.6.0"]
+        old: ["0.2.4", "0.6.0", "0.7.0"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

@@ -27,7 +27,7 @@ This repo is now the clean public repository:
 
 ## Current Repo State
 
-Branch: `main` (v0.7.0). The v0.3.0 hardening and v0.4.0 "knowing the backups
+Branch: `main` (v0.7.1). The v0.3.0 hardening and v0.4.0 "knowing the backups
 work" releases landed together in PR #52; sections 12 and 13 below describe
 them, section 17 describes v0.5.0 and what v0.6.0 added to it, and section 18
 describes v0.7.0. Use `git log` for the commit history and `CHANGELOG.md` for
@@ -783,7 +783,7 @@ If picking this repo up cold:
 
 ## Last Known Intent
 
-At the time this handoff was updated (v0.7.0):
+At the time this handoff was updated (v0.7.1):
 - v0.3.0/v0.4.0 were merged (PR #52) after two rounds of adversarial review;
   the invariants that came out of it are listed at the end of section 13
 - the long-running production install that motivated section 12 runs v0.4.0
@@ -804,14 +804,19 @@ At the time this handoff was updated (v0.7.0):
   (there is no svelte.config.js), `$lib` still works through the deprecated
   `alias` option (moving to `#lib` subpath imports is a follow-up), and `$:`
   components read the route from `$lib/stores/page` because `$app/stores` is
-  gone and `$app/state` only notifies runes. The one npm advisory left is
-  picomatch (GHSA-fc5q-39xc-vjpf, a ReDoS in glob matching, via Vite and
-  Vitest, build-time only): no patched release exists yet (4.0.7 is the
-  newest); Dependabot will raise it when one does
+  gone and `$app/state` only notifies runes. `npm audit` reports nothing: the
+  picomatch advisory (GHSA-fc5q-39xc-vjpf, via Vite and Vitest) was withdrawn
+  on 2026-11-18
 - v0.7.0 (section 18) added the configurable backup time limit and live
   progress from the first outside contribution, restic 0.20.0 and rclone
   1.76.0, and the "Release tests" workflow that runs the upgrade-path test and
   both round trips on hosted runners
+- v0.7.1 is a patch release. The bind-mount SQLite scan also looks at
+  `*.sqlite` names (`SQLITE_SUFFIXES` in `services/discovery.py`), and a
+  container whose profile names SQLite paths that are all missing on the host
+  is scanned like an app without a profile (Overseerr from linuxserver keeps
+  its data in `/config`, the profile says `/app/config`). The image is rebuilt
+  for Debian's libpam update
 - earlier live-validated fixes (hostname reporting, dashboard/discovery
   consistency, scheduled collisions, Postgres companion discovery, activity
   badges, first-boot stability, directory discovery, snapshot counts) still
