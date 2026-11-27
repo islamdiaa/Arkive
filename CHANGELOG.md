@@ -9,6 +9,16 @@ When a version is tagged, its section here becomes the GitHub release notes
 
 ## [Unreleased]
 
+### Fixed
+- SQLite databases in files named `<name>.sqlite` are found. Discovery only looked at file names ending in `.db`
+  or `.sqlite3`, so the databases of Nginx Proxy Manager, Audiobookshelf, Stash, Speedtest Tracker and other apps
+  that use `.sqlite` were never listed and never dumped. After you upgrade, the next run lists and dumps them.
+  Exclude the ones you don't want on the Databases page.
+- Overseerr's database is found when the container keeps its data in `/config`, as the linuxserver image does. The
+  built-in profile names `/app/config`, the upstream image's folder, and a container that matched a profile was
+  not scanned any further. When none of a profile's SQLite files is where the profile says, Arkive now scans the
+  container's mapped folders, as it does for an app without a profile.
+
 ### Security
 - restic and rclone are built with Go 1.26.11 (was 1.26.10), which has security fixes in `net/http`, the package both tools use to reach cloud storage, and in the compiler and linker.
 

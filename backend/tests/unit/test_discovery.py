@@ -20,6 +20,20 @@ def _make_container(name, image_tags, status="running", env=None, mounts=None, l
     return c
 
 
+def _make_sqlite(path):
+    """Create a real SQLite file and return its path."""
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY)")
+        conn.commit()
+    return path
+
+
+_OVERSEERR_PROFILE = {
+    "name": "overseerr",
+    "databases": [{"type": "sqlite", "path": "/app/config/db/db.sqlite3", "method": "host_sqlite3_backup"}],
+}
+
+
 class TestDiscovery:
     """Discovery engine tests."""
 
@@ -281,6 +295,88 @@ class TestDiscovery:
 
         assert str(live_db) in found
         assert str(dump_db) not in found
+
+    def test_scan_sqlite_files_finds_dot_sqlite_names(self, mock_config, tmp_path):
+        """Apps such as Nginx Proxy Manager and Audiobookshelf name their database `<name>.sqlite`."""
+        from app.services.discovery import DiscoveryEngine
+
+        root = tmp_path / "npm"
+        root.mkdir()
+        database = _make_sqlite(root / "database.sqlite")
+        not_a_database = root / "export.sqlite"
+        not_a_database.write_text("not SQLite, only named like it")
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+
+        assert engine._scan_sqlite_files(str(root)) == [str(database)]
+
+    def test_profile_sqlite_path_miss_falls_back_to_mount_scan(self, mock_config, tmp_path, caplog):
+        """A profile path that does not exist in this image must not hide the database.
+
+        linuxserver's Overseerr keeps its data in /config; the profile names the
+        upstream image's /app/config.
+        """
+        from app.services.discovery import DiscoveryEngine
+
+        mock_config.user_shares_path = tmp_path / "user"
+        appdata = tmp_path / "user" / "appdata" / "overseerr"
+        (appdata / "db").mkdir(parents=True)
+        database = _make_sqlite(appdata / "db" / "db.sqlite3")
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+        container = _make_container("overseerr", ["lscr.io/linuxserver/overseerr:latest"])
+        mounts = [{"type": "bind", "source": str(appdata), "destination": "/config"}]
+
+        with caplog.at_level("INFO", logger="arkive.discovery"):
+            found = engine._detect_from_profile(container, _OVERSEERR_PROFILE, mounts, {}, [container])
+
+        assert [(db.container_name, db.db_type, db.db_name, db.host_path) for db in found] == [
+            ("overseerr", "sqlite", "db.sqlite3", str(database))
+        ]
+        assert not [record for record in caplog.records if record.levelname == "WARNING"]
+
+    def test_profile_sqlite_found_is_not_extended_by_a_scan(self, mock_config, tmp_path):
+        """When the profile finds its database, other SQLite files in the mount stay out, as before."""
+        from app.services.discovery import DiscoveryEngine
+
+        mock_config.user_shares_path = tmp_path / "user"
+        appdata = tmp_path / "user" / "appdata" / "overseerr"
+        (appdata / "db").mkdir(parents=True)
+        database = _make_sqlite(appdata / "db" / "db.sqlite3")
+        _make_sqlite(appdata / "other.db")
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+        container = _make_container("overseerr", ["sctx/overseerr:latest"])
+        mounts = [{"type": "bind", "source": str(appdata), "destination": "/app/config"}]
+
+        found = engine._detect_from_profile(container, _OVERSEERR_PROFILE, mounts, {}, [container])
+
+        assert [db.host_path for db in found] == [str(database)]
+
+    @pytest.mark.parametrize("status", ["running", "exited"])
+    def test_profile_sqlite_path_miss_warns_when_nothing_is_found(self, mock_config, tmp_path, caplog, status):
+        """No database anywhere (or a stopped container, which is not scanned) keeps the warning."""
+        from app.services.discovery import DiscoveryEngine
+
+        mock_config.user_shares_path = tmp_path / "user"
+        appdata = tmp_path / "user" / "appdata" / "overseerr"
+        (appdata / "db").mkdir(parents=True)
+        if status == "exited":
+            _make_sqlite(appdata / "db" / "db.sqlite3")
+
+        engine = DiscoveryEngine.__new__(DiscoveryEngine)
+        engine.config = mock_config
+        container = _make_container("overseerr", ["lscr.io/linuxserver/overseerr:latest"], status=status)
+        mounts = [{"type": "bind", "source": str(appdata), "destination": "/config"}]
+
+        with caplog.at_level("INFO", logger="arkive.discovery"):
+            found = engine._detect_from_profile(container, _OVERSEERR_PROFILE, mounts, {}, [container])
+
+        assert found == []
+        assert "SQLite path /app/config/db/db.sqlite3 not found on host" in caplog.text
 
     @pytest.mark.asyncio
     async def test_scan_skips_current_arkive_container(self, mock_config, monkeypatch):

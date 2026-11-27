@@ -99,6 +99,8 @@ SKIP_DIRS = {
     "restores",
 }
 SKIP_FILES = {"Thumbs.db"}
+# File names the bind-mount scan looks at; the SQLite header decides.
+SQLITE_SUFFIXES = (".sqlite3", ".sqlite", ".db")
 MAX_DEPTH = 3
 
 
@@ -304,7 +306,7 @@ class DiscoveryEngine:
                     continue
                 if fname.endswith(("-journal", "-wal", "-shm")):
                     continue
-                if fname.endswith((".sqlite3", ".db")):
+                if fname.endswith(SQLITE_SUFFIXES):
                     fpath = os.path.join(dirpath, fname)
                     try:
                         with open(fpath, "rb") as f:
@@ -564,6 +566,7 @@ class DiscoveryEngine:
     ) -> list[DiscoveredDatabase]:
         """Detect databases based on profile definition."""
         dbs = []
+        missing_sqlite: list[str] = []
         for db_def in profile.get("databases", []):
             db_type = db_def.get("type", "")
 
@@ -587,7 +590,7 @@ class DiscoveryEngine:
                         )
                     )
                 else:
-                    logger.warning("Profile %s: SQLite path %s not found on host", profile["name"], container_path)
+                    missing_sqlite.append(container_path)
 
             elif db_type == "postgres":
                 # Check for companion container
@@ -694,6 +697,28 @@ class DiscoveryEngine:
                         host_path=None,
                     )
                 )
+
+        if missing_sqlite:
+            # The same app is published with different data folders (Overseerr:
+            # /app/config upstream, /config from linuxserver), so a profile path
+            # can miss a database that is there. When none of the profile's
+            # SQLite files was found, scan the mounts as for an app without a
+            # profile.
+            scanned: list[DiscoveredDatabase] = []
+            if container.status == "running" and not any(db.db_type == "sqlite" for db in dbs):
+                scanned = self._detect_sqlite_from_mounts(container, mounts)
+            if scanned:
+                logger.info(
+                    "Profile %s: %s not found on host; found %d SQLite database(s) by scanning the mounts of %s",
+                    profile["name"],
+                    ", ".join(missing_sqlite),
+                    len(scanned),
+                    container.name,
+                )
+                dbs.extend(scanned)
+            else:
+                for container_path in missing_sqlite:
+                    logger.warning("Profile %s: SQLite path %s not found on host", profile["name"], container_path)
 
         return dbs
 
