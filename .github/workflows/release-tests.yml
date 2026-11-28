@@ -6,8 +6,9 @@ name: Release tests
 # hosted runner, a throwaway machine with nothing else on its Docker daemon.
 #
 # They run on pull requests that touch what they cover (the image, the
-# schema, the dump and restore code, the harnesses, the version files that a
-# release pull request changes), on demand from the Actions tab, and on a
+# schema, discovery and the app profiles, the dump and restore code, the
+# harnesses, the version files that a release pull request changes), on
+# demand from the Actions tab, and on a
 # push to a `release-test/**` branch: a way to test a tree (several pull
 # requests merged together, say) without opening a pull request for it.
 on:
@@ -28,12 +29,15 @@ on:
       - "backend/app/core/security.py"
       - "backend/app/services/backup_engine.py"
       - "backend/app/services/db_dumper.py"
+      - "backend/app/services/discovery.py"
+      - "backend/app/services/discovery_persistence.py"
       - "backend/app/services/guided_restore.py"
       - "backend/app/services/mysql_accounts.py"
       - "backend/app/services/orchestrator.py"
       - "backend/app/services/redis_swap.py"
       - "backend/app/services/restore_drill.py"
       - "backend/app/services/restore_plan.py"
+      - "profiles/**"
       - "scripts/upgrade-path-test.py"
       - "scripts/restore-roundtrip/**"
 
