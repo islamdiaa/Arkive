@@ -658,8 +658,9 @@ CI (`.github/workflows/build.yml`) runs on every PR:
 "Release tests" (`.github/workflows/release-tests.yml`) builds the image once
 and runs the upgrade-path test (from 0.2.4 and the two previous releases), the
 restore round trip and the guided round trip on hosted runners. It triggers on
-pull requests that touch the image, the schema, the dump and restore code, the
-harnesses or the version files (so every release pull request), and from the
+pull requests that touch the image, the schema, discovery and the app profiles,
+the dump and restore code, the harnesses or the version files (so every
+release pull request), and from the
 Actions tab. Run the heavy harnesses there, not on a machine that also runs
 real workloads: they start a privileged Docker daemon and several database
 servers.

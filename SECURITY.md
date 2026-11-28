@@ -2,14 +2,14 @@
 
 ## Supported versions
 
-Security fixes go into the latest release. Upgrade by pulling the newest version tag
-(for example `islamdiaa/arkive:0.4`, which moves to each new 0.4.x release) and recreating
-the container. [Upgrading](docs/upgrading.md) lists what each image tag follows.
+Security fixes go into the latest release. Upgrade by pulling a tag that follows releases
+(`islamdiaa/arkive:latest`, or `islamdiaa/arkive:0`, which moves to each new 0.x release) and
+recreating the container. [Upgrading](docs/upgrading.md) lists what each image tag follows.
 
-| Version | Supported |
-|---------|-----------|
-| 0.4.x   | Yes       |
-| < 0.4   | No        |
+| Version            | Supported |
+|--------------------|-----------|
+| The latest release | Yes       |
+| Older releases     | No        |
 
 ## Reporting a vulnerability
 
